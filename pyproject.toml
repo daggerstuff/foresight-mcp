@@ -1,7 +1,7 @@
 [project]
 name = "foresight-mcp"
 version = "1.0.0"
-description = "Persistent memory for Claude Code via MCP protocol"
+description = "Persistent memory for AI agents via MCP protocol"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.11"

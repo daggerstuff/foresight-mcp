@@ -1,6 +1,8 @@
 # Foresight MCP Server
 
-Persistent memory for Claude Code via MCP protocol.
+Persistent memory for AI agents via MCP protocol.
+
+Compatible with Claude Code, Goose, Cursor, and any MCP-compatible AI agent.
 
 ## Quick Start
 
@@ -8,7 +10,9 @@ Persistent memory for Claude Code via MCP protocol.
 uv run foresight-mcp
 ```
 
-## Add to Claude Code
+## Add to Your MCP Client
+
+### Claude Code
 
 ```json
 {
@@ -25,6 +29,25 @@ uv run foresight-mcp
   }
 }
 ```
+
+### Goose
+
+Add to your Goose configuration (`~/.config/goose/config.yaml`):
+
+```yaml
+extensions:
+  foresight:
+    args: ["run", "-m", "foresight_mcp"]
+    cwd: /path/to/foresight-mcp
+    env:
+      FORESIGHT_DB_PATH: /home/user/.foresight/memory.db
+      FORESIGHT_USER_ID: username
+    type: stdio
+```
+
+### Cursor / Other MCP Clients
+
+Use the same configuration pattern as Claude Code, adjusting for your client's specific config format.
 
 ## Tools
 
