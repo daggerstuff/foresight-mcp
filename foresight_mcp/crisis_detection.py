@@ -42,9 +42,10 @@ CRISIS_PATTERNS = {
     'self_harm': {
         'keywords': [
             r'\bkill myself\b', r'\bend my life\b', r'\bsuicide\b',
-            r'\bself harm\b', r'\bhurt myself\b', r'\bcut myself\b',
-            r'\bdont want to live\b', r'\blife is not worth living\b',
-            r'\bwish i was dead\b', r'\bno reason to live\b',
+            r'\bsuicidal\b', r'\bself harm\b', r'\bhurt myself\b',
+            r'\bcut myself\b', r'\bdont want to live\b',
+            r'\blife is not worth living\b', r'\bwish i was dead\b',
+            r'\bno reason to live\b', r'\bwant to die\b',
         ],
         'urgency': 'immediate',
         'risk_level': 'critical',

@@ -24,6 +24,7 @@ from .memory_components import (
     MemoryCrisisTagger, SocraticGate, MemorySynthesizer, MemoryLinker
 )
 from .crisis_detection import get_crisis_service
+from .subconscious import get_subconscious_agent, SubconsciousAgent
 
 # Configuration
 DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
@@ -47,6 +48,9 @@ def init_db():
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_db_connection()
+
+    # Drop existing table if schema needs to change (migration)
+    conn.execute("DROP TABLE IF EXISTS memories")
 
     # Main memories table with extended fields
     conn.execute("""
@@ -256,11 +260,11 @@ def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
         result += f"Emotional Context: {emotional_context}\n"
     if metrics:
         result += f"Metrics: {metrics}\n"
-    if row.get('vector_id'):
+    if row['vector_id']:
         result += f"Vector ID: {row['vector_id']}\n"
-    if row.get('gist'):
+    if row['gist']:
         result += f"Gist: {row['gist']}\n"
-    if row.get('is_ghost'):
+    if row['is_ghost']:
         result += "[GHOST NODE - Content archived]"
 
     return result
@@ -491,6 +495,191 @@ def memory_status() -> str:
     }
 
     return json.dumps(status, indent=2)
+
+
+# =============================================================================
+# Subconscious Memory Block Tools
+# =============================================================================
+
+@mcp.tool()
+def get_subconscious_blocks(user_id: Optional[str] = None) -> str:
+    """
+    Get all subconscious memory blocks.
+
+    Returns:
+        JSON list of all non-empty memory blocks
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    blocks = agent.get_all_blocks()
+    return json.dumps(blocks, indent=2)
+
+
+@mcp.tool()
+def get_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
+    """
+    Get a specific subconscious memory block.
+
+    Args:
+        label: Block label (guidance, pending_items, project_context,
+               session_patterns, user_preferences, self_improvement, tool_guidelines)
+        user_id: Optional user ID override
+
+    Returns:
+        Block content or not found message
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    content = agent.get_block(label)
+    if content:
+        return f"[{label}]\n{content}"
+    return f"Block '{label}' not found."
+
+
+@mcp.tool()
+def update_subconscious_block(
+    label: str,
+    content: str,
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Update a subconscious memory block.
+
+    Args:
+        label: Block label to update
+        content: New content for the block
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    agent.update_guidance(content) if label == "guidance" else None
+    if label != "guidance":
+        agent.state.update_block(label, content)
+    return f"Updated block '{label}'"
+
+
+@mcp.tool()
+def add_subconscious_guidance(line: str, user_id: Optional[str] = None) -> str:
+    """
+    Add a line to the guidance block.
+
+    Args:
+        line: Line to append to guidance
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    agent.add_guidance_line(line)
+    return f"Added guidance line: {line[:50]}..."
+
+
+@mcp.tool()
+def get_subconscious_whisper(user_id: Optional[str] = None) -> str:
+    """
+    Get the current whisper injection (guidance in XML format).
+
+    Args:
+        user_id: Optional user ID override
+
+    Returns:
+        XML formatted whisper message or empty if no guidance
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    whisper = agent.get_whisper()
+    if not whisper:
+        return "(No active guidance - whisper is empty)"
+    return whisper
+
+
+@mcp.tool()
+def get_subconscious_context(user_id: Optional[str] = None) -> str:
+    """
+    Get all subconscious memory blocks as XML context.
+
+    Args:
+        user_id: Optional user ID override
+
+    Returns:
+        XML formatted memory blocks
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    return agent.get_full_context()
+
+
+@mcp.tool()
+def reset_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
+    """
+    Reset a subconscious memory block to default.
+
+    Args:
+        label: Block label to reset
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    agent.reset_block(label)
+    return f"Reset block '{label}' to default"
+
+
+@mcp.tool()
+def clear_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
+    """
+    Clear a subconscious memory block.
+
+    Args:
+        label: Block label to clear
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+    agent.clear_block(label)
+    return f"Cleared block '{label}'"
+
+
+@mcp.tool()
+def process_session_transcript(
+    session_id: str,
+    messages: List[dict],
+    project_path: Optional[str] = None,
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Process a session transcript and extract memories.
+
+    Args:
+        session_id: Unique session identifier
+        messages: List of message dicts with role/content
+        project_path: Optional project path for context
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    uid = user_id or USER_ID
+    agent = get_subconscious_agent(uid)
+
+    import asyncio
+    asyncio.run(agent.process_transcript(
+        session_id=session_id,
+        messages=messages,
+        project_path=project_path
+    ))
+
+    return f"Processed transcript for session {session_id}"
 
 
 def main():
