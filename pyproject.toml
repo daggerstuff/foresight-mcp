@@ -11,9 +11,11 @@ dependencies = ["fastmcp>=0.1.0"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pytest-cov>=4.0"]
+cli = ["typer>=0.9.0", "rich>=13.0"]
 
 [project.scripts]
 foresight-mcp = "foresight_mcp.server:main"
+foresight = "foresight_cli.cli:main"
 
 [build-system]
 requires = ["hatchling"]
