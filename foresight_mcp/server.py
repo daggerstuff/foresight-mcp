@@ -27,6 +27,7 @@ from .crisis_detection import get_crisis_service
 from .subconscious import get_subconscious_agent
 from .event_bus import get_event_bus, memory_stored, memory_retrieved, memory_updated, memory_deleted
 from .websocket.subscriptions import SubscriptionManager
+from .projections.builder import ProjectionBuilder
 
 # Configuration
 DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
@@ -823,6 +824,152 @@ def ws_list_subscriptions(user_id: Optional[str] = None) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+# =============================================================================
+# Audit Trail Projections Tools
+# =============================================================================
+
+_projection_builder: Optional[ProjectionBuilder] = None
+
+
+def get_projection_builder() -> ProjectionBuilder:
+    """Get or create the global projection builder."""
+    global _projection_builder
+    if _projection_builder is None:
+        _projection_builder = ProjectionBuilder()
+    return _projection_builder
+
+
+@mcp.tool()
+def audit_build(
+    report_name: str,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    user_filter: Optional[str] = None,
+) -> str:
+    """
+    Build an audit trail projection report.
+
+    Args:
+        report_name: One of: memory_timeline, user_activity, block_changes, access_log, anomaly_report
+        start_date: Optional ISO date filter
+        end_date: Optional ISO date filter
+        user_filter: Optional user ID filter
+
+    Returns:
+        JSON formatted report data
+    """
+    builder = get_projection_builder()
+    report = builder.get_report(report_name)
+
+    if not report:
+        return f"Unknown report: {report_name}. Available: {builder.list_reports()}"
+
+    # Get events from event store
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+
+    # Build report
+    data = report.build(events)
+
+    # Apply filters
+    if start_date or end_date:
+        from datetime import datetime
+        start = datetime.fromisoformat(start_date) if start_date else None
+        end = datetime.fromisoformat(end_date) if end_date else None
+        data = report.filter_by_date(data, start, end)
+
+    if user_filter:
+        data = report.filter_by_user(data, user_filter)
+
+    return json.dumps({
+        "report": report_name,
+        "record_count": len(data),
+        "data": data
+    }, indent=2)
+
+
+@mcp.tool()
+def audit_list_reports() -> str:
+    """
+    List available audit trail reports.
+
+    Returns:
+        List of report names
+    """
+    builder = get_projection_builder()
+    reports = builder.list_reports()
+    return json.dumps({
+        "available_reports": reports,
+        "count": len(reports)
+    }, indent=2)
+
+
+@mcp.tool()
+def audit_export(
+    report_name: str,
+    format: str = "json",
+    output_path: Optional[str] = None,
+) -> str:
+    """
+    Export an audit trail report to file.
+
+    Args:
+        report_name: Report to export
+        format: Output format (json or csv)
+        output_path: Path to write file (default: ~/.foresight/reports/<report_name>.<format>)
+
+    Returns:
+        Path to generated file
+    """
+    import os
+    from datetime import datetime
+
+    builder = get_projection_builder()
+
+    # Get events
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+
+    # Default output path
+    if not output_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path.home() / ".foresight" / "reports"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(output_dir / f"{report_name}_{ts}.{format}")
+    else:
+        output_path = str(Path(output_path).expanduser())
+
+    try:
+        if format.lower() == "csv":
+            builder.export_csv(report_name, events, output_path)
+        else:
+            builder.export_json(report_name, events, output_path)
+        return f"Exported to: {output_path}"
+    except Exception as e:
+        return f"Export failed: {e}"
+
+
+@mcp.tool()
+def audit_summary() -> str:
+    """
+    Get summary of all audit trail projections.
+
+    Returns:
+        Summary statistics for all reports
+    """
+    builder = get_projection_builder()
+
+    # Get events
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+
+    summary = builder.get_report_summary(events)
+    return json.dumps(summary, indent=2)
 
 
 def main():

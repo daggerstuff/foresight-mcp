@@ -70,6 +70,15 @@ from .websocket.subscriptions import (
     SubscriptionManager,
     Subscription,
 )
+# Projections exports
+from .projections.builder import ProjectionBuilder
+from .projections.reports import (
+    MemoryTimeline,
+    UserActivityReport,
+    BlockChangeLog,
+    AccessLog,
+    AnomalyReport,
+)
 
 __version__ = "1.0.0"
 __all__ = [
