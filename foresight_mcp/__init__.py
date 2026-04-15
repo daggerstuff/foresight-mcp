@@ -10,6 +10,8 @@ Includes:
 - Memory Linker for vector store and ghost nodes
 - Composable memory block schemas with BlockRegistry
 - Subconscious memory blocks (guidance, pending_items, preferences, patterns)
+- Event bus with persistence and audit trail
+- Event hook system for extensibility (HTTP webhooks, callables, async)
 """
 from .server import (
     mcp,
@@ -44,6 +46,24 @@ from .block_registry import (
     BlockScope,
     get_registry,
     initialize_default_blocks,
+)
+# Event bus exports
+from .event_bus import (
+    get_event_bus,
+    EventBus,
+    Event,
+    EventType,
+)
+# Hook system exports
+from .hooks import (
+    get_hook_executor,
+    HookExecutor,
+    HookRegistry,
+    HookRegistration,
+    HookType,
+    list_hooks,
+    register_hook,
+    unregister_hook,
 )
 
 __version__ = "1.0.0"
