@@ -17,14 +17,15 @@ from fastmcp import FastMCP
 
 # Import restored memory system components
 from .memory_types import (
-    MemoryObject, MemoryScope, RetentionPolicy, EmotionalMetadata,
-    EmpathyMetrics, GateResult, SynthesisResult, StanceShift
+    MemoryObject, EmotionalMetadata,
+    EmpathyMetrics
 )
 from .memory_components import (
     MemoryCrisisTagger, SocraticGate, MemorySynthesizer, MemoryLinker
 )
 from .crisis_detection import get_crisis_service
-from .subconscious import get_subconscious_agent, SubconsciousAgent
+from .subconscious import get_subconscious_agent
+from .event_bus import get_event_bus, memory_stored, memory_retrieved, memory_updated, memory_deleted
 
 # Configuration
 DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
@@ -183,14 +184,18 @@ def store_memory(content: str, category: str = "fact",
     conn.commit()
     conn.close()
 
+    # Emit event
+    event_bus = get_event_bus()
+    event_bus.publish(memory_stored(memory_id=memory_id, content=content, actor=uid))
+
     # Build response
     response = f"Stored memory {memory_id}: {content[:50]}..."
     response += f"\nGate Decision: {gate_result.decision}"
     response += f"\nReason: {gate_result.reason}"
     if gate_result.suggested_tags:
         response += f"\nTags: {', '.join(gate_result.suggested_tags)}"
-    if gate_result.crisis_detected:
-        response += "\n⚠️  CRISIS DETECTED - Review required"
+    if gate_result.anomaly_detected:
+        response += "\n⚠️  ANOMALY DETECTED - Review required"
 
     return response
 
@@ -209,6 +214,11 @@ def query_memories(query: str, user_id: Optional[str] = None,
 
     if not rows:
         return f"No memories found matching '{query}'"
+
+    # Emit events for retrieved memories
+    event_bus = get_event_bus()
+    for r in rows:
+        event_bus.publish(memory_retrieved(memory_id=r['id'], query_context=query, actor=uid))
 
     results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content']}" for r in rows]
     return f"Found {len(results)} memories:\n" + "\n".join(results)
@@ -246,6 +256,10 @@ def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
 
     if not row:
         return f"Memory {memory_id} not found."
+
+    # Emit event
+    event_bus = get_event_bus()
+    event_bus.publish(memory_retrieved(memory_id=memory_id, query_context="", actor=uid))
 
     # Parse JSON fields
     tags = json.loads(row['tags'])
@@ -319,6 +333,11 @@ def update_memory(memory_id: str, content: Optional[str] = None,
         conn.commit()
 
     conn.close()
+
+    # Emit event
+    event_bus = get_event_bus()
+    event_bus.publish(memory_updated(memory_id=memory_id, old_content=row['content'], new_content=content or row['content'], actor=uid))
+
     return f"Updated memory {memory_id}"
 
 
@@ -335,6 +354,10 @@ def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     if not row:
         conn.close()
         return f"Memory {memory_id} not found."
+
+    # Emit event before deletion
+    event_bus = get_event_bus()
+    event_bus.publish(memory_deleted(memory_id=memory_id, actor=uid))
 
     conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ?", (memory_id, uid))
     conn.commit()

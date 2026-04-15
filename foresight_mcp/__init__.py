@@ -5,9 +5,10 @@ Restored from src/lib/ai/memory/ architecture.
 Includes:
 - MemoryObject with emotional context and empathy metrics
 - Socratic Gate for psychological safety
-- Crisis Detection for self-harm, depression, anxiety, trauma
+- Anomaly Detection (mental health, extensible to other domains)
 - Memory Synthesizer for reconciliation and stance shift detection
 - Memory Linker for vector store and ghost nodes
+- Composable memory block schemas with BlockRegistry
 - Subconscious memory blocks (guidance, pending_items, preferences, patterns)
 """
 from .server import (
@@ -32,6 +33,18 @@ from .server import (
     clear_subconscious_block,
     process_session_transcript,
 )
+# Block registry exports
+from .block_registry import (
+    BlockRegistry,
+    MemoryBlockSchema,
+    MemoryBlock,
+    RetentionPolicy,
+    MergeStrategy,
+    InjectionPoint,
+    BlockScope,
+    get_registry,
+    initialize_default_blocks,
+)
 
 __version__ = "1.0.0"
 __all__ = [
@@ -55,4 +68,14 @@ __all__ = [
     "reset_subconscious_block",
     "clear_subconscious_block",
     "process_session_transcript",
+    # Block registry
+    "BlockRegistry",
+    "MemoryBlockSchema",
+    "MemoryBlock",
+    "RetentionPolicy",
+    "MergeStrategy",
+    "InjectionPoint",
+    "BlockScope",
+    "get_registry",
+    "initialize_default_blocks",
 ]

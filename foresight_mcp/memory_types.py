@@ -207,12 +207,12 @@ class GateResult:
     decision: GateDecision
     reason: str
     suggested_tags: List[str]
-    crisis_detected: bool
+    anomaly_detected: bool = False  # Renamed from crisis_detected for domain-agnostic naming
 
     def to_dict(self) -> dict:
         return {
             "decision": self.decision,
             "reason": self.reason,
             "suggested_tags": self.suggested_tags,
-            "crisis_detected": self.crisis_detected,
+            "anomaly_detected": self.anomaly_detected,
         }

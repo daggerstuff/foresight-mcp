@@ -1,44 +1,102 @@
 """
-Crisis Detection Service
-Detects psychological crisis signals in user content for safety intervention.
-Restored from src/lib/ai/services/crisis-detection.ts
+Anomaly Detection System
+Domain-agnostic anomaly detection with pluggable strategies.
+Extensible to any domain (mental health, security, finance, etc.)
 """
 from __future__ import annotations
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Dict, Any
 import re
 
 
-RiskLevel = Literal['low', 'moderate', 'high', 'critical']
-CrisisCategory = Literal['self_harm', 'depression', 'anxiety', 'trauma',
-                         'substance_abuse', 'eating_disorder', 'crisis_event']
+# =============================================================================
+# Core Types (Domain-Agnostic)
+# =============================================================================
+
+RiskLevel = Literal['none', 'low', 'moderate', 'high', 'critical']
+Urgency = Literal['routine', 'elevated', 'high', 'immediate']
 
 
 @dataclass
-class CrisisDetectionResult:
-    """Result of crisis detection analysis."""
-    is_crisis: bool
-    category: Optional[CrisisCategory]
+class AnomalyResult:
+    """
+    Result of anomaly detection analysis.
+
+    Generic enough to handle any domain:
+    - Mental health: crisis detection
+    - Security: intrusion detection
+    - Finance: fraud detection
+    - DevOps: anomaly detection
+    """
+    is_anomaly: bool
+    category: Optional[str]
     risk_level: RiskLevel
     confidence: float
-    urgency: Literal['routine', 'elevated', 'high', 'immediate']
+    urgency: Urgency
     detected_terms: List[str]
     recommended_action: str
+    metadata: Dict[str, Any] = None
+
+    def __post_init__(self):
+        if self.metadata is None:
+            self.metadata = {}
 
     def to_dict(self) -> dict:
         return {
-            "is_crisis": self.is_crisis,
+            "is_anomaly": self.is_anomaly,
             "category": self.category,
             "risk_level": self.risk_level,
             "confidence": self.confidence,
             "urgency": self.urgency,
             "detected_terms": self.detected_terms,
             "recommended_action": self.recommended_action,
+            "metadata": self.metadata,
         }
 
 
-# Crisis keyword patterns by category
-CRISIS_PATTERNS = {
+class AnomalyDetector(ABC):
+    """
+    Abstract base class for anomaly detectors.
+
+    Implement this ABC to create domain-specific detectors:
+    - MentalHealthAnomalyDetector
+    - SecurityAnomalyDetector
+    - FinanceAnomalyDetector
+    - DevOpsAnomalyDetector
+    """
+
+    @abstractmethod
+    def detect(self, content: str, **kwargs) -> AnomalyResult:
+        """
+        Detect anomalies in content.
+
+        Args:
+            content: The text content to analyze
+            **kwargs: Domain-specific parameters
+
+        Returns:
+            AnomalyResult with findings
+        """
+        pass
+
+    @abstractmethod
+    def get_categories(self) -> List[str]:
+        """Return list of anomaly categories this detector supports."""
+        pass
+
+
+# =============================================================================
+# Mental Health Implementation (Legacy Crisis Detection)
+# =============================================================================
+
+MentalHealthCategory = Literal[
+    'self_harm', 'depression', 'anxiety', 'trauma',
+    'substance_abuse', 'eating_disorder', 'crisis_event'
+]
+
+# Crisis keyword patterns by category - mental health specific
+MENTAL_HEALTH_PATTERNS = {
     'self_harm': {
         'keywords': [
             r'\bkill myself\b', r'\bend my life\b', r'\bsuicide\b',
@@ -102,10 +160,12 @@ CRISIS_PATTERNS = {
 }
 
 
-class CrisisDetectionService:
+class MentalHealthAnomalyDetector(AnomalyDetector):
     """
-    Hybrid Crisis Detection Service
-    Combines keyword pattern matching with configurable sensitivity.
+    Mental health anomaly detector.
+
+    Detects crisis signals in user content for safety intervention.
+    This is the legacy CrisisDetectionService refactored to use AnomalyDetector ABC.
     """
 
     def __init__(self, sensitivity_level: Literal['low', 'medium', 'high'] = 'medium'):
@@ -115,29 +175,26 @@ class CrisisDetectionService:
     def _compile_patterns(self):
         """Pre-compile regex patterns for performance."""
         self.compiled_patterns = {}
-        for category, config in CRISIS_PATTERNS.items():
+        for category, config in MENTAL_HEALTH_PATTERNS.items():
             self.compiled_patterns[category] = [
                 re.compile(pattern, re.IGNORECASE)
                 for pattern in config['keywords']
             ]
 
-    def detect_crisis(self, content: str,
-                      sensitivity_level: Optional[Literal['low', 'medium', 'high']] = None,
-                      user_id: str = "default",
-                      source: str = "memory_tagger") -> CrisisDetectionResult:
+    def detect(self, content: str, **kwargs) -> AnomalyResult:
         """
-        Detect crisis signals in content.
+        Detect mental health crisis signals in content.
 
         Args:
             content: The text content to analyze
-            sensitivity_level: Override default sensitivity
-            user_id: User ID for tracking
-            source: Source of the content
+            sensitivity_level: Override default sensitivity (optional)
+            user_id: User ID for tracking (optional)
+            source: Source of the content (optional)
 
         Returns:
-            CrisisDetectionResult with findings
+            AnomalyResult with findings
         """
-        sensitivity = sensitivity_level or self.sensitivity_level
+        sensitivity = kwargs.get('sensitivity_level', self.sensitivity_level)
         detected_terms = []
         category_scores = {}
 
@@ -149,22 +206,22 @@ class CrisisDetectionService:
 
             if matches:
                 detected_terms.extend([m.strip() for m in matches])
-                config = CRISIS_PATTERNS[category]
+                config = MENTAL_HEALTH_PATTERNS[category]
                 category_scores[category] = {
                     'count': len(matches),
                     'urgency': config['urgency'],
                     'risk_level': config['risk_level'],
                 }
 
-        # Determine if crisis detected
-        is_crisis = len(detected_terms) > 0
+        # Determine if anomaly detected
+        is_anomaly = len(detected_terms) > 0
         primary_category = None
-        risk_level: RiskLevel = 'low'
-        urgency: Literal['routine', 'elevated', 'high', 'immediate'] = 'routine'
+        risk_level: RiskLevel = 'none'
+        urgency: Urgency = 'routine'
         confidence = 0.0
         recommended_action = "No intervention required."
 
-        if is_crisis:
+        if is_anomaly:
             # Find primary category (highest severity)
             severity_order = {'critical': 4, 'high': 3, 'moderate': 2, 'low': 1}
             primary_category = max(
@@ -201,24 +258,81 @@ class CrisisDetectionService:
         else:
             confidence = 0.0
 
-        return CrisisDetectionResult(
-            is_crisis=is_crisis,
+        return AnomalyResult(
+            is_anomaly=is_anomaly,
             category=primary_category,
             risk_level=risk_level,
             confidence=confidence,
             urgency=urgency,
             detected_terms=list(set(detected_terms)),
             recommended_action=recommended_action,
+            metadata={'sensitivity': sensitivity, 'source': kwargs.get('source')}
         )
 
+    def get_categories(self) -> List[str]:
+        """Return list of mental health categories this detector supports."""
+        return list(MENTAL_HEALTH_PATTERNS.keys())
 
-# Global instance
-_crisis_service: Optional[CrisisDetectionService] = None
+
+# =============================================================================
+# Backward Compatibility Layer
+# =============================================================================
+
+class CrisisDetectionService(MentalHealthAnomalyDetector):
+    """
+    Backward compatibility alias.
+
+    DEPRECATED: Use MentalHealthAnomalyDetector instead.
+    This alias exists for backward compatibility with existing code.
+    """
+    pass
 
 
-def get_crisis_service(sensitivity: Literal['low', 'medium', 'high'] = 'medium') -> CrisisDetectionService:
-    """Get or create the global crisis detection service instance."""
-    global _crisis_service
-    if _crisis_service is None:
-        _crisis_service = CrisisDetectionService(sensitivity_level=sensitivity)
-    return _crisis_service
+# =============================================================================
+# Global Instance Management
+# =============================================================================
+
+_anomaly_detector: Optional[AnomalyDetector] = None
+_detector_type: str = 'mental_health'
+
+
+def get_anomaly_detector(
+    detector_type: str = 'mental_health',
+    **kwargs
+) -> AnomalyDetector:
+    """
+    Get or create an anomaly detector instance.
+
+    Args:
+        detector_type: Type of detector ('mental_health', 'security', 'finance', etc.)
+        **kwargs: Detector-specific configuration
+
+    Returns:
+        Configured AnomalyDetector instance
+    """
+    global _anomaly_detector, _detector_type
+
+    # Return existing if same type
+    if _anomaly_detector is not None and _detector_type == detector_type:
+        return _anomaly_detector
+
+    # Create new detector
+    if detector_type == 'mental_health':
+        sensitivity = kwargs.get('sensitivity', 'medium')
+        _anomaly_detector = MentalHealthAnomalyDetector(sensitivity_level=sensitivity)
+    else:
+        raise ValueError(f"Unknown detector type: {detector_type}")
+
+    _detector_type = detector_type
+    return _anomaly_detector
+
+
+# Legacy function for backward compatibility
+def get_crisis_service(sensitivity: Literal['low', 'medium', 'high'] = 'medium') -> MentalHealthAnomalyDetector:
+    """
+    Get crisis detection service (legacy name).
+
+    DEPRECATED: Use get_anomaly_detector() instead.
+    This function exists for backward compatibility.
+    """
+    return get_anomaly_detector(detector_type='mental_health', sensitivity=sensitivity)

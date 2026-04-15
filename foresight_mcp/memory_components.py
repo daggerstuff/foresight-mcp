@@ -11,7 +11,10 @@ from .memory_types import (
     MemoryObject, MemoryScope, RetentionPolicy, EmotionalMetadata,
     EmpathyMetrics, StanceShift, SynthesisResult, GateResult, GateDecision
 )
-from .crisis_detection import CrisisDetectionService, get_crisis_service
+from .crisis_detection import (
+    AnomalyDetector, AnomalyResult,
+    MentalHealthAnomalyDetector, get_anomaly_detector
+)
 
 
 class MemoryCrisisTagger:
@@ -21,8 +24,14 @@ class MemoryCrisisTagger:
     Restored from src/lib/ai/memory/tagger.ts
     """
 
-    def __init__(self, crisis_service: Optional[CrisisDetectionService] = None):
-        self.crisis_service = crisis_service or get_crisis_service()
+    def __init__(self, detector: Optional[AnomalyDetector] = None):
+        """
+        Initialize the memory crisis tagger.
+
+        Args:
+            detector: AnomalyDetector instance (uses MentalHealthAnomalyDetector by default)
+        """
+        self.detector = detector or get_anomaly_detector(detector_type='mental_health')
 
     async def tag_memory(self, memory: MemoryObject, user_id: str) -> List[str]:
         """
@@ -38,24 +47,24 @@ class MemoryCrisisTagger:
         tags = []
 
         try:
-            # Use crisis detection service for analysis
-            result = self.crisis_service.detect_crisis(
+            # Use anomaly detector for analysis
+            result = self.detector.detect(
                 content=memory.content,
                 sensitivity_level='high',
                 user_id=user_id,
                 source='memory_tagger'
             )
 
-            if result.is_crisis:
-                tags.append('CRISIS_SIGNAL')
-                if result.category:
-                    tags.append(f"CRISIS_TYPE_{result.category.upper()}")
-                tags.append(f"RISK_{result.risk_level.upper()}")
+            if result.is_anomaly:
+                tags.append('ANOMALY_SIGNAL')
+            if result.category:
+                tags.append(f"ANOMALY_TYPE_{result.category.upper()}")
+            tags.append(f"RISK_{result.risk_level.upper()}")
 
-                if result.urgency == 'immediate':
-                    tags.append('URGENT_INTERVENTION')
+            if result.urgency == 'immediate':
+                tags.append('URGENT_INTERVENTION')
             elif result.confidence > 0.3:
-                # Minor concern but not a full crisis
+                # Minor concern but not a full anomaly
                 tags.append('CONCERN_SIGNAL')
                 if result.category:
                     tags.append(f"CONCERN_TYPE_{result.category.upper()}")
@@ -95,17 +104,17 @@ class SocraticGate:
             GateResult with decision, reason, and suggested tags
         """
         try:
-            # 1. Tag for crisis and context
+            # 1. Tag for anomaly and context
             tags = await self.tagger.tag_memory(memory, user_id)
-            is_crisis = 'CRISIS_SIGNAL' in tags
+            is_anomaly = 'ANOMALY_SIGNAL' in tags
 
             # 2. Determine Decision Level
             decision: GateDecision = 'auto'
             reason = 'Normal information flow.'
 
-            if is_crisis:
+            if is_anomaly:
                 decision = 'active'
-                reason = 'Crisis signal detected. Requires immediate professional review.'
+                reason = 'Anomaly signal detected. Requires immediate professional review.'
             elif any(t.startswith('CONCERN') for t in tags):
                 decision = 'passive'
                 reason = 'Moderate concern detected. Flagged for review in post-session summary.'
@@ -123,7 +132,7 @@ class SocraticGate:
                 decision=decision,
                 reason=reason,
                 suggested_tags=tags,
-                crisis_detected=is_crisis
+                anomaly_detected=is_anomaly
             )
 
         except Exception as e:
@@ -132,7 +141,7 @@ class SocraticGate:
                 decision='block',
                 reason='Internal safety gate error. Blocking ingestion for security.',
                 suggested_tags=['ERROR_GATE_FAILURE'],
-                crisis_detected=True
+                anomaly_detected=True
             )
 
 
@@ -241,8 +250,8 @@ class MemorySynthesizer:
             if m.scope in ('trait', 'fact'):
                 continue
 
-            # Never merge crisis signals
-            if 'CRISIS_SIGNAL' in (m.tags or []):
+            # Never merge anomaly signals
+            if 'ANOMALY_SIGNAL' in (m.tags or []):
                 continue
 
             score = self._calculate_importance(m)

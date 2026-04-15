@@ -17,7 +17,7 @@ from typing import Any, Optional, List, Dict
 
 from .memory_types import MemoryObject, GateDecision
 from .memory_components import MemoryCrisisTagger, SocraticGate
-from .crisis_detection import get_crisis_service
+from .crisis_detection import get_anomaly_detector
 
 logger = logging.getLogger("foresight_subconscious")
 
@@ -261,7 +261,7 @@ class SubconsciousAgent:
         self.user_id = user_id
         self.state = SubconsciousState(user_id=user_id)
         self.state.initialize_defaults()
-        self._tagger = MemoryCrisisTagger(get_crisis_service('high'))
+        self._tagger = MemoryCrisisTagger()
         self._gate = SocraticGate(self._tagger)
 
     async def process_transcript(
