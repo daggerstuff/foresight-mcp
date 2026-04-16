@@ -11,7 +11,8 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from dataclasses import dataclass
+from typing import Optional, List, Any
 
 from fastmcp import FastMCP
 
@@ -28,15 +29,22 @@ from .subconscious import get_subconscious_agent
 from .event_bus import get_event_bus, memory_stored, memory_retrieved, memory_updated, memory_deleted
 from .websocket.subscriptions import SubscriptionManager
 from .projections.builder import ProjectionBuilder
+from .rate_limiter import RateLimiter, RateLimitExceeded
 
 # Configuration
 DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
 DEFAULT_USER_ID = os.environ.get("USER", "user")
 DEFAULT_BANK_ID = "default"
+DEFAULT_TENANT_ID = "default"
 
 DB_PATH = os.environ.get("FORESIGHT_DB_PATH", DEFAULT_DB_PATH)
 USER_ID = os.environ.get("FORESIGHT_USER_ID", DEFAULT_USER_ID)
 BANK_ID = os.environ.get("FORESIGHT_BANK_ID", DEFAULT_BANK_ID)
+TENANT_ID = os.environ.get("FORESIGHT_TENANT_ID", DEFAULT_TENANT_ID)
+
+# Rate limiting configuration
+DEFAULT_RATE_LIMIT = 100  # requests per minute
+DEFAULT_BURST_LIMIT = 20  # burst requests
 
 
 def get_db_connection():
@@ -56,11 +64,24 @@ def init_db():
     conn.execute("DROP TABLE IF EXISTS memory_versions")
     conn.execute("DROP TABLE IF EXISTS memories")
 
-    # Main memories table with version tracking
+    # Tenant configurations table
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS tenants (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      rate_limit INTEGER DEFAULT 100,
+      burst_limit INTEGER DEFAULT 20,
+      created_at TEXT NOT NULL,
+      config TEXT DEFAULT '{}'
+    )
+    """)
+
+# Main memories table with tenant isolation
     conn.execute("""
     CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
       content TEXT NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
       scope TEXT DEFAULT 'session',
       retention TEXT DEFAULT 'short_term',
       category TEXT DEFAULT 'fact',
@@ -84,6 +105,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS memory_versions (
       id TEXT PRIMARY KEY,
       memory_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL DEFAULT 'default',
       content TEXT NOT NULL,
       version INTEGER NOT NULL,
       created_at TEXT NOT NULL,
@@ -95,13 +117,16 @@ def init_db():
     )
     """)
 
-    # Indexes for common queries
+    # Indexes for common queries (including tenant isolation)
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id)')
     conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(id)')
 
     conn.commit()
     conn.close()
@@ -124,8 +149,8 @@ def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
 
     # Verify memory exists
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
 
     if not row:
@@ -195,8 +220,8 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[s
 
     # Get current version to snapshot it
     current = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
 
     if not current:
@@ -396,8 +421,8 @@ def query_memories(query: str, user_id: Optional[str] = None,
     uid = user_id or USER_ID
     conn = get_db_connection()
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND content LIKE ? LIMIT ? OFFSET ?",
-        (uid, f"%{query}%", limit, offset)
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? LIMIT ? OFFSET ?",
+        (uid, TENANT_ID, f"%{query}%", limit, offset)
     ).fetchall()
     conn.close()
 
@@ -420,8 +445,8 @@ def list_memories(user_id: Optional[str] = None,
     uid = user_id or USER_ID
     conn = get_db_connection()
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (uid, limit, offset)
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (uid, TENANT_ID, limit, offset)
     ).fetchall()
     conn.close()
 
@@ -438,8 +463,8 @@ def get_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
     conn.close()
 
@@ -484,8 +509,8 @@ def update_memory(memory_id: str, content: Optional[str] = None,
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
 
     if not row:
@@ -566,7 +591,7 @@ def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     event_bus = get_event_bus()
     event_bus.publish(memory_deleted(memory_id=memory_id, actor=uid))
 
-    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ?", (memory_id, uid))
+    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, TENANT_ID))
     conn.commit()
     conn.close()
     return f"Deleted memory {memory_id}"
@@ -651,8 +676,8 @@ def archive_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
 
     if not row:
@@ -714,8 +739,8 @@ def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = No
 
     # Verify memory exists
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
 
     if not row:
@@ -1323,3 +1348,206 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# =============================================================================
+# Multi-Tenant Isolation Functions
+# =============================================================================
+
+@dataclass
+class TenantContext:
+    """Tenant context for isolation."""
+    tenant_id: str
+    rate_limit: int = 100
+    burst_limit: int = 20
+
+
+_tenant_context: TenantContext | None = None
+
+
+def get_tenant_context() -> TenantContext:
+    """Get current tenant context."""
+    global _tenant_context
+    if _tenant_context is None:
+        _tenant_context = TenantContext(
+            tenant_id=TENANT_ID,
+            rate_limit=DEFAULT_RATE_LIMIT,
+            burst_limit=DEFAULT_BURST_LIMIT
+        )
+    return _tenant_context
+
+
+def set_tenant_context(tenant_id: str) -> None:
+    """Set tenant context for current session."""
+    global _tenant_context
+    _tenant_context = TenantContext(
+        tenant_id=tenant_id,
+        rate_limit=DEFAULT_RATE_LIMIT,
+        burst_limit=DEFAULT_BURST_LIMIT
+    )
+
+
+@mcp.tool()
+def create_tenant(tenant_id: str, name: str, rate_limit: int = 100, burst_limit: int = 20) -> str:
+    """
+    Create a new tenant with isolated rate limits.
+
+    Args:
+        tenant_id: Unique tenant identifier
+        name: Human-readable tenant name
+        rate_limit: Requests per minute limit
+        burst_limit: Burst request limit
+
+    Returns:
+        Confirmation message
+    """
+    conn = get_db_connection()
+    try:
+        conn.execute("""
+        INSERT INTO tenants (id, name, rate_limit, burst_limit, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, (
+            tenant_id, name, rate_limit, burst_limit,
+            datetime.now(timezone.utc).isoformat()
+        ))
+        conn.commit()
+        return f"Created tenant '{name}' ({tenant_id}) with rate_limit={rate_limit}/min, burst={burst_limit}"
+    except sqlite3.IntegrityError:
+        return f"Tenant '{tenant_id}' already exists"
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def get_tenant(tenant_id: str) -> str:
+    """
+    Get tenant configuration.
+
+    Args:
+        tenant_id: Tenant identifier
+
+    Returns:
+        Tenant configuration as JSON
+    """
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+    conn.close()
+
+    if not row:
+        return f"Tenant '{tenant_id}' not found"
+
+    return json.dumps({
+        "id": row["id"],
+        "name": row["name"],
+        "rate_limit": row["rate_limit"],
+        "burst_limit": row["burst_limit"],
+        "created_at": row["created_at"],
+        "config": json.loads(row["config"])
+    }, indent=2)
+
+
+@mcp.tool()
+def list_tenants() -> str:
+    """
+    List all tenants.
+
+    Returns:
+        List of tenants with their configurations
+    """
+    conn = get_db_connection()
+    rows = conn.execute("SELECT * FROM tenants ORDER BY created_at").fetchall()
+    conn.close()
+
+    if not rows:
+        return "No tenants found"
+
+    result = ["Tenants:", ""]
+    for row in rows:
+        result.append(f"- {row['id']}: {row['name']} (rate={row['rate_limit']}/min, burst={row['burst_limit']})")
+    return "\n".join(result)
+
+
+@mcp.tool()
+def update_tenant_config(tenant_id: str, config: dict) -> str:
+    """
+    Update tenant configuration.
+
+    Args:
+        tenant_id: Tenant identifier
+        config: Configuration dictionary to merge
+
+    Returns:
+        Updated configuration
+    """
+    conn = get_db_connection()
+
+    # Get current config
+    row = conn.execute("SELECT config FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+    if not row:
+        conn.close()
+        return f"Tenant '{tenant_id}' not found"
+
+    # Merge configs
+    current = json.loads(row["config"])
+    current.update(config)
+
+    conn.execute("UPDATE tenants SET config = ? WHERE id = ?",
+                 (json.dumps(current), tenant_id))
+    conn.commit()
+    conn.close()
+
+    return f"Updated config for tenant '{tenant_id}'"
+
+
+@mcp.tool()
+def switch_tenant(tenant_id: str) -> str:
+    """
+    Switch current tenant context.
+
+    Args:
+        tenant_id: Tenant to switch to
+
+    Returns:
+        Confirmation message
+    """
+    # Verify tenant exists
+    conn = get_db_connection()
+    row = conn.execute("SELECT * FROM tenants WHERE id = ?", (tenant_id,)).fetchone()
+    conn.close()
+
+    if not row:
+        return f"Tenant '{tenant_id}' not found"
+
+    # Update context
+    set_tenant_context(tenant_id)
+    return f"Switched to tenant '{tenant_id}'"
+
+
+@mcp.tool()
+def get_tenant_isolation_status() -> str:
+    """
+    Get multi-tenant isolation status.
+
+    Returns:
+        JSON status of isolation configuration
+    """
+    conn = get_db_connection()
+
+    # Count tenants
+    tenant_count = conn.execute("SELECT COUNT(*) FROM tenants").fetchone()[0]
+
+    # Count memories per tenant
+    tenant_memories = conn.execute("""
+        SELECT tenant_id, COUNT(*) as count
+        FROM memories
+        GROUP BY tenant_id
+    """).fetchall()
+
+    conn.close()
+
+    return json.dumps({
+        "current_tenant": TENANT_ID,
+        "total_tenants": tenant_count,
+        "memories_by_tenant": [{"tenant_id": row[0], "count": row[1]} for row in tenant_memories],
+        "isolation": "enabled"
+    }, indent=2)

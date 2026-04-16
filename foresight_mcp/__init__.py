@@ -13,6 +13,7 @@ Includes:
 - Event bus with persistence and audit trail
 - Event hook system for extensibility (HTTP webhooks, callables, async)
 - Memory versioning with rollback capabilities
+- Multi-tenant isolation with rate limiting
 """
 from .server import (
     mcp,
@@ -29,6 +30,13 @@ from .server import (
     get_memory_versions,
     rollback_memory,
     diff_memories,
+    # Multi-tenant isolation
+    create_tenant,
+    get_tenant,
+    list_tenants,
+    update_tenant_config,
+    switch_tenant,
+    get_tenant_isolation_status,
     # Subconscious tools
     get_subconscious_blocks,
     get_subconscious_block,
@@ -90,7 +98,7 @@ from .projections.reports import (
     AnomalyReport,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
     "mcp",
     "store_memory",
@@ -106,6 +114,13 @@ __all__ = [
     "get_memory_versions",
     "rollback_memory",
     "diff_memories",
+    # Multi-tenant isolation
+    "create_tenant",
+    "get_tenant",
+    "list_tenants",
+    "update_tenant_config",
+    "switch_tenant",
+    "get_tenant_isolation_status",
     # Subconscious
     "get_subconscious_blocks",
     "get_subconscious_block",
