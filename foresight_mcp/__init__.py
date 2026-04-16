@@ -83,6 +83,61 @@ from .event_bus import (
     Event,
     EventType,
 )
+
+# Hook system exports
+from .hooks import (
+    get_hook_executor,
+    HookExecutor,
+    HookRegistry,
+    HookRegistration,
+    HookType,
+    list_hooks,
+    register_hook,
+    unregister_hook,
+)
+
+# Stream producer exports (optional - may not have kafka-python installed)
+try:
+    from .stream_producer import (
+        StreamProducer,
+        StreamPublisher,
+        StreamEvent,
+        StreamType,
+        KafkaProducer,
+        KinesisProducer,
+        MockProducer,
+        create_stream_producer,
+    )
+    _stream_producer_available = True
+except ImportError:
+    _stream_producer_available = False
+    # Create stub classes for when kafka-python is not installed
+    class StreamProducer: pass  # type: ignore
+    class StreamPublisher: pass  # type: ignore
+    class StreamEvent: pass  # type: ignore
+    class StreamType: pass  # type: ignore
+    class KafkaProducer: pass  # type: ignore
+    class KinesisProducer: pass  # type: ignore
+    class MockProducer: pass  # type: ignore
+    def create_stream_producer(*args, **kwargs):  # type: ignore
+        raise ImportError("kafka-python or boto3 not installed")
+
+# Consumer group exports (optional - may not have kafka-python installed)
+try:
+    from .consumer_group import (
+        KafkaConsumerGroup,
+        ConsumerRecord,
+        ConsumerStats,
+        ConsumerState,
+    )
+    _consumer_group_available = True
+except ImportError:
+    _consumer_group_available = False
+    # Create stub classes
+    class KafkaConsumerGroup: pass  # type: ignore
+    class ConsumerRecord: pass  # type: ignore
+    class ConsumerStats: pass  # type: ignore
+    class ConsumerState: pass  # type: ignore
 # Hook system exports
 from .hooks import (
     get_hook_executor,
@@ -98,6 +153,14 @@ from .hooks import (
 from .websocket.subscriptions import (
     SubscriptionManager,
     Subscription,
+    get_subscription_manager,
+    reset_subscription_manager,
+)
+from .websocket.server import (
+    WebSocketServer,
+    WebSocketHandler,
+    ConnectionState,
+    Connection,
 )
 # Projections exports
 from .projections.builder import ProjectionBuilder
@@ -167,4 +230,18 @@ __all__ = [
     "BlockScope",
     "get_registry",
     "initialize_default_blocks",
+    # Stream processing
+    "StreamProducer",
+    "StreamPublisher",
+    "StreamEvent",
+    "StreamType",
+    "KafkaProducer",
+    "KinesisProducer",
+    "MockProducer",
+    "create_stream_producer",
+    # Consumer group
+    "KafkaConsumerGroup",
+    "ConsumerRecord",
+    "ConsumerStats",
+    "ConsumerState",
 ]

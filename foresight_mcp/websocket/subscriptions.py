@@ -213,3 +213,24 @@ class SubscriptionManager:
             "unique_connections": len(self._connection_subscriptions),
             "by_status": by_status,
         }
+
+
+# =============================================================================
+# Global Subscription Manager
+# =============================================================================
+
+_subscription_manager: Optional[SubscriptionManager] = None
+
+
+def get_subscription_manager() -> SubscriptionManager:
+    """Get the global subscription manager instance."""
+    global _subscription_manager
+    if _subscription_manager is None:
+        _subscription_manager = SubscriptionManager()
+    return _subscription_manager
+
+
+def reset_subscription_manager() -> None:
+    """Reset the global subscription manager (for testing)."""
+    global _subscription_manager
+    _subscription_manager = None

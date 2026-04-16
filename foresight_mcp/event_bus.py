@@ -236,16 +236,23 @@ class EventBus:
     - Event filtering by type
     - Event persistence
     - Error handling with continue-on-error
+    - Stream publishing (Kafka/Kinesis)
     """
 
-    def __init__(self, store: Optional[EventStore] = None):
+    def __init__(
+        self,
+        store: Optional[EventStore] = None,
+        stream_publisher: Optional[Any] = None,
+    ):
         """Initialize event bus.
 
         Args:
             store: Event store for persistence (default: in-memory store)
+            stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
         """
         self._handlers: Dict[EventType, List[EventHandler]] = {}
         self._store = store
+        self._stream_publisher = stream_publisher
 
     def publish(self, event: Event) -> None:
         """
@@ -256,6 +263,14 @@ class EventBus:
         # Persist event
         if self._store:
             self._store.append(event)
+
+        # Publish to stream (Kafka/Kinesis) if configured
+        if self._stream_publisher:
+            try:
+                self._stream_publisher.publish_event(event)
+            except Exception:
+                # Don't let stream publishing failures block the event
+                pass
 
         # Call handlers
         handlers = self._handlers.get(event.event_type, [])
@@ -297,12 +312,16 @@ _event_bus: Optional[EventBus] = None
 _event_store: Optional[EventStore] = None
 
 
-def get_event_bus() -> EventBus:
-    """Get the global event bus instance."""
+def get_event_bus(stream_publisher: Optional[Any] = None) -> EventBus:
+    """Get the global event bus instance.
+
+    Args:
+        stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
+    """
     global _event_bus, _event_store
     if _event_bus is None:
         _event_store = EventStore()
-        _event_bus = EventBus(_event_store)
+        _event_bus = EventBus(_event_store, stream_publisher)
     return _event_bus
 
 
