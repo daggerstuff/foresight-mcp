@@ -1551,3 +1551,268 @@ def get_tenant_isolation_status() -> str:
         "memories_by_tenant": [{"tenant_id": row[0], "count": row[1]} for row in tenant_memories],
         "isolation": "enabled"
     }, indent=2)
+
+
+# =============================================================================
+# Compliance Export Tools (HIPAA, SOC2, GDPR)
+# =============================================================================
+
+from .compliance import ComplianceExporter, ComplianceExport
+
+@mcp.tool()
+def compliance_hipaa_access_log(start_date: Optional[str] = None,
+                                end_date: Optional[str] = None,
+                                user_id: Optional[str] = None,
+                                format: str = 'json') -> str:
+    """
+    Generate HIPAA-compliant access log.
+    
+    Args:
+        start_date: ISO date filter (optional)
+        end_date: ISO date filter (optional)
+        user_id: Filter by specific user (optional)
+        format: Output format (json or csv)
+    
+    Returns:
+        HIPAA access log in specified format
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.hipaa_access_log(start_date, end_date, user_id)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_hipaa_modification_log(start_date: Optional[str] = None,
+                                       end_date: Optional[str] = None,
+                                       user_id: Optional[str] = None,
+                                       format: str = 'json') -> str:
+    """
+    Generate HIPAA-compliant modification log.
+    
+    Args:
+        start_date: ISO date filter (optional)
+        end_date: ISO date filter (optional)
+        user_id: Filter by specific user (optional)
+        format: Output format (json or csv)
+    
+    Returns:
+        HIPAA modification log in specified format
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.hipaa_modification_log(start_date, end_date, user_id)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_hipaa_user_activity(user_id: str,
+                                    start_date: Optional[str] = None,
+                                    end_date: Optional[str] = None,
+                                    format: str = 'json') -> str:
+    """
+    Generate HIPAA user activity report.
+    
+    Args:
+        user_id: User ID to report on (required)
+        start_date: ISO date filter (optional)
+        end_date: ISO date filter (optional)
+        format: Output format (json or csv)
+    
+    Returns:
+        HIPAA user activity report
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.hipaa_user_activity(user_id, start_date, end_date)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_soc2_change_history(start_date: Optional[str] = None,
+                                    end_date: Optional[str] = None,
+                                    format: str = 'json') -> str:
+    """
+    Generate SOC2 change history report.
+    
+    Args:
+        start_date: ISO date filter (optional)
+        end_date: ISO date filter (optional)
+        format: Output format (json or csv)
+    
+    Returns:
+        SOC2 change history report
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.soc2_change_history(start_date, end_date)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_soc2_access_review(user_ids: Optional[str] = None,
+                                   format: str = 'json') -> str:
+    """
+    Generate SOC2 access control review report.
+    
+    Args:
+        user_ids: Comma-separated user IDs (optional, all if omitted)
+        format: Output format (json or csv)
+    
+    Returns:
+        SOC2 access review report
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    user_id_list = user_ids.split(',') if user_ids else None
+    exporter = ComplianceExporter(events)
+    export = exporter.soc2_access_review(user_id_list)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_soc2_monitoring(start_date: Optional[str] = None,
+                                end_date: Optional[str] = None,
+                                format: str = 'json') -> str:
+    """
+    Generate SOC2 monitoring report.
+    
+    Args:
+        start_date: ISO date filter (optional)
+        end_date: ISO date filter (optional)
+        format: Output format (json or csv)
+    
+    Returns:
+        SOC2 monitoring report
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.soc2_monitoring_report(start_date, end_date)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_gdpr_data_export(user_id: str,
+                                include_deleted: bool = False,
+                                format: str = 'json') -> str:
+    """
+    Generate GDPR data portability export.
+    
+    Args:
+        user_id: User ID to export data for (required)
+        include_deleted: Include deleted items (default: False)
+        format: Output format (json or csv)
+    
+    Returns:
+        GDPR data export
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.gdpr_data_export(user_id, include_deleted)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_gdpr_erasure_certification(user_id: str,
+                                          deletion_date: Optional[str] = None,
+                                          format: str = 'json') -> str:
+    """
+    Generate GDPR erasure certification.
+    
+    Args:
+        user_id: User ID for erasure certification (required)
+        deletion_date: ISO date of deletion (default: now)
+        format: Output format (json or csv)
+    
+    Returns:
+        GDPR erasure certification
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    export = exporter.gdpr_erasure_certification(user_id, deletion_date)
+    
+    if format == 'csv':
+        return exporter.to_csv(export)
+    return exporter.to_json(export)
+
+
+@mcp.tool()
+def compliance_save_report(report_name: str, output_path: str, 
+                           format: str = 'json') -> str:
+    """
+    Save a compliance report to file.
+    
+    Args:
+        report_name: Name of report to save (e.g., 'hipaa_access_log')
+        output_path: Path to save the file
+        format: Output format (json or csv)
+    
+    Returns:
+        Path to saved file
+    """
+    from .event_bus import get_event_bus
+    event_bus = get_event_bus()
+    events = event_bus._store.get_all(limit=1000) if event_bus._store else []
+    
+    exporter = ComplianceExporter(events)
+    
+    # Map report names to functions
+    report_funcs = {
+        'hipaa_access_log': lambda: exporter.hipaa_access_log(),
+        'hipaa_modification_log': lambda: exporter.hipaa_modification_log(),
+        'soc2_change_history': lambda: exporter.soc2_change_history(),
+        'soc2_access_review': lambda: exporter.soc2_access_review(),
+        'soc2_monitoring': lambda: exporter.soc2_monitoring_report(),
+        'gdpr_data_export': lambda: exporter.gdpr_data_export('default'),
+        'gdpr_erasure_certification': lambda: exporter.gdpr_erasure_certification('default'),
+    }
+    
+    if report_name not in report_funcs:
+        return f"Unknown report: {report_name}. Available: {list(report_funcs.keys())}"
+    
+    export = report_funcs[report_name]()
+    return exporter.save_to_file(export, output_path, format)

@@ -14,6 +14,7 @@ Includes:
 - Event hook system for extensibility (HTTP webhooks, callables, async)
 - Memory versioning with rollback capabilities
 - Multi-tenant isolation with rate limiting
+- Compliance exporters for HIPAA, SOC2, GDPR
 """
 from .server import (
     mcp,
@@ -37,6 +38,16 @@ from .server import (
     update_tenant_config,
     switch_tenant,
     get_tenant_isolation_status,
+    # Compliance exporters
+    compliance_hipaa_access_log,
+    compliance_hipaa_modification_log,
+    compliance_hipaa_user_activity,
+    compliance_soc2_change_history,
+    compliance_soc2_access_review,
+    compliance_soc2_monitoring,
+    compliance_gdpr_data_export,
+    compliance_gdpr_erasure_certification,
+    compliance_save_report,
     # Subconscious tools
     get_subconscious_blocks,
     get_subconscious_block,
@@ -98,7 +109,7 @@ from .projections.reports import (
     AnomalyReport,
 )
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__ = [
     "mcp",
     "store_memory",
@@ -121,6 +132,16 @@ __all__ = [
     "update_tenant_config",
     "switch_tenant",
     "get_tenant_isolation_status",
+    # Compliance exporters
+    "compliance_hipaa_access_log",
+    "compliance_hipaa_modification_log",
+    "compliance_hipaa_user_activity",
+    "compliance_soc2_change_history",
+    "compliance_soc2_access_review",
+    "compliance_soc2_monitoring",
+    "compliance_gdpr_data_export",
+    "compliance_gdpr_erasure_certification",
+    "compliance_save_report",
     # Subconscious
     "get_subconscious_blocks",
     "get_subconscious_block",
