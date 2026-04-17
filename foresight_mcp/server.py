@@ -1816,3 +1816,392 @@ def compliance_save_report(report_name: str, output_path: str,
     
     export = report_funcs[report_name]()
     return exporter.save_to_file(export, output_path, format)
+
+
+# =============================================================================
+# Temporal Memory Tools
+# =============================================================================
+
+@mcp.tool()
+def get_memories_from_window(
+    window: str,
+    user_id: Optional[str] = None,
+    limit: int = 50,
+    min_importance: float = 0.1,
+    category: Optional[str] = None
+) -> str:
+    """
+    Get memories from a time window.
+
+    Args:
+        window: Time window (today/week/month/year)
+        user_id: Optional user ID override
+        limit: Max results (default: 50)
+        min_importance: Minimum importance threshold (default: 0.1)
+        category: Optional category filter
+
+    Returns:
+        JSON list of memories with temporal metadata
+    """
+    from .temporal_queries import get_temporal_query_builder
+
+    valid_windows = ['today', 'week', 'month', 'year']
+    if window not in valid_windows:
+        return f"Invalid window. Must be one of: {', '.join(valid_windows)}"
+
+    uid = user_id or USER_ID
+    builder = get_temporal_query_builder()
+
+    results = builder.get_memories_from_window(
+        user_id=uid,
+        window=window,  # type: ignore
+        limit=limit,
+        min_importance=min_importance,
+        category=category
+    )
+
+    return json.dumps([
+        {
+            'memory_id': r.memory_id,
+            'content': r.content,
+            'importance': r.importance,
+            'strength_trend': r.strength_trend,
+            'activation_count': r.activation_count,
+            'created_at': r.created_at,
+            'accessed_at': r.accessed_at,
+            'category': r.category,
+        }
+        for r in results
+    ], indent=2)
+
+
+@mcp.tool()
+def get_memories_by_trend(
+    trend: str,
+    user_id: Optional[str] = None,
+    limit: int = 50,
+    category: Optional[str] = None
+) -> str:
+    """
+    Get memories by freshness trend.
+
+    Args:
+        trend: Trend type (stable/strengthening/weakening/stale)
+        user_id: Optional user ID override
+        limit: Max results (default: 50)
+        category: Optional category filter
+
+    Returns:
+        JSON list of memories with the specified trend
+    """
+    from .temporal_queries import get_temporal_query_builder
+
+    valid_trends = ['stable', 'strengthening', 'weakening', 'stale']
+    if trend not in valid_trends:
+        return f"Invalid trend. Must be one of: {', '.join(valid_trends)}"
+
+    uid = user_id or USER_ID
+    builder = get_temporal_query_builder()
+
+    results = builder.get_memories_by_trend(
+        user_id=uid,
+        trend=trend,  # type: ignore
+        limit=limit,
+        category=category
+    )
+
+    return json.dumps([
+        {
+            'memory_id': r.memory_id,
+            'content': r.content,
+            'importance': r.importance,
+            'strength_trend': r.strength_trend,
+            'activation_count': r.activation_count,
+            'created_at': r.created_at,
+        }
+        for r in results
+    ], indent=2)
+
+
+@mcp.tool()
+def analyze_memory_trends(
+    user_id: Optional[str] = None,
+    timeframe: str = '30 days'
+) -> str:
+    """
+    Analyze memory trends over time.
+
+    Args:
+        user_id: Optional user ID override
+        timeframe: Timeframe for analysis (e.g., '30 days', '7 days')
+
+    Returns:
+        JSON with trend analysis including daily stats and category breakdown
+    """
+    from .temporal_queries import get_temporal_query_builder
+    from .temporal_service import get_temporal_service
+
+    uid = user_id or USER_ID
+    builder = get_temporal_query_builder()
+    service = get_temporal_service()
+
+    # Get trend analysis
+    trend_analysis = builder.analyze_trends(user_id=uid, timeframe=timeframe)
+
+    # Get overall stats
+    stats = service.get_memory_stats(user_id=uid)
+
+    result = {
+        'timeframe': timeframe,
+        'stats': stats,
+        'trend_analysis': trend_analysis,
+    }
+
+    return json.dumps(result, indent=2)
+
+
+@mcp.tool()
+def update_memory_decay(
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Trigger batch decay update for all user memories.
+
+    Should be run periodically (e.g., hourly) to keep importance values current.
+
+    Args:
+        user_id: Optional user ID override
+
+    Returns:
+        Number of memories updated
+    """
+    from .temporal_service import get_temporal_service
+
+    uid = user_id or USER_ID
+    service = get_temporal_service()
+
+    count = service.batch_update_decay(user_id=uid)
+    return f"Updated decay for {count} memories"
+
+
+@mcp.tool()
+def get_memory_stats(
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Get temporal statistics for user memories.
+
+    Args:
+        user_id: Optional user ID override
+
+    Returns:
+        JSON with memory statistics including counts by trend
+    """
+    from .temporal_service import get_temporal_service
+
+    uid = user_id or USER_ID
+    service = get_temporal_service()
+
+    stats = service.get_memory_stats(user_id=uid)
+    return json.dumps(stats, indent=2)
+
+
+@mcp.tool()
+def run_temporal_migrations_tool() -> str:
+    """
+    Run temporal schema migrations.
+
+    Adds temporal fields to memories table for decay tracking and trend analysis.
+
+    Returns:
+        Confirmation message
+    """
+    from .temporal_schema import run_temporal_migrations
+
+    try:
+        run_temporal_migrations(DB_PATH)
+        return f"Temporal migrations completed successfully on {DB_PATH}"
+    except Exception as e:
+        return f"Migration failed: {e}"
+
+
+# =============================================================================
+# Entity and Graph Tools
+# =============================================================================
+
+@mcp.tool()
+def extract_entities(
+    content: str,
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Extract entities and relationships from text.
+
+    Args:
+        content: Text to analyze
+        user_id: Optional user ID override
+
+    Returns:
+        JSON with extracted entities and relationships
+    """
+    import asyncio
+    from .entity_extractor import get_entity_extractor
+
+    uid = user_id or USER_ID
+    extractor = get_entity_extractor()
+
+    result = asyncio.run(extractor.extract(content))
+
+    return json.dumps({
+        'user_id': uid,
+        'entities': [e.to_dict() for e in result.entities],
+        'relationships': [r.to_dict() for r in result.relationships],
+    }, indent=2)
+
+
+@mcp.tool()
+def get_entities_by_type(
+    entity_type: str,
+    user_id: Optional[str] = None,
+    limit: int = 50
+) -> str:
+    """
+    Get all entities of a specific type.
+
+    Args:
+        entity_type: Entity type (person/place/concept/event/emotion/object)
+        user_id: Optional user ID override
+        limit: Max results (default: 50)
+
+    Returns:
+        JSON list of entities
+    """
+    from .graph_store import get_graph_store
+
+    valid_types = ['person', 'place', 'concept', 'event', 'emotion', 'object']
+    if entity_type not in valid_types:
+        return f"Invalid entity_type. Must be one of: {', '.join(valid_types)}"
+
+    uid = user_id or USER_ID
+    store = get_graph_store()
+
+    entities = store.get_entities_by_type(uid, entity_type, limit)
+
+    return json.dumps([e.to_dict() for e in entities], indent=2)
+
+
+@mcp.tool()
+def find_entities_by_name(
+    name: str,
+    user_id: Optional[str] = None,
+    limit: int = 10
+) -> str:
+    """
+    Find entities by name (partial match).
+
+    Args:
+        name: Name to search for
+        user_id: Optional user ID override
+        limit: Max results (default: 10)
+
+    Returns:
+        JSON list of matching entities
+    """
+    from .graph_store import get_graph_store
+
+    uid = user_id or USER_ID
+    store = get_graph_store()
+
+    entities = store.find_entities_by_name(uid, name, limit)
+
+    return json.dumps([e.to_dict() for e in entities], indent=2)
+
+
+@mcp.tool()
+def get_relationships(
+    entity_id: str,
+    user_id: Optional[str] = None,
+    direction: str = 'both'
+) -> str:
+    """
+    Get relationships for an entity.
+
+    Args:
+        entity_id: Entity ID
+        user_id: Optional user ID override
+        direction: Direction filter (in/out/both)
+
+    Returns:
+        JSON list of relationships
+    """
+    from .graph_store import get_graph_store
+
+    valid_directions = ['in', 'out', 'both']
+    if direction not in valid_directions:
+        return f"Invalid direction. Must be one of: {', '.join(valid_directions)}"
+
+    uid = user_id or USER_ID
+    store = get_graph_store()
+
+    relationships = store.get_relationships(entity_id, uid, direction)
+
+    return json.dumps([r.to_dict() for r in relationships], indent=2)
+
+
+@mcp.tool()
+def traverse_graph(
+    start_entity_id: str,
+    user_id: Optional[str] = None,
+    max_depth: int = 2,
+    max_results: int = 50
+) -> str:
+    """
+    Traverse graph from a starting entity.
+
+    Args:
+        start_entity_id: Starting entity ID
+        user_id: Optional user ID override
+        max_depth: Maximum traversal depth (default: 2)
+        max_results: Maximum results (default: 50)
+
+    Returns:
+        JSON with traversed nodes and edges
+    """
+    from .graph_store import get_graph_store
+
+    uid = user_id or USER_ID
+    store = get_graph_store()
+
+    result = store.traverse_graph(start_entity_id, uid, max_depth, max_results)
+
+    return json.dumps({
+        'nodes': [e.to_dict() for e in result.nodes],
+        'edges': [r.to_dict() for r in result.edges],
+    }, indent=2)
+
+
+@mcp.tool()
+def link_memory_to_entities(
+    memory_id: str,
+    entity_ids: list,
+    user_id: Optional[str] = None
+) -> str:
+    """
+    Link a memory to entities.
+
+    Args:
+        memory_id: Memory ID
+        entity_ids: List of entity IDs to link
+        user_id: Optional user ID override
+
+    Returns:
+        Confirmation message
+    """
+    from .graph_store import get_graph_store
+
+    uid = user_id or USER_ID
+    store = get_graph_store()
+
+    store.link_memory_to_entities(memory_id, entity_ids, uid)
+
+    return f"Linked memory {memory_id} to {len(entity_ids)} entities"

@@ -64,6 +64,40 @@ from .server import (
     audit_export,
     audit_summary,
 )
+# Temporal memory exports
+from .temporal_service import (
+    TemporalService,
+    DecayConfig,
+    FreshnessTrend,
+    get_temporal_service,
+    reset_temporal_service,
+)
+from .temporal_queries import (
+    TemporalQueryBuilder,
+    TemporalQueryResult,
+    TimeWindow,
+    get_temporal_query_builder,
+    reset_temporal_query_builder,
+)
+from .temporal_schema import (
+    run_temporal_migrations,
+    initialize_decay_config,
+)
+# Entity and graph exports
+from .entity_extractor import (
+    EntityExtractor,
+    Entity,
+    Relationship,
+    ExtractionResult,
+    get_entity_extractor,
+    reset_entity_extractor,
+)
+from .graph_store import (
+    GraphStore,
+    GraphTraversalResult,
+    get_graph_store,
+    reset_graph_store,
+)
 # Block registry exports
 from .block_registry import (
     BlockRegistry,
