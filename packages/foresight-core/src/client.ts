@@ -9,7 +9,9 @@ import {
   StoreMemoryResponse,
   MemoryObject,
   MemoryStatus,
+  OperationType,
 } from './types';
+import { SyncManager } from './sync';
 
 export interface ForesightClientOptions {
   /** Base URL for MCP server or local path */
@@ -20,6 +22,8 @@ export interface ForesightClientOptions {
   bankId?: string;
   /** Timeout in milliseconds */
   timeout?: number;
+  /** Optional sync manager for offline support */
+  syncManager?: SyncManager;
 }
 
 export class ForesightClient {
@@ -27,12 +31,14 @@ export class ForesightClient {
   public readonly userId: string;
   public readonly bankId: string;
   public readonly timeout: number;
+  public readonly sync?: SyncManager;
 
   constructor(options: ForesightClientOptions = {}) {
     this.serverUrl = options.serverUrl;
     this.userId = options.userId || process.env.FORESIGHT_USER_ID || 'default';
     this.bankId = options.bankId || process.env.FORESIGHT_BANK_ID || 'default';
     this.timeout = options.timeout || 30000;
+    this.sync = options.syncManager;
   }
 
   /**
@@ -44,8 +50,23 @@ export class ForesightClient {
       category: string;
       scope: MemoryScope;
       retention: RetentionPolicy;
+      offline: boolean;
     }> = {}
   ): Promise<StoreMemoryResponse> {
+    if (options.offline && this.sync) {
+      const opId = await this.sync.enqueueOperation({
+        type: OperationType.Create,
+        entityType: 'memory',
+        entityId: 'pending', // Will be assigned by server
+        payload: { content, ...options },
+      });
+      return {
+        id: opId,
+        content,
+        decision: 'queued',
+        reason: 'Client in offline mode, operation queued',
+      };
+    }
     // Implementation would call MCP server or local Python interface
     throw new Error('Not implemented - requires MCP connection');
   }

@@ -57,6 +57,19 @@ export enum HookType {
   Async = 'async',
 }
 
+export enum SyncStatus {
+  Idle = 'idle',
+  Syncing = 'syncing',
+  Offline = 'offline',
+  Error = 'error',
+}
+
+export enum OperationType {
+  Create = 'create',
+  Update = 'update',
+  Delete = 'delete',
+}
+
 // ============================================================================
 // Schemas
 // ============================================================================
@@ -137,6 +150,29 @@ export const EventSchema = z.object({
   metadata: z.record(z.unknown()),
 });
 
+export const VectorClockSchema = z.record(z.number());
+
+export const OperationSchema = z.object({
+  id: z.string(),
+  type: z.nativeEnum(OperationType),
+  entityType: z.string(),
+  entityId: z.string(),
+  payload: z.record(z.unknown()),
+  createdAt: z.string(),
+  retryCount: z.number(),
+  lastAttempt: z.string().optional(),
+  vectorClock: VectorClockSchema,
+});
+
+export const SyncProgressSchema = z.object({
+  status: z.nativeEnum(SyncStatus),
+  totalOperations: z.number(),
+  pendingOperations: z.number(),
+  syncedOperations: z.number(),
+  errors: z.array(z.string()),
+  lastSync: z.string().optional(),
+});
+
 // ============================================================================
 // Type exports
 // ============================================================================
@@ -148,6 +184,9 @@ export type MemoryBlockSchemaType = z.infer<typeof MemoryBlockSchemaSchema>;
 export type MemoryBlock = z.infer<typeof MemoryBlockSchema>;
 export type HookRegistration = z.infer<typeof HookRegistrationSchema>;
 export type Event = z.infer<typeof EventSchema>;
+export type VectorClockType = z.infer<typeof VectorClockSchema>;
+export type Operation = z.infer<typeof OperationSchema>;
+export type SyncProgress = z.infer<typeof SyncProgressSchema>;
 
 // ============================================================================
 // API Response Types

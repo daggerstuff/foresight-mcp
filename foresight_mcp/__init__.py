@@ -169,6 +169,17 @@ from .crdt import (
     ORSet,
     LWWMap,
 )
+# Sync exports
+from .sync import (
+    SyncManager,
+    SyncStatus,
+    OperationType,
+    Operation,
+    OperationQueue,
+    SyncProgress,
+    get_sync_manager,
+    reset_sync_manager,
+)
 # Projections exports
 from .projections.builder import ProjectionBuilder
 from .projections.reports import (
@@ -265,4 +276,13 @@ __all__ = [
     "LWWRegister",
     "ORSet",
     "LWWMap",
+    # Sync
+    "SyncManager",
+    "SyncStatus",
+    "OperationType",
+    "Operation",
+    "OperationQueue",
+    "SyncProgress",
+    "get_sync_manager",
+    "reset_sync_manager",
 ]
