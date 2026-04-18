@@ -2205,3 +2205,119 @@ def link_memory_to_entities(
     store.link_memory_to_entities(memory_id, entity_ids, uid)
 
     return f"Linked memory {memory_id} to {len(entity_ids)} entities"
+
+
+# =============================================================================
+# Enhanced Synthesis Tools
+# =============================================================================
+
+@mcp.tool()
+def enhanced_synthesize(
+    user_id: Optional[str] = None,
+    limit: int = 50,
+    min_memories: int = 5
+) -> str:
+    """
+    Perform enhanced synthesis over user memories.
+
+    Extends base synthesis with contradiction detection, temporal trend
+    analysis, and evidence-anchored insight generation.
+
+    Args:
+        user_id: Optional user ID override
+        limit: Max memories to include in synthesis
+        min_memories: Minimum memories required (default: 5)
+
+    Returns:
+        JSON with synthesis result including contradictions, trends, insights
+    """
+    import asyncio
+    from .enhanced_synthesizer import get_enhanced_synthesizer
+    from .memory_types import MemoryObject, EmotionalMetadata
+
+    uid = user_id or USER_ID
+    conn = get_db_connection()
+
+    rows = conn.execute(
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
+        (uid, TENANT_ID, limit)
+    ).fetchall()
+    conn.close()
+
+    if len(rows) < min_memories:
+        return f"Need at least {min_memories} memories for synthesis. Found {len(rows)}."
+
+    # Convert rows to MemoryObjects
+    memories = []
+    for r in rows:
+        memories.append(MemoryObject(
+            id=r['id'],
+            timestamp=r['created_at'],
+            scope=r['scope'],
+            retention=r['retention'],
+            content=r['content'],
+            tags=json.loads(r['tags']),
+            emotional_context=EmotionalMetadata(
+                intensity=json.loads(r['emotional_context']).get('intensity', 0.5)
+            ) if r['emotional_context'] else None,
+        ))
+
+    synthesizer = get_enhanced_synthesizer()
+
+    result = asyncio.run(synthesizer.synthesize(memories, user_id=uid))
+
+    if result is None:
+        return "Synthesis could not be completed with available data."
+
+    return json.dumps(result.to_dict(), indent=2)
+
+
+# =============================================================================
+# Hybrid Retrieval Tools
+# =============================================================================
+
+@mcp.tool()
+def hybrid_search(
+    query: str,
+    user_id: Optional[str] = None,
+    limit: int = 10,
+    min_importance: float = 0.1,
+    use_keyword: bool = True,
+    use_graph: bool = True,
+    use_temporal: bool = True,
+) -> str:
+    """
+    Hybrid search combining keyword, graph, and temporal signals.
+
+    Uses Reciprocal Rank Fusion (RRF) to merge results from all three
+    retrieval strategies into a single ranked list.
+
+    Args:
+        query: Search query string
+        user_id: Optional user ID override
+        limit: Maximum results (default: 10)
+        min_importance: Minimum importance threshold (default: 0.1)
+        use_keyword: Enable keyword matching (default: true)
+        use_graph: Enable graph traversal (default: true)
+        use_temporal: Enable temporal scoring (default: true)
+
+    Returns:
+        JSON with merged search results and signal metadata
+    """
+    from .hybrid_retriever import get_hybrid_retriever
+
+    uid = user_id or USER_ID
+    retriever = get_hybrid_retriever()
+
+    result = retriever.search(
+        query=query,
+        user_id=uid,
+        tenant_id=TENANT_ID,
+        limit=limit,
+        min_importance=min_importance,
+        use_keyword=use_keyword,
+        use_graph=use_graph,
+        use_temporal=use_temporal,
+    )
+
+    return json.dumps(result.to_dict(), indent=2)

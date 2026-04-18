@@ -108,6 +108,14 @@ from .enhanced_synthesizer import (
     get_enhanced_synthesizer,
     reset_enhanced_synthesizer,
 )
+# Hybrid retriever exports
+from .hybrid_retriever import (
+HybridRetriever,
+HybridResult,
+HybridSearchResult,
+get_hybrid_retriever,
+reset_hybrid_retriever,
+)
 # Block registry exports
 from .block_registry import (
     BlockRegistry,
@@ -329,4 +337,10 @@ __all__ = [
     "SyncProgress",
     "get_sync_manager",
     "reset_sync_manager",
+    # Hybrid retriever
+    "HybridRetriever",
+    "HybridResult",
+    "HybridSearchResult",
+    "get_hybrid_retriever",
+    "reset_hybrid_retriever",
 ]
