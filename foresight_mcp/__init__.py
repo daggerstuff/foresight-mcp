@@ -98,6 +98,16 @@ from .graph_store import (
     get_graph_store,
     reset_graph_store,
 )
+# Enhanced synthesizer exports
+from .enhanced_synthesizer import (
+    EnhancedMemorySynthesizer,
+    EnhancedSynthesisResult,
+    Contradiction,
+    TemporalTrend,
+    Insight,
+    get_enhanced_synthesizer,
+    reset_enhanced_synthesizer,
+)
 # Block registry exports
 from .block_registry import (
     BlockRegistry,
