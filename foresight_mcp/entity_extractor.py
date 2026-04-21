@@ -25,6 +25,8 @@ Relationship Types:
 from __future__ import annotations
 import json
 import logging
+import re
+import threading
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Literal
 import hashlib
@@ -240,7 +242,7 @@ Output (raw JSON only, no markdown):
 
         # Extract emotion entities
         for emotion, props in emotion_patterns.items():
-            if emotion in content_lower:
+            if re.search(rf'\b{re.escape(emotion)}\b', content_lower):
                 entity = Entity(
                     id=self._generate_entity_id(emotion, 'emotion'),
                     name=emotion,
@@ -264,7 +266,7 @@ Output (raw JSON only, no markdown):
         }
 
         for concept, props in concept_patterns.items():
-            if concept.lower() in content_lower:
+            if re.search(rf'\b{re.escape(concept.lower())}\b', content_lower):
                 entity = Entity(
                     id=self._generate_entity_id(concept, 'concept'),
                     name=concept,
@@ -289,6 +291,11 @@ Output (raw JSON only, no markdown):
     async def extract_with_llm(self, content: str) -> ExtractionResult:
         """
         Extract using LLM (production implementation).
+
+        Enable by setting the OPENAI_API_KEY or ANTHROPIC_API_KEY environment
+        variable and passing it as the ``api_key`` argument to EntityExtractor.
+        When enabled, call this method instead of ``extract()`` which currently
+        delegates to the rule-based fallback.
 
         Args:
             content: Text to analyze
@@ -355,20 +362,23 @@ Output (raw JSON only, no markdown):
 
 # Global instance management
 _entity_extractor: Optional[EntityExtractor] = None
+_entity_extractor_lock = threading.Lock()
 
 
 def get_entity_extractor(
     api_key: Optional[str] = None,
     model: str = "claude-3-haiku-20240307",
 ) -> EntityExtractor:
-    """Get or create global entity extractor instance."""
+    """Get or create global entity extractor instance (thread-safe)."""
     global _entity_extractor
-    if _entity_extractor is None:
-        _entity_extractor = EntityExtractor(api_key=api_key, model=model)
+    with _entity_extractor_lock:
+        if _entity_extractor is None:
+            _entity_extractor = EntityExtractor(api_key=api_key, model=model)
     return _entity_extractor
 
 
 def reset_entity_extractor() -> None:
     """Reset global entity extractor (for testing)."""
     global _entity_extractor
-    _entity_extractor = None
+    with _entity_extractor_lock:
+        _entity_extractor = None

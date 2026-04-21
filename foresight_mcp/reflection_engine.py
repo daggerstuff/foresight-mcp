@@ -14,6 +14,7 @@ import sqlite3
 import json
 import uuid
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
@@ -241,51 +242,15 @@ class ReflectionEngine:
     ) -> List[ReflectionInsight]:
         """Generate evidence-anchored insights from analysis."""
         insights: List[ReflectionInsight] = []
-        memory_ids = [row[0] for row in rows]
-
-        # Trend-based insights
-        overall = trend_summary.get('overall', 'stable')
         counts = trend_summary.get('trend_counts', {})
 
-        if overall == 'improving':
-            strengthening = counts.get('strengthening', 0)
-            insights.append(ReflectionInsight(
-                insight_type='trend',
-                summary=f"Positive trajectory: {strengthening} memories strengthening",
-                confidence=0.8,
-                evidence_ids=memory_ids[:5],
-                recommended_action='preserve',
-                metadata={'trend': 'improving', 'strengthening_count': strengthening},
-            ))
-        elif overall == 'declining':
-            weakening = counts.get('weakening', 0)
-            stale = counts.get('stale', 0)
-            insights.append(ReflectionInsight(
-                insight_type='warning',
-                summary=f"Attention needed: {weakening} weakening, {stale} stale memories",
-                confidence=0.8,
-                evidence_ids=memory_ids[:5],
-                recommended_action='review',
-                metadata={'trend': 'declining', 'weakening_count': weakening, 'stale_count': stale},
-            ))
-
-        # Category imbalance insights
-        cat_importance = trend_summary.get('avg_importance_by_category', {})
-        if cat_importance:
-            lowest_cat = min(cat_importance, key=cat_importance.get)
-            highest_cat = max(cat_importance, key=cat_importance.get)
-            if cat_importance[lowest_cat] < 0.3 and cat_importance[highest_cat] > 0.7:
-                insights.append(ReflectionInsight(
-                    insight_type='pattern',
-                    summary=f"Imbalance: {highest_cat} is high-priority ({cat_importance[highest_cat]:.2f}) while {lowest_cat} is neglected ({cat_importance[lowest_cat]:.2f})",
-                    confidence=0.7,
-                    evidence_ids=memory_ids[:5],
-                    recommended_action='investigate',
-                    metadata={'high_cat': highest_cat, 'low_cat': lowest_cat},
-                ))
+        # Content-anchored insights from memories grouped by category/trend
+        content_insights = self._extract_content_insights(rows)
+        insights.extend(content_insights)
 
         # Entity hub insights
         top_entities = entity_summary.get('top_connected_entities', [])
+        memory_ids = [row[0] for row in rows]
         for entity in top_entities[:3]:
             if entity['connections'] >= 3:
                 insights.append(ReflectionInsight(
@@ -312,6 +277,94 @@ class ReflectionEngine:
 
         return insights
 
+    def _extract_content_insights(
+        self, rows: list
+    ) -> List[ReflectionInsight]:
+        """
+        Extract content-anchored insights from memory rows.
+
+        Groups memories by category, then picks the most recent
+        strengthening and weakening memory per category to build
+        evidence-anchored insight summaries.
+        """
+        insights: List[ReflectionInsight] = []
+
+        # Group rows by category
+        by_category: Dict[str, list] = {}
+        for row in rows:
+            category = row[2]
+            cat = category or 'general'
+            if cat not in by_category:
+                by_category[cat] = []
+            by_category[cat].append(row)
+
+        for cat, cat_rows in by_category.items():
+            # Sort by created_at descending to find most recent
+            sorted_rows = sorted(
+                cat_rows,
+                key=lambda r: r[8] if len(r) > 8 else '',
+                reverse=True,
+            )
+
+            strengthening_rows = [r for r in sorted_rows if (r[4] or 'stable') == 'strengthening']
+            weakening_rows = [r for r in sorted_rows if (r[4] or 'stable') == 'weakening']
+
+            if strengthening_rows:
+                mem = strengthening_rows[0]
+                excerpt = (mem[1] or '')[:80]
+                insights.append(ReflectionInsight(
+                    insight_type='trend',
+                    summary=f"Progress in {cat}: {excerpt}",
+                    confidence=0.8,
+                    evidence_ids=[mem[0]],
+                    recommended_action='preserve',
+                    metadata={'category': cat, 'trend': 'strengthening'},
+                ))
+
+            if weakening_rows:
+                mem = weakening_rows[0]
+                excerpt = (mem[1] or '')[:80]
+                insights.append(ReflectionInsight(
+                    insight_type='warning',
+                    summary=f"Decline in {cat}: {excerpt}",
+                    confidence=0.8,
+                    evidence_ids=[mem[0]],
+                    recommended_action='review',
+                    metadata={'category': cat, 'trend': 'weakening'},
+                ))
+
+        # Category imbalance insight with content evidence
+        cat_importance: Dict[str, List[float]] = {}
+        for row in rows:
+            cat = row[2] or 'general'
+            if cat not in cat_importance:
+                cat_importance[cat] = []
+            cat_importance[cat].append(row[3] or 0.5)
+
+        avg_importance = {
+            cat: sum(vals) / len(vals)
+            for cat, vals in cat_importance.items()
+        }
+
+        if avg_importance:
+            lowest_cat = min(avg_importance, key=lambda k: avg_importance[k])
+            highest_cat = max(avg_importance, key=lambda k: avg_importance[k])
+            if avg_importance[lowest_cat] < 0.3 and avg_importance[highest_cat] > 0.7:
+                # Find a low-importance memory in the neglected category for evidence
+                low_cat_rows = by_category.get(lowest_cat, [])
+                evidence_ids = [low_cat_rows[0][0]] if low_cat_rows else [rows[0][0]]
+                low_excerpt = (low_cat_rows[0][1] or '')[:80] if low_cat_rows else lowest_cat
+                insights.append(ReflectionInsight(
+                    insight_type='pattern',
+                    summary=f"Imbalance: {highest_cat} is high-priority while {lowest_cat} is neglected - \"{low_excerpt}\"",
+                    confidence=0.7,
+                    evidence_ids=evidence_ids,
+                    recommended_action='investigate',
+                    metadata={'high_cat': highest_cat, 'low_cat': lowest_cat},
+                ))
+
+        return insights
+
     def _store_reflection(
         self,
         conn: sqlite3.Connection,
@@ -322,6 +375,10 @@ class ReflectionEngine:
         """Store reflection report as a memory for continuity."""
         now = datetime.now(timezone.utc).isoformat()
         content = f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
+
+        # Build gist from insight summaries for quick retrieval
+        insight_summaries = [i.summary for i in report.insights]
+        gist = '; '.join(insight_summaries) if insight_summaries else report.trend_summary.get('overall', 'unknown')
 
         conn.execute(
             """INSERT OR REPLACE INTO memories
@@ -341,7 +398,7 @@ class ReflectionEngine:
                 json.dumps([f"reflection:{report.period}"]),
                 json.dumps({}),
                 json.dumps({'insights': len(report.insights)}),
-                report.trend_summary.get('overall', 'unknown'),
+                gist,
                 json.dumps([r for r in []]),
                 now,
                 now,
@@ -354,7 +411,7 @@ class ReflectionEngine:
 
 # Global instance management
 _reflection_engine: Optional[ReflectionEngine] = None
-_engine_lock = __import__('threading').Lock()
+_engine_lock = threading.Lock()
 
 
 def get_reflection_engine(db_path: Optional[str] = None) -> ReflectionEngine:
@@ -363,7 +420,7 @@ def get_reflection_engine(db_path: Optional[str] = None) -> ReflectionEngine:
     with _engine_lock:
         if _reflection_engine is None:
             if db_path is None:
-                from .server import DB_PATH
+                from .config import DB_PATH
                 db_path = DB_PATH
             _reflection_engine = ReflectionEngine(db_path)
     return _reflection_engine

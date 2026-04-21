@@ -11,12 +11,26 @@ from __future__ import annotations
 import sqlite3
 import json
 import logging
+import threading
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
 
 from .entity_extractor import Entity, Relationship, ExtractionResult
 
 logger = logging.getLogger("foresight_graph_store")
+
+MAX_USER_ID_LENGTH = 128
+
+
+def _escape_like(term: str) -> str:
+    """Escape SQL LIKE metacharacters to prevent wildcard injection."""
+    return term.replace('!', '!!').replace('%', '!%').replace('_', '!_')
+
+
+def _validate_input(user_id: str) -> None:
+    """Validate user_id input."""
+    if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
+        raise ValueError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
 
 
 @dataclass
@@ -51,53 +65,55 @@ class GraphStore:
     def _init_db(self) -> None:
         """Initialize database schema."""
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
 
         try:
             # Entities table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS memory_entities (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    entity_type TEXT NOT NULL
-                        CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object')),
-                    description TEXT,
-                    properties TEXT DEFAULT '{}',
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, name, entity_type)
-                )
+            CREATE TABLE IF NOT EXISTS memory_entities (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                entity_type TEXT NOT NULL
+                    CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object')),
+                description TEXT,
+                properties TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, name, entity_type)
+            )
             """)
 
             # Relationships table
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS entity_relationships (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    source_entity_id TEXT NOT NULL,
-                    target_entity_id TEXT NOT NULL,
-                    relationship_type TEXT NOT NULL
-                        CHECK(relationship_type IN (
-                            'mentions', 'located_at', 'experienced', 'caused',
-                            'relates_to', 'contradicts', 'supports', 'part_of', 'created'
-                        )),
-                    confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
-                    metadata TEXT DEFAULT '{}',
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, source_entity_id, target_entity_id, relationship_type)
-                )
+            CREATE TABLE IF NOT EXISTS entity_relationships (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                source_entity_id TEXT NOT NULL,
+                target_entity_id TEXT NOT NULL,
+                relationship_type TEXT NOT NULL
+                    CHECK(relationship_type IN (
+                        'mentions', 'located_at', 'experienced', 'caused',
+                        'relates_to', 'contradicts', 'supports', 'part_of', 'created'
+                    )),
+                confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+                metadata TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, source_entity_id, target_entity_id, relationship_type)
+            )
             """)
 
             # Memory-to-entity links
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS memory_entity_links (
-                    memory_id TEXT NOT NULL,
-                    entity_id TEXT NOT NULL,
-                    relevance_score REAL DEFAULT 1.0,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (memory_id, entity_id)
-                )
+            CREATE TABLE IF NOT EXISTS memory_entity_links (
+                memory_id TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                relevance_score REAL DEFAULT 1.0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (memory_id, entity_id)
+            )
             """)
 
             # Indexes
@@ -111,6 +127,7 @@ class GraphStore:
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_memory ON memory_entity_links(memory_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_entity ON memory_entity_links(entity_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_links_user ON memory_entity_links(user_id)")
 
             conn.commit()
             logger.info("Graph store schema initialized")
@@ -137,11 +154,13 @@ class GraphStore:
         Returns:
             Entity ID
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
                 INSERT INTO memory_entities
-                    (id, user_id, name, entity_type, description, properties, created_at, updated_at)
+                (id, user_id, name, entity_type, description, properties, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(user_id, name, entity_type) DO UPDATE SET
                     description = excluded.description,
@@ -173,7 +192,9 @@ class GraphStore:
         Returns:
             Entity or None
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
                 SELECT id, user_id, name, entity_type, description, properties
@@ -213,7 +234,9 @@ class GraphStore:
         Returns:
             List of entities
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
                 SELECT id, user_id, name, entity_type, description, properties
@@ -254,14 +277,17 @@ class GraphStore:
         Returns:
             List of matching entities
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
+            escaped = _escape_like(name)
             cursor = conn.execute("""
                 SELECT id, user_id, name, entity_type, description, properties
                 FROM memory_entities
-                WHERE user_id = ? AND name LIKE ?
+                WHERE user_id = ? AND name LIKE ? ESCAPE '!'
                 LIMIT ?
-            """, (user_id, f'%{name}%', limit))
+            """, (user_id, f'%{escaped}%', limit))
 
             return [
                 Entity(
@@ -289,11 +315,13 @@ class GraphStore:
             relationship: Relationship to add
             user_id: User ID for ownership
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             conn.execute("""
                 INSERT OR IGNORE INTO entity_relationships
-                    (user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
+                (user_id, source_entity_id, target_entity_id, relationship_type, confidence, metadata)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (
                 user_id,
@@ -326,7 +354,9 @@ class GraphStore:
         Returns:
             List of relationships
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             if direction == 'out':
                 cursor = conn.execute("""
@@ -388,7 +418,9 @@ class GraphStore:
         Returns:
             GraphTraversalResult with nodes and edges
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             type_filter = ""
             type_params = []
@@ -434,7 +466,7 @@ class GraphStore:
                         ELSE r.source_entity_id
                     END
                     WHERE gt.depth < ?
-                      AND e.user_id = ?
+                    AND e.user_id = ?
                 )
                 SELECT DISTINCT entity_id, entity_type, name, description, properties, depth
                 FROM graph_traversal
@@ -461,8 +493,8 @@ class GraphStore:
                     SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                     FROM entity_relationships
                     WHERE source_entity_id IN ({placeholders})
-                      AND target_entity_id IN ({placeholders})
-                      AND user_id = ?
+                    AND target_entity_id IN ({placeholders})
+                    AND user_id = ?
                 """, node_ids + node_ids + [user_id])
 
                 edges = [
@@ -503,15 +535,17 @@ class GraphStore:
             user_id: User ID
             scores: Optional relevance scores per entity
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             for entity_id in entity_ids:
                 score = scores.get(entity_id, 1.0) if scores else 1.0
                 conn.execute("""
                     INSERT OR REPLACE INTO memory_entity_links
-                        (memory_id, entity_id, relevance_score, created_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-                """, (memory_id, entity_id, score))
+                    (memory_id, entity_id, user_id, relevance_score, created_at)
+                    VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (memory_id, entity_id, user_id, score))
 
             conn.commit()
 
@@ -535,14 +569,16 @@ class GraphStore:
         Returns:
             List of memory IDs
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
                 SELECT DISTINCT mel.memory_id
                 FROM memory_entity_links mel
-                WHERE mel.entity_id = ?
+                WHERE mel.entity_id = ? AND mel.user_id = ?
                 LIMIT ?
-            """, (entity_id, limit))
+            """, (entity_id, user_id, limit))
 
             return [row[0] for row in cursor.fetchall()]
 
@@ -568,34 +604,38 @@ class GraphStore:
         Returns:
             List of memory IDs
         """
+        _validate_input(user_id)
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Get connected entities up to specified depth
             cursor = conn.execute("""
                 WITH RECURSIVE connected AS (
                     SELECT entity_id, 0 as depth
                     FROM memory_entity_links
-                    WHERE entity_id = ?
+                    WHERE entity_id = ? AND user_id = ?
 
                     UNION
 
                     SELECT CASE
-                            WHEN c.entity_id = r.source_entity_id THEN r.target_entity_id
-                            ELSE r.source_entity_id
-                        END as entity_id,
-                        c.depth + 1
+                        WHEN c.entity_id = r.source_entity_id THEN r.target_entity_id
+                        ELSE r.source_entity_id
+                    END as entity_id,
+                    c.depth + 1
                     FROM connected c
                     JOIN entity_relationships r ON (
                         c.entity_id = r.source_entity_id OR c.entity_id = r.target_entity_id
                     )
                     WHERE c.depth < ?
+                    AND r.user_id = ?
                 )
                 SELECT DISTINCT mel.memory_id
                 FROM memory_entity_links mel
                 JOIN connected c ON mel.entity_id = c.entity_id
                 WHERE c.depth > 0
+                AND mel.user_id = ?
                 LIMIT ?
-            """, (entity_id, depth, limit))
+            """, (entity_id, user_id, depth, user_id, user_id, limit))
 
             return [row[0] for row in cursor.fetchall()]
 
@@ -627,20 +667,23 @@ class GraphStore:
 
 # Global instance management
 _graph_store: Optional[GraphStore] = None
+_lock = threading.Lock()
 
 
 def get_graph_store(db_path: Optional[str] = None) -> GraphStore:
     """Get or create global graph store instance."""
     global _graph_store
-    if _graph_store is None:
-        if db_path is None:
-            from .server import DB_PATH
-            db_path = DB_PATH
-        _graph_store = GraphStore(db_path)
-    return _graph_store
+    with _lock:
+        if _graph_store is None:
+            if db_path is None:
+                from .config import DB_PATH
+                db_path = DB_PATH
+            _graph_store = GraphStore(db_path)
+        return _graph_store
 
 
 def reset_graph_store() -> None:
     """Reset global graph store (for testing)."""
     global _graph_store
-    _graph_store = None
+    with _lock:
+        _graph_store = None

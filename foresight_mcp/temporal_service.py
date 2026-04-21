@@ -1,5 +1,4 @@
-"""
-Temporal Service - Decay algorithms and freshness trend tracking.
+"""Temporal Service - Decay algorithms and freshness trend tracking.
 
 Implements:
 - Exponential decay based on Ebbinghaus forgetting curve
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 from datetime import datetime, timezone
 import sqlite3
+import threading
 import logging
 
 logger = logging.getLogger("foresight_temporal")
@@ -59,6 +59,7 @@ class TemporalService:
     def _get_decay_config(self, user_id: str, category: str = 'general') -> DecayConfig:
         """Get decay configuration for user/category."""
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
                 SELECT user_id, category, half_life_hours, min_importance,
@@ -182,6 +183,7 @@ class TemporalService:
             Tuple of (new_importance, new_trend)
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Get current memory data
             cursor = conn.execute("""
@@ -259,7 +261,10 @@ class TemporalService:
             Number of memories updated
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
+            conn.execute("BEGIN")
+
             # Get all memories for user
             cursor = conn.execute("""
                 SELECT id, importance, created_at, activation_count,
@@ -299,6 +304,9 @@ class TemporalService:
             logger.info(f"Batch decay update completed: {updated_count} memories updated")
             return updated_count
 
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
@@ -313,6 +321,7 @@ class TemporalService:
             Dictionary with temporal stats
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             cursor = conn.execute("""
                 SELECT
@@ -341,22 +350,25 @@ class TemporalService:
             conn.close()
 
 
-# Global instance management
+# Global instance management (thread-safe)
 _temporal_service: Optional[TemporalService] = None
+_temporal_service_lock = threading.Lock()
 
 
 def get_temporal_service(db_path: Optional[str] = None) -> TemporalService:
-    """Get or create global temporal service instance."""
+    """Get or create global temporal service instance (thread-safe)."""
     global _temporal_service
-    if _temporal_service is None:
-        if db_path is None:
-            from .server import DB_PATH
-            db_path = DB_PATH
-        _temporal_service = TemporalService(db_path)
+    with _temporal_service_lock:
+        if _temporal_service is None:
+            if db_path is None:
+                from .config import DB_PATH
+                db_path = DB_PATH
+            _temporal_service = TemporalService(db_path)
     return _temporal_service
 
 
 def reset_temporal_service() -> None:
     """Reset global temporal service (for testing)."""
     global _temporal_service
-    _temporal_service = None
+    with _temporal_service_lock:
+        _temporal_service = None

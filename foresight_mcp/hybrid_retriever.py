@@ -1,20 +1,23 @@
 """
 Hybrid Retriever - Combined Vector + Graph + Temporal Search.
 
-Fuses three retrieval signals:
+Fuses four retrieval signals:
 1. Keyword/BM25-style: Content matching with tf-idf-like scoring
-2. Graph: Entity-based expansion via graph traversal
-3. Temporal: Time-weighted importance scoring with decay
+2. Semantic/TF-IDF: Cosine similarity between query and document vectors
+3. Graph: Entity-based expansion via graph traversal
+4. Temporal: Time-weighted importance scoring with decay
 
 Result merging uses Reciprocal Rank Fusion (RRF) for score combination,
 which is robust across different score distributions without tuning.
 
 Weights rationale:
-  keyword=1.0 (primary relevance signal), graph=0.8 (entity expansion
-  is high-value but indirect), temporal=0.6 (recency is useful context
-  but not a relevance signal by itself).
+keyword=1.0 (primary relevance signal), graph=0.8 (entity expansion
+is high-value but indirect), semantic=0.7 (captures topical similarity
+beyond exact term match), temporal=0.6 (recency is useful context
+but not a relevance signal by itself).
 """
 from __future__ import annotations
+import math
 import sqlite3
 import threading
 import logging
@@ -52,6 +55,7 @@ class HybridResult:
     created_at: str
 
     keyword_score: float = 0.0
+    semantic_score: float = 0.0
     graph_score: float = 0.0
     temporal_score: float = 0.0
     combined_score: float = 0.0
@@ -67,6 +71,7 @@ class HybridResult:
             'strength_trend': self.strength_trend,
             'created_at': self.created_at,
             'keyword_score': round(self.keyword_score, 4),
+            'semantic_score': round(self.semantic_score, 4),
             'graph_score': round(self.graph_score, 4),
             'temporal_score': round(self.temporal_score, 4),
             'combined_score': round(self.combined_score, 4),
@@ -91,7 +96,7 @@ class HybridSearchResult:
 
 class HybridRetriever:
     """
-    Combined retrieval using keyword, graph, and temporal signals.
+    Combined retrieval using keyword, semantic, graph, and temporal signals.
 
     Uses Reciprocal Rank Fusion (RRF) to merge ranked lists from
     each signal into a single ordered result set.
@@ -103,9 +108,11 @@ class HybridRetriever:
     RRF_K = 60  # RRF smoothing constant
 
     # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
+    # semantic=0.7 (topical similarity beyond exact match),
     # temporal=0.6 (recency context, not relevance by itself)
     DEFAULT_WEIGHTS = {
         'keyword': 1.0,
+        'semantic': 0.7,
         'graph': 0.8,
         'temporal': 0.6,
     }
@@ -132,6 +139,7 @@ class HybridRetriever:
         limit: int = 10,
         min_importance: float = 0.1,
         use_keyword: bool = True,
+        use_semantic: bool = True,
         use_graph: bool = True,
         use_temporal: bool = True,
     ) -> HybridSearchResult:
@@ -145,6 +153,7 @@ class HybridRetriever:
             limit: Maximum results to return
             min_importance: Minimum importance filter
             use_keyword: Enable keyword signal
+            use_semantic: Enable semantic/TF-IDF cosine similarity signal
             use_graph: Enable graph signal
             use_temporal: Enable temporal signal
 
@@ -154,6 +163,7 @@ class HybridRetriever:
         _validate_input(query, user_id)
 
         keyword_ranking: Dict[str, int] = {}
+        semantic_ranking: Dict[str, int] = {}
         graph_ranking: Dict[str, int] = {}
         temporal_ranking: Dict[str, int] = {}
         all_ids: Set[str] = set()
@@ -166,6 +176,12 @@ class HybridRetriever:
                     conn, query, user_id, tenant_id, limit * 3
                 )
                 all_ids.update(keyword_ranking.keys())
+
+            if use_semantic:
+                semantic_ranking = self._semantic_search(
+                    conn, query, user_id, tenant_id, limit * 3
+                )
+                all_ids.update(semantic_ranking.keys())
 
             if use_graph:
                 graph_ranking = self._graph_search(
@@ -185,6 +201,7 @@ class HybridRetriever:
                     total_candidates=0,
                     signal_counts={
                         'keyword': len(keyword_ranking),
+                        'semantic': len(semantic_ranking),
                         'graph': len(graph_ranking),
                         'temporal': len(temporal_ranking),
                     },
@@ -192,7 +209,7 @@ class HybridRetriever:
 
             # Merge using RRF
             merged = self._reciprocal_rank_fusion(
-                keyword_ranking, graph_ranking, temporal_ranking
+                keyword_ranking, semantic_ranking, graph_ranking, temporal_ranking
             )
 
             # Fetch full memory data for top candidates (same connection)
@@ -224,6 +241,11 @@ class HybridRetriever:
                     keyword_ranking[memory_id], len(keyword_ranking)
                 )
                 result.source_signals.append('keyword')
+            if memory_id in semantic_ranking:
+                result.semantic_score = self._rank_to_score(
+                    semantic_ranking[memory_id], len(semantic_ranking)
+                )
+                result.source_signals.append('semantic')
             if memory_id in graph_ranking:
                 result.graph_score = self._rank_to_score(
                     graph_ranking[memory_id], len(graph_ranking)
@@ -242,6 +264,7 @@ class HybridRetriever:
             total_candidates=len(all_ids),
             signal_counts={
                 'keyword': len(keyword_ranking),
+                'semantic': len(semantic_ranking),
                 'graph': len(graph_ranking),
                 'temporal': len(temporal_ranking),
             },
@@ -296,6 +319,105 @@ class HybridRetriever:
         scored.sort(key=lambda x: x[1], reverse=True)
         return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
 
+    def _semantic_search(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        user_id: str,
+        tenant_id: str,
+        limit: int,
+    ) -> Dict[str, int]:
+        """
+        Semantic search using TF-IDF cosine similarity.
+
+        Builds TF-IDF vectors for all user memories and the query,
+        then ranks memories by cosine similarity to the query.
+        Pure Python implementation -- no external ML dependencies.
+
+        Returns dict of {memory_id: rank} (1-based, lower = better).
+        """
+        terms = query.lower().split()
+        if not terms:
+            return {}
+
+        cursor = conn.execute("""
+            SELECT id, content
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            AND is_ghost = 0
+        """, (user_id, tenant_id))
+
+        rows = cursor.fetchall()
+        if not rows:
+            return {}
+
+        # Tokenize all documents
+        docs: Dict[str, List[str]] = {}
+        for row in rows:
+            mid, content = row
+            docs[mid] = content.lower().split()
+
+        n_docs = len(docs)
+        if n_docs == 0:
+            return {}
+
+        # Build document frequency map (how many docs contain each term)
+        doc_freq: Dict[str, int] = {}
+        for tokens in docs.values():
+            seen: Set[str] = set(tokens)
+            for token in seen:
+                doc_freq[token] = doc_freq.get(token, 0) + 1
+
+        # Compute IDF for each term: log(N / df)
+        idf: Dict[str, float] = {}
+        for term, df in doc_freq.items():
+            idf[term] = math.log(n_docs / df) if df > 0 else 0.0
+
+        def _tfidf_vector(tokens: List[str]) -> Dict[str, float]:
+            """Build a TF-IDF vector (sparse dict) for a token list."""
+            tf_counts: Dict[str, int] = {}
+            for token in tokens:
+                tf_counts[token] = tf_counts.get(token, 0) + 1
+            total = len(tokens) if tokens else 1
+            vec: Dict[str, float] = {}
+            for term, count in tf_counts.items():
+                tf = count / total
+                vec[term] = tf * idf.get(term, 0.0)
+            return vec
+
+        def _cosine_similarity(
+            vec_a: Dict[str, float], vec_b: Dict[str, float]
+        ) -> float:
+            """Compute cosine similarity between two sparse vectors."""
+            common = set(vec_a.keys()) & set(vec_b.keys())
+            if not common:
+                return 0.0
+            dot = sum(vec_a[k] * vec_b[k] for k in common)
+            norm_a = math.sqrt(sum(v * v for v in vec_a.values()))
+            norm_b = math.sqrt(sum(v * v for v in vec_b.values()))
+            if norm_a == 0.0 or norm_b == 0.0:
+                return 0.0
+            return dot / (norm_a * norm_b)
+
+        # Build query vector
+        query_vector = _tfidf_vector(terms)
+
+        # Score each document by cosine similarity to query
+        scored: List[tuple] = []
+        for mid, tokens in docs.items():
+            doc_vector = _tfidf_vector(tokens)
+            sim = _cosine_similarity(query_vector, doc_vector)
+            scored.append((mid, sim))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        # Only return documents with non-zero similarity, up to limit
+        ranked = {mid: rank + 1 for rank, (mid, sim) in enumerate(scored)
+                  if sim > 0.0}
+        if limit and len(ranked) > limit:
+            ranked = dict(list(ranked.items())[:limit])
+        return ranked
+
     def _graph_search(
         self,
         conn: sqlite3.Connection,
@@ -341,7 +463,7 @@ class HybridRetriever:
             SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
-                AND m.tenant_id = ? AND m.user_id = ?
+            AND m.tenant_id = ? AND m.user_id = ?
             WHERE mel.entity_id IN ({entity_placeholders})
             AND mel.user_id = ?
             GROUP BY mel.memory_id
@@ -363,7 +485,7 @@ class HybridRetriever:
         """
         Temporal search: rank memories by recency and importance.
 
-        Query-independent signal — returns most important/recent memories
+        Query-independent signal -- returns most important/recent memories
         to provide recency context to the fusion.
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
@@ -416,6 +538,7 @@ class HybridRetriever:
     def _reciprocal_rank_fusion(
         self,
         keyword: Dict[str, int],
+        semantic: Dict[str, int],
         graph: Dict[str, int],
         temporal: Dict[str, int],
     ) -> List[tuple]:
@@ -428,6 +551,7 @@ class HybridRetriever:
         """
         all_ids = set()
         all_ids.update(keyword.keys())
+        all_ids.update(semantic.keys())
         all_ids.update(graph.keys())
         all_ids.update(temporal.keys())
 
@@ -439,6 +563,10 @@ class HybridRetriever:
             if mid in keyword:
                 score += self.weights['keyword'] / (
                     self.RRF_K + keyword[mid]
+                )
+            if mid in semantic:
+                score += self.weights['semantic'] / (
+                    self.RRF_K + semantic[mid]
                 )
             if mid in graph:
                 score += self.weights['graph'] / (
@@ -505,10 +633,10 @@ def get_hybrid_retriever(
     with _retriever_lock:
         if _hybrid_retriever is None:
             if db_path is None:
-                from .server import DB_PATH
+                from .config import DB_PATH
                 db_path = DB_PATH
             _hybrid_retriever = HybridRetriever(db_path, weights)
-    return _hybrid_retriever
+        return _hybrid_retriever
 
 
 def reset_hybrid_retriever() -> None:

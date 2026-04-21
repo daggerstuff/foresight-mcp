@@ -88,6 +88,131 @@ class TestTemporalTrendAnalysis:
         assert 'anxiety' in clusters
         assert len(clusters['anxiety']) == 2
 
+    def test_cluster_by_topic_multi_topic(self):
+        """Memories about 'work anxiety' should appear in both 'work' and 'anxiety' clusters."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        memories = [
+            create_memory("Work anxiety is increasing", datetime.now(timezone.utc), intensity=0.8),
+            create_memory("Family stress is high", datetime.now(timezone.utc), intensity=0.7),
+            create_memory("Therapy for anxiety helps", datetime.now(timezone.utc), intensity=0.4),
+        ]
+
+        clusters = synthesizer._cluster_by_topic(memories)
+
+        # "Work anxiety is increasing" contains both 'work' and 'anxiety'
+        assert 'work' in clusters
+        assert 'anxiety' in clusters
+        work_ids = [m.id for m in clusters['work']]
+        anxiety_ids = [m.id for m in clusters['anxiety']]
+        # The first memory should be in both clusters
+        assert memories[0].id in work_ids
+        assert memories[0].id in anxiety_ids
+
+    def test_compute_overlap_score_identical(self):
+        """Identical contents should have overlap score of 1.0."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        score = synthesizer._compute_overlap_score(
+            "I love therapy sessions",
+            "I love therapy sessions"
+        )
+
+        assert score == 1.0
+
+    def test_compute_overlap_score_no_overlap(self):
+        """Completely different contents should have overlap score of 0.0."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        score = synthesizer._compute_overlap_score(
+            "alpha beta gamma",
+            "delta epsilon zeta"
+        )
+
+        assert score == 0.0
+
+    def test_compute_overlap_score_partial(self):
+        """Partially overlapping contents should have 0 < score < 1."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        score = synthesizer._compute_overlap_score(
+            "I love therapy sessions",
+            "I hate therapy sessions"
+        )
+
+        # Shared words: i, therapy, sessions = 3/5 unique = 0.6
+        assert 0 < score < 1
+        assert score > 0.3  # Should exceed overlap threshold
+
+    def test_find_sentiment_conflict_detected(self):
+        """Should detect love/hate sentiment conflict."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        result = synthesizer._find_sentiment_conflict(
+            "I love therapy",
+            "I hate therapy"
+        )
+
+        assert result is not None
+        pos, neg = result
+        assert pos == 'love'
+        assert neg == 'hate'
+
+    def test_find_sentiment_conflict_none(self):
+        """Should return None when no sentiment conflict exists."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        result = synthesizer._find_sentiment_conflict(
+            "I enjoy therapy",
+            "I appreciate therapy"
+        )
+
+        assert result is None
+
+    def test_find_sentiment_conflict_reversed(self):
+        """Should detect conflict regardless of which memory has which word."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        result = synthesizer._find_sentiment_conflict(
+            "Things are getting worse",
+            "Things are getting better"
+        )
+
+        assert result is not None
+        pos, neg = result
+        assert pos == 'better'
+        assert neg == 'worse'
+
+    def test_detect_contradictions_sentiment_overlap(self):
+        """Should detect direct_conflict via keyword overlap + opposite sentiment."""
+        synthesizer = EnhancedMemorySynthesizer()
+
+        base_time = datetime.now(timezone.utc)
+        historic = [
+            create_memory("I love my therapy sessions", base_time - timedelta(days=30), intensity=0.5),
+        ]
+        recent = [
+            create_memory("I hate my therapy sessions", base_time, intensity=0.5),
+        ]
+
+        contradictions = synthesizer._detect_contradictions(historic, recent)
+
+        # Should find at least one direct_conflict from sentiment overlap
+        sentiment_conflicts = [c for c in contradictions if c.type == 'direct_conflict']
+        assert len(sentiment_conflicts) >= 1
+        # The conflict should reference the specific sentiment words
+        conflict = sentiment_conflicts[0]
+        assert conflict.old_value in ('love', 'hate')
+        assert conflict.new_value in ('love', 'hate')
+
+    def test_sentiment_opposites_class_constant(self):
+        """SENTIMENT_OPPOSITES should contain the expected word pairs."""
+        assert len(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES) == 8
+        pairs = set(EnhancedMemorySynthesizer.SENTIMENT_OPPOSITES)
+        assert ('love', 'hate') in pairs
+        assert ('good', 'bad') in pairs
+        assert ('happy', 'sad') in pairs
+
 
 class TestInsightGeneration:
     """Test evidence-anchored insight generation."""

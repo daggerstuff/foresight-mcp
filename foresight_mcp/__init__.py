@@ -171,16 +171,29 @@ try:
     _stream_producer_available = True
 except ImportError:
     _stream_producer_available = False
-    # Create stub classes for when kafka-python is not installed
-    class StreamProducer: pass  # type: ignore
-    class StreamPublisher: pass  # type: ignore
-    class StreamEvent: pass  # type: ignore
-    class StreamType: pass  # type: ignore
-    class KafkaProducer: pass  # type: ignore
-    class KinesisProducer: pass  # type: ignore
-    class MockProducer: pass  # type: ignore
-    def create_stream_producer(*args, **kwargs):  # type: ignore
-        raise ImportError("kafka-python or boto3 not installed")
+
+    class _OptionalStreamDependencyStub:
+        """Stub for optional stream dependency that raises ImportError on any use."""
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                f"{self.__class__.__name__} requires kafka-python or boto3. "
+                f"Install with: pip install kafka-python boto3"
+            )
+
+    class StreamProducer(_OptionalStreamDependencyStub): ...
+    class StreamPublisher(_OptionalStreamDependencyStub): ...
+    class StreamEvent(_OptionalStreamDependencyStub): ...
+    class StreamType(_OptionalStreamDependencyStub): ...
+    class KafkaProducer(_OptionalStreamDependencyStub): ...
+    class KinesisProducer(_OptionalStreamDependencyStub): ...
+    class MockProducer(_OptionalStreamDependencyStub): ...
+
+    def create_stream_producer(*args, **kwargs):
+        raise ImportError(
+            "create_stream_producer requires kafka-python or boto3. "
+            "Install with: pip install kafka-python boto3"
+        )
 
 # Consumer group exports (optional - may not have kafka-python installed)
 try:
@@ -193,11 +206,20 @@ try:
     _consumer_group_available = True
 except ImportError:
     _consumer_group_available = False
-    # Create stub classes
-    class KafkaConsumerGroup: pass  # type: ignore
-    class ConsumerRecord: pass  # type: ignore
-    class ConsumerStats: pass  # type: ignore
-    class ConsumerState: pass  # type: ignore
+
+    class _OptionalConsumerDependencyStub:
+        """Stub for optional consumer dependency that raises ImportError on any use."""
+
+        def __init__(self, *args, **kwargs):
+            raise ImportError(
+                f"{self.__class__.__name__} requires kafka-python. "
+                f"Install with: pip install kafka-python"
+            )
+
+    class KafkaConsumerGroup(_OptionalConsumerDependencyStub): ...
+    class ConsumerRecord(_OptionalConsumerDependencyStub): ...
+    class ConsumerStats(_OptionalConsumerDependencyStub): ...
+    class ConsumerState(_OptionalConsumerDependencyStub): ...
 # Hook system exports
 from .websocket.subscriptions import (
     SubscriptionManager,

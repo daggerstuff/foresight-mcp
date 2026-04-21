@@ -5,14 +5,18 @@ Restored from src/lib/ai/memory/ architecture.
 """
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
+import logging
 import os
 import sqlite3
 import hashlib
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 
 from fastmcp import FastMCP
 
@@ -25,110 +29,204 @@ from .memory_components import (
     MemoryCrisisTagger, SocraticGate, MemorySynthesizer, MemoryLinker
 )
 from .crisis_detection import get_crisis_service
-from .subconscious import get_subconscious_agent
+from .subconscious import get_subconscious_agent, USER_PREFERENCES, PENDING_ITEMS, SESSION_PATTERNS
 from .event_bus import get_event_bus, memory_stored, memory_retrieved, memory_updated, memory_deleted
 from .websocket.subscriptions import SubscriptionManager
 from .projections.builder import ProjectionBuilder
-from .rate_limiter import RateLimiter, RateLimitExceeded
+from .rate_limiter import RateLimitExceeded, get_rate_limiter
+from .connection_pool import get_pool, PooledConnection
 
-# Configuration
-DEFAULT_DB_PATH = str(Path.home() / ".foresight" / "memory.db")
-DEFAULT_USER_ID = os.environ.get("USER", "user")
-DEFAULT_BANK_ID = "default"
-DEFAULT_TENANT_ID = "default"
+# Configuration - canonical source is now .config; re-exported here for
+# backward compatibility so that existing `from .server import DB_PATH`
+# still works during the transition.
+from .config import (  # noqa: F401 - re-exports
+    DB_PATH,
+    USER_ID,
+    BANK_ID,
+    TENANT_ID,
+    DEFAULT_DB_PATH,
+    DEFAULT_USER_ID,
+    DEFAULT_BANK_ID,
+    DEFAULT_TENANT_ID,
+    DEFAULT_RATE_LIMIT,
+    DEFAULT_BURST_LIMIT,
+)
 
-DB_PATH = os.environ.get("FORESIGHT_DB_PATH", DEFAULT_DB_PATH)
-USER_ID = os.environ.get("FORESIGHT_USER_ID", DEFAULT_USER_ID)
-BANK_ID = os.environ.get("FORESIGHT_BANK_ID", DEFAULT_BANK_ID)
-TENANT_ID = os.environ.get("FORESIGHT_TENANT_ID", DEFAULT_TENANT_ID)
 
-# Rate limiting configuration
-DEFAULT_RATE_LIMIT = 100  # requests per minute
-DEFAULT_BURST_LIMIT = 20  # burst requests
+def _run_async(coro):
+    """Run an async coroutine safely, handling existing event loops.
+
+    When an event loop is already running (e.g. inside an MCP server),
+    asyncio.run() raises RuntimeError. This helper offloads the coroutine
+    to a fresh loop in a background thread instead.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
+def _check_rate_limit(tenant_id: str | None = None) -> None:
+    """Check rate limit for tenant, raising RateLimitExceeded if exceeded."""
+    tid = tenant_id or TENANT_ID
+    # Look up tenant-specific limits from DB
+    rate_limit = DEFAULT_RATE_LIMIT
+    burst_limit = DEFAULT_BURST_LIMIT
+    try:
+        conn = get_db_connection()
+        row = conn.execute(
+            "SELECT rate_limit, burst_limit FROM tenants WHERE id = ?",
+            (tid,)
+        ).fetchone()
+        conn.close()
+        if row:
+            rate_limit = row['rate_limit'] or DEFAULT_RATE_LIMIT
+            burst_limit = row['burst_limit'] or DEFAULT_BURST_LIMIT
+    except Exception:
+        pass  # Fall back to defaults if DB unavailable
+
+    limiter = get_rate_limiter()
+    if not limiter.acquire(tid, rate_limit=rate_limit, burst_limit=burst_limit):
+        remaining = limiter.get_remaining(tid)
+        reset_time = time.time() + 60 / rate_limit
+        raise RateLimitExceeded(remaining=remaining, reset_time=reset_time)
 
 
 def get_db_connection():
-    """Get a database connection with row factory."""
-    conn = sqlite3.connect(str(Path(DB_PATH)))
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get a database connection from the pool.
+
+    Returns a PooledConnection that delegates all attribute access to the
+    underlying sqlite3.Connection. Calling .close() returns the connection
+    to the pool instead of truly closing it.
+    """
+    pool = get_pool()
+    conn = pool.acquire()
+    return PooledConnection(conn, pool)
+
+
+SCHEMA_VERSION = 2
+
+_SCHEMA_MIGRATIONS = {
+    1: [
+        """CREATE TABLE IF NOT EXISTS tenants (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            rate_limit INTEGER DEFAULT 100,
+            burst_limit INTEGER DEFAULT 20,
+            created_at TEXT NOT NULL,
+            config TEXT DEFAULT '{}'
+        )""",
+        """CREATE TABLE IF NOT EXISTS memories (
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            scope TEXT DEFAULT 'session',
+            retention TEXT DEFAULT 'short_term',
+            category TEXT DEFAULT 'fact',
+            user_id TEXT DEFAULT 'default',
+            bank_id TEXT DEFAULT 'default',
+            created_at TEXT NOT NULL,
+            updated_at TEXT,
+            tags TEXT DEFAULT '[]',
+            emotional_context TEXT DEFAULT '{}',
+            metrics TEXT DEFAULT '{}',
+            vector_id TEXT,
+            gist TEXT,
+            is_ghost INTEGER DEFAULT 0,
+            synthesized_from TEXT DEFAULT '[]',
+            version INTEGER DEFAULT 1
+        )""",
+        """CREATE TABLE IF NOT EXISTS memory_versions (
+            id TEXT PRIMARY KEY,
+            memory_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            content TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            tags TEXT DEFAULT '[]',
+            emotional_context TEXT DEFAULT '{}',
+            metrics TEXT DEFAULT '{}',
+            rollback_of TEXT DEFAULT NULL,
+            FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+        )""",
+        'CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)',
+        'CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)',
+        'CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id)',
+        'CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(id)',
+    ],
+    2: [
+        'ALTER TABLE memories ADD COLUMN accessed_at TEXT DEFAULT CURRENT_TIMESTAMP',
+        'ALTER TABLE memories ADD COLUMN importance REAL DEFAULT 1.0',
+        'ALTER TABLE memories ADD COLUMN decay_rate REAL DEFAULT 0.01',
+        'ALTER TABLE memories ADD COLUMN activation_count INTEGER DEFAULT 0',
+        'ALTER TABLE memories ADD COLUMN retrieval_count INTEGER DEFAULT 0',
+        "ALTER TABLE memories ADD COLUMN strength_trend TEXT DEFAULT 'stable'",
+        'ALTER TABLE memories ADD COLUMN last_retrieved_at TEXT',
+        "ALTER TABLE memories ADD COLUMN category TEXT DEFAULT 'general'",
+        'CREATE INDEX IF NOT EXISTS idx_memories_user_created ON memories(user_id, created_at DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_user_accessed ON memories(user_id, accessed_at DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_strength_trend ON memories(user_id, strength_trend, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(user_id, category, created_at DESC)',
+        """CREATE TABLE IF NOT EXISTS decay_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'general',
+            half_life_hours REAL DEFAULT 168.0,
+            min_importance REAL DEFAULT 0.1,
+            activation_boost REAL DEFAULT 1.2,
+            strengthening_threshold INTEGER DEFAULT 5,
+            stale_threshold REAL DEFAULT 0.2,
+            UNIQUE(user_id, category)
+        )""",
+    ],
+}
 
 
 def init_db():
-    """Initialize the database schema with full memory support including versioning."""
+    """Initialize the database schema with idempotent versioned migrations."""
     db_path = Path(DB_PATH)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = get_db_connection()
 
-    # Drop existing tables for clean schema (migration)
-    conn.execute("DROP TABLE IF EXISTS memory_versions")
-    conn.execute("DROP TABLE IF EXISTS memories")
-
-    # Tenant configurations table
     conn.execute("""
-    CREATE TABLE IF NOT EXISTS tenants (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      rate_limit INTEGER DEFAULT 100,
-      burst_limit INTEGER DEFAULT 20,
-      created_at TEXT NOT NULL,
-      config TEXT DEFAULT '{}'
-    )
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
     """)
 
-# Main memories table with tenant isolation
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS memories (
-      id TEXT PRIMARY KEY,
-      content TEXT NOT NULL,
-      tenant_id TEXT NOT NULL DEFAULT 'default',
-      scope TEXT DEFAULT 'session',
-      retention TEXT DEFAULT 'short_term',
-      category TEXT DEFAULT 'fact',
-      user_id TEXT DEFAULT 'default',
-      bank_id TEXT DEFAULT 'default',
-      created_at TEXT NOT NULL,
-      updated_at TEXT,
-      tags TEXT DEFAULT '[]',
-      emotional_context TEXT DEFAULT '{}',
-      metrics TEXT DEFAULT '{}',
-      vector_id TEXT,
-      gist TEXT,
-      is_ghost INTEGER DEFAULT 0,
-      synthesized_from TEXT DEFAULT '[]',
-      version INTEGER DEFAULT 1
-    )
-    """)
+    applied = {
+        row['version'] for row in
+        conn.execute("SELECT version FROM schema_migrations").fetchall()
+    }
 
-    # Version history table for point-in-time recovery
-    conn.execute("""
-    CREATE TABLE IF NOT EXISTS memory_versions (
-      id TEXT PRIMARY KEY,
-      memory_id TEXT NOT NULL,
-      tenant_id TEXT NOT NULL DEFAULT 'default',
-      content TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      created_at TEXT NOT NULL,
-      tags TEXT DEFAULT '[]',
-      emotional_context TEXT DEFAULT '{}',
-      metrics TEXT DEFAULT '{}',
-      rollback_of TEXT DEFAULT NULL,
-      FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
-    )
-    """)
+    for version in sorted(_SCHEMA_MIGRATIONS):
+        if version in applied:
+            continue
+        for stmt in _SCHEMA_MIGRATIONS[version]:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                err = str(e).lower()
+                if 'duplicate column' in err or 'already exists' in err:
+                    continue
+                raise
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
 
-    # Indexes for common queries (including tenant isolation)
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_tenant ON memories(tenant_id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_content ON memories(content)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(tags)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_memory ON memory_versions(memory_id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_tenant ON memory_versions(tenant_id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_versions_created ON memory_versions(created_at)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_tenants_id ON tenants(id)')
-
-    conn.commit()
     conn.close()
 
 # Initialize database on module load
@@ -162,8 +260,8 @@ def get_memory_versions(memory_id: str, user_id: Optional[str] = None) -> str:
 
     # Get version history
     versions = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY version DESC",
-        (memory_id,)
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND tenant_id = ? ORDER BY version DESC",
+        (memory_id, TENANT_ID)
     ).fetchall()
     conn.close()
 
@@ -208,17 +306,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[s
     uid = user_id or USER_ID
     conn = get_db_connection()
 
-    # Get the version content
-    version_row = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
-        (memory_id, target_version)
-    ).fetchone()
-
-    if not version_row:
-        conn.close()
-        return f"Version {target_version} not found for memory {memory_id}"
-
-    # Get current version to snapshot it
+    # Verify memory ownership first
     current = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
         (memory_id, uid, TENANT_ID)
@@ -227,6 +315,16 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: Optional[s
     if not current:
         conn.close()
         return f"Memory {memory_id} not found"
+
+    # Get the version content (tenant enforced via memory ownership above)
+    version_row = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (memory_id, target_version, TENANT_ID)
+    ).fetchone()
+
+    if not version_row:
+        conn.close()
+        return f"Version {target_version} not found for memory {memory_id}"
 
     # Snapshot current state before rollback
     create_version_snapshot(
@@ -319,7 +417,27 @@ def get_memory_system():
     }
 
 
-mcp = FastMCP("Foresight")
+from fastmcp.server.middleware import Middleware as _Middleware
+
+
+class RateLimitMiddleware(_Middleware):
+    """FastMCP middleware that enforces per-tenant rate limiting on tool calls."""
+
+    async def on_call_tool(self, context, call_next):
+        try:
+            _check_rate_limit()
+        except RateLimitExceeded as e:
+            from mcp.types import CallToolResult, TextContent
+            return CallToolResult(
+                content=[TextContent(type="text", text=str(e))],
+                isError=True,
+            )
+        return await call_next(context)
+
+
+mcp = FastMCP("Foresight", middleware=[RateLimitMiddleware()])
+
+logger = logging.getLogger("foresight_server")
 
 
 @mcp.tool()
@@ -349,6 +467,28 @@ def store_memory(content: str, category: str = "fact",
 
     uid = user_id or USER_ID
 
+    # Deduplication: check for exact content match within same user+tenant
+    content_hash = hashlib.sha256(content.strip().lower().encode()).hexdigest()[:16]
+    conn = get_db_connection()
+    existing = conn.execute(
+        "SELECT id, importance, activation_count FROM memories "
+        "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
+        "ORDER BY created_at DESC LIMIT 1",
+        (uid, TENANT_ID, content.strip())
+    ).fetchone()
+    if existing:
+        # Bump activation count instead of creating duplicate
+        conn.execute(
+            "UPDATE memories SET activation_count = activation_count + 1, "
+            "updated_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), existing['id'])
+        )
+        conn.commit()
+        conn.close()
+        return (f"Duplicate detected — bumped activation for existing memory "
+                f"{existing['id']} (activations: {existing['activation_count'] + 1})")
+    conn.close()
+
     # Parse emotional context if provided
     emo_ctx = None
     if emotional_context:
@@ -373,8 +513,7 @@ def store_memory(content: str, category: str = "fact",
     ms = get_memory_system()
     gate = SocraticGate(ms['tagger'])
 
-    import asyncio
-    gate_result = asyncio.run(gate.evaluate(memory, uid))
+    gate_result = _run_async(gate.evaluate(memory, uid))
 
     # Apply tags from gate
     memory.tags = gate_result.suggested_tags
@@ -419,14 +558,34 @@ def query_memories(query: str, user_id: Optional[str] = None,
                    limit: int = 5, offset: int = 0) -> str:
     """Search memories by content using a query string."""
     uid = user_id or USER_ID
+    escaped = query.replace('!', '!!').replace('%', '!%').replace('_', '!_')
     conn = get_db_connection()
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? LIMIT ? OFFSET ?",
-        (uid, TENANT_ID, f"%{query}%", limit, offset)
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?",
+        (uid, TENANT_ID, f"%{escaped}%", limit, offset)
     ).fetchall()
     conn.close()
 
     if not rows:
+        # Fallback to hybrid retriever for semantic + graph + temporal search
+        try:
+            from .hybrid_retriever import get_hybrid_retriever
+            retriever = get_hybrid_retriever()
+            hybrid_result = retriever.search(
+                query, uid, tenant_id=TENANT_ID, limit=limit
+            )
+            if hybrid_result.results:
+                results = []
+                for r in hybrid_result.results:
+                    signals = ', '.join(r.source_signals) if r.source_signals else 'hybrid'
+                    results.append(
+                        f"- [{r.memory_id}] {r.content} "
+                        f"(score={r.combined_score:.3f}, signals={signals})"
+                    )
+                return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
+        except Exception:
+            logger.debug("Hybrid retriever fallback failed", exc_info=True)
+
         return f"No memories found matching '{query}'"
 
     # Emit events for retrieved memories
@@ -579,8 +738,8 @@ def delete_memory(memory_id: str, user_id: Optional[str] = None) -> str:
     uid = user_id or USER_ID
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT id FROM memories WHERE id = ? AND user_id = ?",
-        (memory_id, uid)
+        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
     ).fetchone()
 
     if not row:
@@ -608,8 +767,8 @@ def synthesize_memories(user_id: Optional[str] = None) -> str:
     uid = user_id or USER_ID
     conn = get_db_connection()
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? ORDER BY created_at",
-        (uid,)
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at LIMIT 500",
+        (uid, TENANT_ID)
     ).fetchall()
     conn.close()
 
@@ -642,8 +801,7 @@ def synthesize_memories(user_id: Optional[str] = None) -> str:
 
     # Run synthesis
     ms = get_memory_system()
-    import asyncio
-    result = asyncio.run(ms['synthesizer'].synthesize(memories))
+    result = _run_async(ms['synthesizer'].synthesize(memories))
 
     if not result:
         return "Synthesis returned no results."
@@ -721,7 +879,6 @@ def archive_memory(memory_id: str, user_id: Optional[str] = None) -> str:
 # =============================================================================
 
 @mcp.tool()
-@mcp.tool()
 def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = None) -> str:
     """
     Rollback a memory to a previous version.
@@ -747,10 +904,10 @@ def rollback_memory(memory_id: str, to_version: int, user_id: Optional[str] = No
         conn.close()
         return f"Memory {memory_id} not found."
 
-    # Verify version exists
+    # Verify version exists (tenant enforced via memory ownership above)
     version_row = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
-        (memory_id, to_version)
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (memory_id, to_version, TENANT_ID)
     ).fetchone()
 
     if not version_row:
@@ -818,14 +975,24 @@ def diff_memories(memory_id: str, version1: int, version2: int, user_id: Optiona
     uid = user_id or USER_ID
     conn = get_db_connection()
 
+    # Verify memory ownership first
+    mem = conn.execute(
+        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, TENANT_ID)
+    ).fetchone()
+
+    if not mem:
+        conn.close()
+        return f"Memory {memory_id} not found."
+
     v1 = conn.execute(
-        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ?",
-        (memory_id, version1)
+        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (memory_id, version1, TENANT_ID)
     ).fetchone()
 
     v2 = conn.execute(
-        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ?",
-        (memory_id, version2)
+        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (memory_id, version2, TENANT_ID)
     ).fetchone()
 
     conn.close()
@@ -1045,6 +1212,100 @@ def clear_subconscious_block(label: str, user_id: Optional[str] = None) -> str:
     return f"Cleared block '{label}'"
 
 
+def _bridge_subconscious_to_memories(agent, uid: str) -> int:
+    """Bridge subconscious block extractions into the memory store.
+
+    Reads the most recent items from user_preferences, pending_items,
+    and session_patterns blocks and stores each as a deduplicated memory.
+
+    Returns the number of new memories stored.
+    """
+    stored = 0
+    now = datetime.now(timezone.utc).isoformat()
+    block_map = [
+        (USER_PREFERENCES, "preference"),
+        (PENDING_ITEMS, "pending"),
+        (SESSION_PATTERNS, "pattern"),
+    ]
+
+    for block_name, category in block_map:
+        block = agent.state.get_block(block_name)
+        if not block or block.is_empty():
+            continue
+
+        # Block content is newline-separated entries like:
+        #   - [2026-04-20 12:00] some text
+        lines = [ln.strip() for ln in block.content.splitlines() if ln.strip()]
+        # Take the last 5 items to avoid replaying the entire history
+        recent = lines[-5:]
+
+        for line in recent:
+            content = f"[{block_name}] {line}"
+            conn = get_db_connection()
+            existing = conn.execute(
+                "SELECT id, activation_count FROM memories "
+                "WHERE user_id = ? AND content = ? AND is_ghost = 0 "
+                "ORDER BY created_at DESC LIMIT 1",
+                (uid, content),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE memories SET activation_count = activation_count + 1, "
+                    "updated_at = ? WHERE id = ?",
+                    (now, existing["id"]),
+                )
+                conn.commit()
+                conn.close()
+                continue
+
+            mid = hashlib.sha256(
+                f"{content}{now}".encode()
+            ).hexdigest()[:16]
+            conn.execute(
+                "INSERT OR IGNORE INTO memories "
+                "(id, content, scope, retention, category, user_id, bank_id, "
+                "created_at, updated_at, tags, emotional_context, metrics, "
+                "is_ghost, synthesized_from) "
+                "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
+                (mid, content, category, uid, BANK_ID, now, now),
+            )
+            conn.commit()
+            conn.close()
+            stored += 1
+
+    return stored
+
+
+def _bridge_transcript_entities(messages: List[dict], uid: str) -> int:
+    """Run entity extraction on transcript content and persist found entities.
+
+    Returns the number of entities stored.
+    """
+    from .entity_extractor import get_entity_extractor
+    from .graph_store import get_graph_store
+
+    # Combine user messages for extraction (skip system/assistant noise)
+    user_content = " ".join(
+        msg.get("content", "")
+        for msg in messages
+        if msg.get("role") == "user"
+    )[:3000]  # Truncate to avoid excessive extraction
+
+    if not user_content.strip():
+        return 0
+
+    extractor = get_entity_extractor()
+    result = _run_async(extractor.extract(user_content))
+
+    if not result.entities:
+        return 0
+
+    store = get_graph_store()
+    store.process_extraction_result(result, uid)
+
+    return len(result.entities)
+
+
 @mcp.tool()
 def process_session_transcript(
     session_id: str,
@@ -1067,12 +1328,17 @@ def process_session_transcript(
     uid = user_id or USER_ID
     agent = get_subconscious_agent(uid)
 
-    import asyncio
-    asyncio.run(agent.process_transcript(
+    _run_async(agent.process_transcript(
         session_id=session_id,
         messages=messages,
         project_path=project_path
     ))
+
+    # Bridge subconscious extraction to memory store
+    _bridge_subconscious_to_memories(agent, uid)
+
+    # Run entity extraction on transcript content and store entities
+    _bridge_transcript_entities(messages, uid)
 
     return f"Processed transcript for session {session_id}"
 
@@ -1114,9 +1380,7 @@ def ws_subscribe(
     manager = get_subscription_manager()
     uid = user_id or USER_ID
 
-    import asyncio
-
-    asyncio.run(
+    _run_async(
         manager.subscribe(
             subscription_id=subscription_id,
             connection_id=uid,
@@ -1141,9 +1405,7 @@ def ws_unsubscribe(subscription_id: str) -> str:
     """
     manager = get_subscription_manager()
 
-    import asyncio
-
-    if asyncio.run(manager.unsubscribe(subscription_id)):
+    if _run_async(manager.unsubscribe(subscription_id)):
         return f"Unsubscribed {subscription_id}"
     return f"Subscription {subscription_id} not found"
 
@@ -1340,6 +1602,211 @@ def audit_summary() -> str:
 
     summary = builder.get_report_summary(events)
     return json.dumps(summary, indent=2)
+
+
+# =============================================================================
+# In-Context Memory Injection
+# =============================================================================
+
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been",
+    "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "can", "this", "that",
+    "these", "those", "i", "you", "he", "she", "it", "we", "they",
+    "me", "him", "her", "us", "them", "my", "your", "his", "its",
+    "our", "their", "and", "but", "or", "not", "no", "so", "if",
+    "then", "than", "too", "very", "just", "about", "also", "with",
+    "from", "into", "for", "on", "at", "to", "of", "in", "by", "up",
+    "out", "off", "all", "some", "any", "each", "every", "both",
+    "few", "more", "most", "other", "such", "only", "own", "same",
+    "what", "when", "where", "who", "how", "why", "which", "while",
+    "during", "before", "after", "above", "below", "between",
+    "under", "again", "further", "once",
+})
+
+
+def _extract_terms(text: str) -> list[str]:
+    """Extract key terms from text by splitting, lowering, and filtering stop words and short tokens."""
+    words = text.lower().split()
+    return [w for w in words if len(w) > 3 and w not in _STOP_WORDS]
+
+
+def _score_memory_relevance(
+    memory: sqlite3.Row,
+    terms: list[str],
+    now: datetime,
+) -> float:
+    """Compute a relevance score for a memory row given search terms.
+
+    Score = term_overlap_count + importance_boost + recency_decay
+
+    - term_overlap_count: how many of the search terms appear in the memory content
+    - importance_boost: the stored importance value (default 1.0)
+    - recency_decay: exponential decay based on age in days (half-life ~7 days)
+    """
+    content_lower = (memory["content"] or "").lower()
+
+    # Term overlap: count how many distinct search terms appear in content
+    overlap = sum(1 for t in terms if t in content_lower)
+
+    # Importance boost: use stored importance, defaulting to 1.0 for older rows
+    importance = memory["importance"] if memory["importance"] is not None else 1.0
+
+    # Recency decay: exponential with ~7-day half-life
+    created_str = memory["created_at"]
+    try:
+        created = datetime.fromisoformat(created_str)
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        age_hours = max((now - created).total_seconds() / 3600, 0)
+    except (ValueError, TypeError):
+        age_hours = 0
+    half_life_hours = 168.0  # 7 days
+    decay = 0.5 ** (age_hours / half_life_hours)
+
+    return overlap + importance * 0.5 + decay * 0.5
+
+
+@mcp.tool()
+def inject_context(
+    conversation_text: str,
+    user_id: Optional[str] = None,
+    max_memories: int = 5,
+    min_relevance: float = 0.3,
+) -> str:
+    """Surface relevant memories based on conversation context.
+
+    Analyzes conversation text to find and return the most relevant memories
+    for grounding the AI's responses in prior context.
+
+    Args:
+        conversation_text: The current conversation text to analyze for context
+        user_id: Optional user ID override
+        max_memories: Maximum number of memories to return (default: 5)
+        min_relevance: Minimum relevance score threshold (default: 0.3)
+
+    Returns:
+        Structured context block with relevant memories and subconscious patterns
+    """
+    uid = user_id or USER_ID
+    terms = _extract_terms(conversation_text)
+    now = datetime.now(timezone.utc)
+
+    # Query candidate memories that match any term via LIKE
+    conn = get_db_connection()
+    candidates: list[sqlite3.Row] = []
+
+    if terms:
+        # Build OR-clause of LIKE conditions with proper ESCAPE
+        conditions = []
+        params: list[str] = []
+        for term in terms:
+            escaped = term.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+            conditions.append("content LIKE ? ESCAPE '!'")
+            params.append(f"%{escaped}%")
+
+        where_clause = " OR ".join(conditions)
+        query = (
+            f"SELECT * FROM memories "
+            f"WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+            f"AND ({where_clause}) "
+            f"ORDER BY importance DESC, created_at DESC LIMIT 50"
+        )
+        candidates = conn.execute(
+            query,
+            [uid, TENANT_ID] + params,
+        ).fetchall()
+
+    # Also fetch high-importance memories as fallback (even without term match)
+    fallback = conn.execute(
+        "SELECT * FROM memories "
+        "WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+        "AND importance >= ? "
+        "ORDER BY importance DESC, created_at DESC LIMIT 20",
+        (uid, TENANT_ID, min_relevance),
+    ).fetchall()
+
+    conn.close()
+
+    # Merge candidates and fallback, deduplicate by id
+    seen_ids: set[str] = set()
+    all_rows: list[sqlite3.Row] = []
+    for row in candidates + fallback:
+        if row["id"] not in seen_ids:
+            seen_ids.add(row["id"])
+            all_rows.append(row)
+
+    # Score and sort
+    scored = [
+        (row, _score_memory_relevance(row, terms, now))
+        for row in all_rows
+    ]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+
+    # Filter by minimum relevance
+    top = [(row, score) for row, score in scored if score >= min_relevance]
+    top = top[:max_memories]
+
+    # Build structured context block
+    lines: list[str] = []
+    if top:
+        lines.append(f"[Relevant Context - {len(top)} memories surfaced]")
+        for row, score in top:
+            importance_val = row["importance"] if row["importance"] is not None else 1.0
+            snippet = (row["content"] or "")[:120]
+            if len(row["content"] or "") > 120:
+                snippet += "..."
+            lines.append(
+                f"- [{row['id']}] (importance: {importance_val:.1f}) {snippet}"
+            )
+
+    # Check subconscious blocks for relevant preferences/patterns
+    sub_lines = _subconscious_context_for_terms(uid, terms)
+    if sub_lines:
+        if not top:
+            lines.append(f"[Relevant Context - 0 memories surfaced]")
+        lines.append("")
+        lines.append("[Subconscious Patterns]")
+        lines.extend(sub_lines)
+
+    if not lines:
+        return "[Relevant Context - 0 memories surfaced]\nNo relevant memories found for this conversation."
+
+    return "\n".join(lines)
+
+
+def _subconscious_context_for_terms(
+    uid: str,
+    terms: list[str],
+) -> list[str]:
+    """Check subconscious blocks for content relevant to the search terms.
+
+    Returns a list of formatted lines with matching block content.
+    """
+    agent = get_subconscious_agent(uid)
+    relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
+    lines: list[str] = []
+
+    for label in relevant_labels:
+        block = agent.state.get_block(label)
+        if not block or block.is_empty():
+            continue
+        content = block.content
+        # Check if any term appears in the block content
+        content_lower = content.lower()
+        if terms and any(t in content_lower for t in terms):
+            # Include relevant lines from the block
+            matching = []
+            for line in content.splitlines():
+                line_lower = line.lower().strip()
+                if line_lower and any(t in line_lower for t in terms):
+                    matching.append(line.strip())
+            if matching:
+                lines.append(f"[{label}]")
+                for m in matching[:3]:  # Limit to 3 lines per block
+                    lines.append(f"  {m}")
+
+    return lines
 
 
 def main():
@@ -2044,13 +2511,12 @@ def extract_entities(
     Returns:
         JSON with extracted entities and relationships
     """
-    import asyncio
     from .entity_extractor import get_entity_extractor
 
     uid = user_id or USER_ID
     extractor = get_entity_extractor()
 
-    result = asyncio.run(extractor.extract(content))
+    result = _run_async(extractor.extract(content))
 
     return json.dumps({
         'user_id': uid,
@@ -2231,7 +2697,6 @@ def enhanced_synthesize(
     Returns:
         JSON with synthesis result including contradictions, trends, insights
     """
-    import asyncio
     from .enhanced_synthesizer import get_enhanced_synthesizer
     from .memory_types import MemoryObject, EmotionalMetadata
 
@@ -2264,7 +2729,7 @@ def enhanced_synthesize(
 
     synthesizer = get_enhanced_synthesizer()
 
-    result = asyncio.run(synthesizer.synthesize(memories, user_id=uid))
+    result = _run_async(synthesizer.synthesize(memories, user_id=uid))
 
     if result is None:
         return "Synthesis could not be completed with available data."

@@ -4,8 +4,9 @@ Token bucket algorithm for per-tenant rate limiting.
 """
 from __future__ import annotations
 import time
+import threading
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Optional
 from collections import defaultdict
 
 
@@ -43,73 +44,82 @@ class RateLimiter:
     def __post_init__(self):
         if not hasattr(self, '_buckets'):
             self._buckets = {}
+        self._lock = threading.Lock()
 
-    def _get_bucket(self, tenant_id: str) -> TokenBucket:
+    def _get_bucket(self, tenant_id: str, rate_limit: Optional[int] = None, burst_limit: Optional[int] = None) -> TokenBucket:
         """Get or create token bucket for tenant."""
         if tenant_id not in self._buckets:
+            rl = rate_limit if rate_limit is not None else self.rate_limit
+            bl = burst_limit if burst_limit is not None else self.burst_limit
             self._buckets[tenant_id] = TokenBucket(
-                tokens=self.burst_limit,
+                tokens=bl,
                 last_update=time.time(),
-                rate=self.rate_limit / 60.0,  # per second
-                burst=self.burst_limit
+                rate=rl / 60.0,
+                burst=bl
             )
         return self._buckets[tenant_id]
 
-    def acquire(self, tenant_id: str, tokens: int = 1) -> bool:
+    def acquire(self, tenant_id: str, tokens: int = 1, rate_limit: Optional[int] = None, burst_limit: Optional[int] = None) -> bool:
         """
         Acquire tokens from tenant's bucket.
 
         Returns True if successful, False if rate limited.
         """
-        bucket = self._get_bucket(tenant_id)
-        now = time.time()
+        with self._lock:
+            bucket = self._get_bucket(tenant_id, rate_limit, burst_limit)
+            now = time.time()
 
-        # Regenerate tokens based on time elapsed
-        elapsed = now - bucket.last_update
-        bucket.tokens = min(
-            bucket.burst,
-            bucket.tokens + elapsed * bucket.rate
-        )
-        bucket.last_update = now
+            # Regenerate tokens based on time elapsed
+            elapsed = now - bucket.last_update
+            bucket.tokens = min(
+                bucket.burst,
+                bucket.tokens + elapsed * bucket.rate
+            )
+            bucket.last_update = now
 
-        # Check if we have enough tokens
-        if bucket.tokens >= tokens:
-            bucket.tokens -= tokens
-            return True
-        return False
+            # Check if we have enough tokens
+            if bucket.tokens >= tokens:
+                bucket.tokens -= tokens
+                return True
+            return False
 
     def get_remaining(self, tenant_id: str) -> int:
         """Get remaining tokens for tenant."""
-        bucket = self._get_bucket(tenant_id)
-        now = time.time()
+        with self._lock:
+            bucket = self._get_bucket(tenant_id)
+            now = time.time()
 
-        # Calculate current tokens
-        elapsed = now - bucket.last_update
-        current = min(
-            bucket.burst,
-            bucket.tokens + elapsed * bucket.rate
-        )
-        return int(current)
+            # Calculate current tokens
+            elapsed = now - bucket.last_update
+            current = min(
+                bucket.burst,
+                bucket.tokens + elapsed * bucket.rate
+            )
+            return int(current)
 
     def reset(self, tenant_id: str) -> None:
         """Reset tenant's rate limit bucket."""
-        if tenant_id in self._buckets:
-            del self._buckets[tenant_id]
+        with self._lock:
+            if tenant_id in self._buckets:
+                del self._buckets[tenant_id]
 
 
-# Global rate limiter instance
-_rate_limiter: RateLimiter | None = None
+# Global rate limiter instance (thread-safe)
+_rate_limiter: Optional[RateLimiter] = None
+_rate_limiter_lock = threading.Lock()
 
 
 def get_rate_limiter() -> RateLimiter:
-    """Get the global rate limiter instance."""
+    """Get the global rate limiter instance (thread-safe)."""
     global _rate_limiter
-    if _rate_limiter is None:
-        _rate_limiter = RateLimiter()
-    return _rate_limiter
+    with _rate_limiter_lock:
+        if _rate_limiter is None:
+            _rate_limiter = RateLimiter()
+        return _rate_limiter
 
 
 def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
     global _rate_limiter
-    _rate_limiter = None
+    with _rate_limiter_lock:
+        _rate_limiter = None

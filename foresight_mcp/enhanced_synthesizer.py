@@ -10,12 +10,13 @@ Extends the existing MemorySynthesizer with:
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 import logging
-import uuid
+import re
+import threading
 
-from .memory_types import MemoryObject, StanceShift, SynthesisResult, EmpathyMetrics
-from .memory_components import MemorySynthesizer, MemoryCrisisTagger
+from .memory_types import MemoryObject, StanceShift
+from .memory_components import MemorySynthesizer
 
 logger = logging.getLogger("foresight_enhanced_synthesizer")
 
@@ -153,12 +154,24 @@ class EnhancedMemorySynthesizer:
     - Evidence-anchored insight generation
     """
 
+    SENTIMENT_OPPOSITES: List[Tuple[str, str]] = [
+        ("love", "hate"),
+        ("good", "bad"),
+        ("happy", "sad"),
+        ("better", "worse"),
+        ("helpful", "harmful"),
+        ("easy", "hard"),
+        ("improve", "worsen"),
+        ("like", "dislike"),
+    ]
+
     def __init__(
         self,
         base_synthesizer: Optional[MemorySynthesizer] = None,
         contradiction_threshold: float = 0.25,
         trend_significance_threshold: float = 0.15,
         min_memories_for_trend: int = 5,
+        overlap_threshold: float = 0.3,
     ):
         """
         Initialize enhanced synthesizer.
@@ -173,11 +186,12 @@ class EnhancedMemorySynthesizer:
         self.contradiction_threshold = contradiction_threshold
         self.trend_significance_threshold = trend_significance_threshold
         self.min_memories_for_trend = min_memories_for_trend
+        self.overlap_threshold = overlap_threshold
 
     async def synthesize(
         self,
         memories: List[MemoryObject],
-        user_id: str = 'default'
+        user_id: str = 'default',  # noqa: ARG002 - part of public API
     ) -> Optional[EnhancedSynthesisResult]:
         """
         Perform enhanced synthesis over memories.
@@ -258,11 +272,12 @@ class EnhancedMemorySynthesizer:
         Detect contradictions between historic and recent memories.
 
         Types:
-        - direct_conflict: Opposite values (>0.5 delta)
+        - direct_conflict: Opposite values (>0.5 delta) or opposite sentiment
         - evolution: Gradual improvement (positive delta)
         - regression: Setback (negative delta)
         """
         contradictions: List[Contradiction] = []
+        seen_pairs: set = set()
 
         # Group memories by topic (simplified: by tags or content similarity)
         topic_clusters = self._cluster_by_topic(historic + recent)
@@ -313,6 +328,46 @@ class EnhancedMemorySynthesizer:
                     confidence=min(abs(delta) / 0.5, 1.0),
                 ))
 
+            # Keyword overlap contradiction detection
+            # Check pairs within the cluster for high overlap with opposite sentiment
+            for i, mem_a in enumerate(cluster):
+                for mem_b in cluster[i + 1:]:
+                    pair_key = tuple(sorted([mem_a.id, mem_b.id]))
+                    if pair_key in seen_pairs:
+                        continue
+
+                    overlap = self._compute_overlap_score(mem_a.content, mem_b.content)
+                    if overlap <= self.overlap_threshold:
+                        continue
+
+                    # Check for opposite sentiment words
+                    conflicting_pair = self._find_sentiment_conflict(
+                        mem_a.content, mem_b.content
+                    )
+                    if conflicting_pair is not None:
+                        seen_pairs.add(pair_key)
+                        pos_word, neg_word = conflicting_pair
+
+                        # Calculate temporal distance
+                        time_a = datetime.fromisoformat(
+                            mem_a.timestamp.replace('Z', '+00:00')
+                        )
+                        time_b = datetime.fromisoformat(
+                            mem_b.timestamp.replace('Z', '+00:00')
+                        )
+                        days_diff = abs((time_b - time_a).days)
+
+                        contradictions.append(Contradiction(
+                            type='direct_conflict',
+                            attribute=topic,
+                            old_value=pos_word,
+                            new_value=neg_word,
+                            delta=-(overlap),
+                            temporal_distance_days=days_diff,
+                            evidence_ids=[mem_a.id, mem_b.id],
+                            confidence=min(overlap * 1.5, 1.0),
+                        ))
+
         return contradictions
 
     def _analyze_temporal_trends(
@@ -362,7 +417,7 @@ class EnhancedMemorySynthesizer:
 
     def _generate_insights(
         self,
-        memories: List[MemoryObject],
+        memories: List[MemoryObject],  # noqa: ARG002 - reserved for future use
         contradictions: List[Contradiction],
         temporal_trends: List[TemporalTrend]
     ) -> List[Insight]:
@@ -427,13 +482,51 @@ class EnhancedMemorySynthesizer:
             tags_lower = [t.lower() for t in memory.tags]
 
             for topic in topics:
-                if topic in content_lower or topic in tags_lower:
+                if re.search(rf'\b{re.escape(topic)}\b', content_lower) or topic in tags_lower:
                     if topic not in clusters:
                         clusters[topic] = []
                     clusters[topic].append(memory)
-                    break  # Only assign to first matching topic
 
         return clusters
+
+    def _compute_overlap_score(self, content_a: str, content_b: str) -> float:
+        """
+        Compute keyword overlap (Jaccard similarity) between two memory contents.
+
+        Tokenizes both contents into word sets and returns the Jaccard index:
+        |A intersection B| / |A union B|
+
+        This gives content-based similarity without requiring embeddings.
+        """
+        words_a = set(re.findall(r'\b\w+\b', content_a.lower()))
+        words_b = set(re.findall(r'\b\w+\b', content_b.lower()))
+
+        if not words_a or not words_b:
+            return 0.0
+
+        intersection = words_a & words_b
+        union = words_a | words_b
+
+        return len(intersection) / len(union)
+
+    def _find_sentiment_conflict(
+        self, content_a: str, content_b: str
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Check if two contents contain opposite sentiment words.
+
+        Returns a tuple of (positive_word, negative_word) if a conflicting
+        pair is found, or None otherwise.
+        """
+        words_a = set(re.findall(r'\b\w+\b', content_a.lower()))
+        words_b = set(re.findall(r'\b\w+\b', content_b.lower()))
+
+        for pos_word, neg_word in self.SENTIMENT_OPPOSITES:
+            if (pos_word in words_a and neg_word in words_b) or \
+               (neg_word in words_a and pos_word in words_b):
+                return (pos_word, neg_word)
+
+        return None
 
     def _extract_metric_value(self, memories: List[MemoryObject]) -> float:
         """
@@ -525,17 +618,20 @@ class EnhancedMemorySynthesizer:
 
 # Global instance management
 _enhanced_synthesizer: Optional[EnhancedMemorySynthesizer] = None
+_enhanced_synthesizer_lock = threading.Lock()
 
 
 def get_enhanced_synthesizer() -> EnhancedMemorySynthesizer:
-    """Get or create global enhanced synthesizer instance."""
+    """Get or create global enhanced synthesizer instance (thread-safe)."""
     global _enhanced_synthesizer
-    if _enhanced_synthesizer is None:
-        _enhanced_synthesizer = EnhancedMemorySynthesizer()
+    with _enhanced_synthesizer_lock:
+        if _enhanced_synthesizer is None:
+            _enhanced_synthesizer = EnhancedMemorySynthesizer()
     return _enhanced_synthesizer
 
 
 def reset_enhanced_synthesizer() -> None:
     """Reset global enhanced synthesizer (for testing)."""
     global _enhanced_synthesizer
-    _enhanced_synthesizer = None
+    with _enhanced_synthesizer_lock:
+        _enhanced_synthesizer = None

@@ -1,5 +1,4 @@
-"""
-Temporal Query Patterns for Time-Based Memory Retrieval.
+"""Temporal Query Patterns for Time-Based Memory Retrieval.
 
 Implements:
 - Time-window retrieval (today/week/month/year)
@@ -12,6 +11,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Literal
 from datetime import datetime, timezone, timedelta
 import sqlite3
+import threading
 import logging
 
 logger = logging.getLogger("foresight_temporal_queries")
@@ -76,6 +76,7 @@ class TemporalQueryBuilder:
             List of TemporalQueryResult
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             window_hours = self._get_window_hours(window)
             cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
@@ -136,6 +137,7 @@ class TemporalQueryBuilder:
             List of TemporalQueryResult
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             category_clause = "AND category = ?" if category else ""
             params = [user_id, target_date.isoformat(), min_importance]
@@ -190,6 +192,7 @@ class TemporalQueryBuilder:
             List of TemporalQueryResult
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             category_clause = "AND category = ?" if category else ""
             params = [user_id, trend, limit]
@@ -240,6 +243,7 @@ class TemporalQueryBuilder:
             Dictionary with trend analysis
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             # Daily stats
             cursor = conn.execute(f"""
@@ -338,6 +342,7 @@ class TemporalQueryBuilder:
             Dictionary mapping memory_id to time_score
         """
         conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
         try:
             placeholders = ','.join('?' * len(memory_ids))
             cursor = conn.execute(f"""
@@ -369,22 +374,25 @@ class TemporalQueryBuilder:
             conn.close()
 
 
-# Global instance management
+# Global instance management (thread-safe)
 _temporal_query_builder: Optional[TemporalQueryBuilder] = None
+_temporal_query_lock = threading.Lock()
 
 
 def get_temporal_query_builder(db_path: Optional[str] = None) -> TemporalQueryBuilder:
-    """Get or create global temporal query builder instance."""
+    """Get or create global temporal query builder instance (thread-safe)."""
     global _temporal_query_builder
-    if _temporal_query_builder is None:
-        if db_path is None:
-            from .server import DB_PATH
-            db_path = DB_PATH
-        _temporal_query_builder = TemporalQueryBuilder(db_path)
+    with _temporal_query_lock:
+        if _temporal_query_builder is None:
+            if db_path is None:
+                from .config import DB_PATH
+                db_path = DB_PATH
+            _temporal_query_builder = TemporalQueryBuilder(db_path)
     return _temporal_query_builder
 
 
 def reset_temporal_query_builder() -> None:
     """Reset global temporal query builder (for testing)."""
     global _temporal_query_builder
-    _temporal_query_builder = None
+    with _temporal_query_lock:
+        _temporal_query_builder = None

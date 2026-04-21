@@ -118,6 +118,6 @@ def initialize_decay_config(db_path: str, user_id: str) -> None:
 
 if __name__ == "__main__":
     # Test migrations
-    from .server import DB_PATH
+    from .config import DB_PATH
     run_temporal_migrations(DB_PATH)
     print(f"Migrations applied to {DB_PATH}")

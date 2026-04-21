@@ -245,6 +245,60 @@ class TestReflectionEngine:
         assert report is not None
         assert report.period == 'monthly'
 
+    def test_content_anchored_insights(self, test_db):
+        """Insights should reference actual memory content, not just counts."""
+        engine = ReflectionEngine(test_db)
+        report = engine.reflect("test_user", period='weekly')
+
+        # At least one insight should contain content from actual memories
+        has_content_evidence = False
+        for insight in report.insights:
+            if insight.insight_type == 'trend':
+                # Content-anchored insights should have "Progress in" prefix
+                if insight.summary.startswith('Progress in'):
+                    has_content_evidence = True
+                    # The summary should contain an excerpt from actual memory content
+                    assert len(insight.summary) > len('Progress in general: ')
+                    # evidence_ids should reference specific memories, not generic first-5
+                    assert len(insight.evidence_ids) >= 1
+
+        assert has_content_evidence, "Expected at least one content-anchored trend insight"
+
+    def test_insights_have_specific_evidence_ids(self, test_db):
+        """Content-anchored insights should point to specific memory IDs, not generic slices."""
+        engine = ReflectionEngine(test_db)
+        report = engine.reflect("test_user", period='weekly')
+
+        # Strengthening/decline insights should have evidence_ids pointing to actual memories
+        for insight in report.insights:
+            if insight.metadata.get('trend') in ('strengthening', 'weakening'):
+                # Should reference a single specific memory, not a slice of first N
+                assert len(insight.evidence_ids) >= 1
+                # The referenced ID should be one of the actual memory IDs
+                all_ids = {'mem_1', 'mem_2', 'mem_3', 'mem_4', 'mem_5', 'mem_6'}
+                for eid in insight.evidence_ids:
+                    assert eid in all_ids
+
+    def test_gist_contains_insight_summaries(self, test_db):
+        """Stored reflection memory gist should contain insight summaries."""
+        engine = ReflectionEngine(test_db)
+        report = engine.reflect("test_user", period='weekly')
+
+        conn = sqlite3.connect(test_db)
+        row = conn.execute(
+            "SELECT gist FROM memories WHERE id = ?",
+            (report.report_id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        gist = row[0]
+        # Gist should contain at least one insight summary (not just 'improving')
+        assert len(gist) > 20  # More than just 'improving' or 'unknown'
+        # Should contain semicolons if multiple insights
+        if len(report.insights) > 1:
+            assert ';' in gist
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
