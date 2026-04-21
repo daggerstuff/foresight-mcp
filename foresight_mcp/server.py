@@ -12,6 +12,7 @@ import os
 import sqlite3
 import hashlib
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1647,10 +1648,16 @@ def _score_memory_relevance(
     content_lower = (memory["content"] or "").lower()
 
     # Term overlap: count how many distinct search terms appear in content
-    overlap = sum(1 for t in terms if t in content_lower)
+    # Use word-boundary regex to prevent substring matches (e.g. "work" in "networking")
+    overlap = sum(
+        1 for t in terms if re.search(rf'\b{re.escape(t)}\b', content_lower)
+    )
 
-    # Importance boost: use stored importance, defaulting to 1.0 for older rows
-    importance = memory["importance"] if memory["importance"] is not None else 1.0
+    # Normalize overlap to 0-1 range so min_relevance threshold is meaningful
+    overlap_score = overlap / max(len(terms), 1)
+
+    # Importance: use stored importance, defaulting to 0.5 for older rows
+    importance = memory["importance"] if memory["importance"] is not None else 0.5
 
     # Recency decay: exponential with ~7-day half-life
     created_str = memory["created_at"]
@@ -1664,7 +1671,7 @@ def _score_memory_relevance(
     half_life_hours = 168.0  # 7 days
     decay = 0.5 ** (age_hours / half_life_hours)
 
-    return overlap + importance * 0.5 + decay * 0.5
+    return overlap_score + importance * 0.5 + decay * 0.5
 
 
 @mcp.tool()

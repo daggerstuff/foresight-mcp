@@ -25,6 +25,7 @@ Relationship Types:
 from __future__ import annotations
 import json
 import logging
+import os
 import re
 import threading
 from dataclasses import dataclass, field
@@ -197,6 +198,9 @@ Output (raw JSON only, no markdown):
         """
         Extract entities and relationships from text.
 
+        Uses LLM extraction when an API key is available, falling back
+        to rule-based extraction otherwise or on LLM failure.
+
         Args:
             content: Text to analyze
 
@@ -206,8 +210,13 @@ Output (raw JSON only, no markdown):
         if not content.strip():
             return ExtractionResult(entities=[], relationships=[])
 
-        # For now, use simple rule-based extraction as fallback
-        # In production, this would call the LLM API
+        api_key = self.api_key or os.environ.get('OPENAI_API_KEY') or os.environ.get('ANTHROPIC_API_KEY')
+        if api_key:
+            try:
+                return await self.extract_with_llm(content)
+            except Exception as e:
+                logger.warning(f"LLM extraction failed, falling back to rules: {e}")
+
         return self._extract_rules_based(content)
 
     def _extract_rules_based(self, content: str) -> ExtractionResult:

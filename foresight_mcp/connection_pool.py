@@ -47,7 +47,11 @@ class ConnectionPool:
                         pass
                     continue
 
-            # Create a new connection if pool isn't full
+            # Create a new connection only if under the size limit
+            if len(self._in_use) >= self.max_size:
+                raise RuntimeError(
+                    f"Connection pool exhausted ({self.max_size} connections in use)"
+                )
             conn = self._new_connection()
             self._in_use.add(conn)
             return conn
