@@ -46,6 +46,8 @@ from .projections.builder import ProjectionBuilder
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .subconscious import PENDING_ITEMS, SESSION_PATTERNS, USER_PREFERENCES, get_subconscious_agent
 from .websocket.subscriptions import SubscriptionManager
+from .stream_producer import create_stream_producer, StreamType, StreamPublisher
+from .consumer_group import KafkaConsumerGroup
 
 
 def _run_async(coro):
