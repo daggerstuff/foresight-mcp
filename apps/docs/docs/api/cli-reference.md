@@ -5,123 +5,129 @@ title: CLI Reference
 
 # CLI Reference
 
-Command-line interface for Foresight operations.
+Command-line interface for Foresight memory operations.
+
+## Installation
+
+```bash
+# The CLI is included with the foresight-mcp package
+# Or run directly from the scripts directory
+python scripts/foresight-cli.py --help
+```
 
 ## Commands
 
 ### Memory Commands
 
 ```bash
-# Store a memory
+# Store a new memory
 foresight store <content> [options]
 
-# Get specific memory
-foresight get <memory_id> [options]
-
-# List memories
-foresight list [options]
-
-# Query memories
+# Query memories by content
 foresight query <query> [options]
 
-# Update memory
+# List recent memories
+foresight list [options]
+
+# Get a specific memory by ID
+foresight get <memory_id> [options]
+
+# Update a memory
 foresight update <memory_id> [options]
 
-# Delete memory
+# Delete a memory
 foresight delete <memory_id> [options]
 
-# Synthesize memories
+# Synthesize memories into insights
 foresight synthesize [options]
 
-# Archive memory
+# Archive a memory
 foresight archive <memory_id> [options]
+
+# Rollback a memory to a previous version
+foresight rollback <memory_id> <version> [options]
+
+# Show diff between two memory versions
+foresight diff <memory_id> <version1> <version2> [options]
+
+# Show memory system status
+foresight status
 ```
 
-### Block Commands
+### Subconscious Block Commands
 
 ```bash
-# List block schemas
-foresight block list [options]
+# List subconscious blocks
+foresight subconscious list [options]
 
-# Create block
-foresight block create <label> [options]
+# Reset a subconscious block
+foresight subconscious reset <label> [options]
 
-# Get block
-foresight block get <label> [options]
-```
-
-### Hook Commands
-
-```bash
-# List hooks
-foresight hook list [options]
-
-# Register hook
-foresight hook register <name> <event_type> [options]
-
-# Unregister hook
-foresight hook unregister <hook_id> [options]
-```
-
-### Event Commands
-
-```bash
-# View event log
-foresight event log [options]
-```
-
-### System Commands
-
-```bash
-# Get status
-foresight status [options]
+# Clear a subconscious block
+foresight subconscious clear <label> [options]
 ```
 
 ## Options
 
 ### Global Options
 
-| Option | Description |
-|--------|-------------|
-| `--help` | Show help |
-| `--json` | Output as JSON |
-| `--user-id` | User ID override |
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--help` | Show help | - |
+| `--json`, `-j` | Output as JSON | false |
+| `--user`, `-u` | User ID | auto-detected |
 
-### Memory Options
+### Store Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--scope` | session, arc, trait, fact | session |
-| `--retention` | ephemeral, short_term, long_term, permanent | short_term |
-| `--category` | Category label | fact |
-| `--limit` | Number of results | 10 |
-| `--offset` | Offset for pagination | 0 |
+| `--category`, `-c` | Memory category | fact |
+| `--scope`, `-s` | session, arc, trait, fact | session |
+| `--retention`, `-r` | short_term, long_term | short_term |
 
-### Hook Options
+### Query/List Options
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--url` | Webhook URL | Required |
-| `--retry` | Retry count | 3 |
-| `--timeout` | Timeout (seconds) | 30 |
+| `--limit`, `-n` | Max results | 10 (query), 20 (list) |
 
 ## Examples
 
 ```bash
-# Store with options
-foresight store "My memory" --scope fact --retention permanent
+# Store a memory
+foresight store "Learning CBT techniques has been helpful" --category fact --user alice
 
-# Query with limit
-foresight query "test" --limit 5
+# Query memories
+foresight query "therapy" --limit 5
 
-# JSON output
+# List recent memories
+foresight list --limit 10
+
+# Get specific memory
+foresight get mem_abc123
+
+# Synthesize insights
+foresight synthesize
+
+# JSON output for scripting
 foresight status --json
 
-# List with pagination
-foresight list --limit 20 --offset 40
+# Rollback to previous version
+foresight rollback mem_abc123 3
+
+# Show diff between versions
+foresight diff mem_abc123 1 2
+
+# List subconscious blocks
+foresight subconscious list
 ```
+
+## Output Format
+
+The CLI uses rich terminal output by default with colored panels, tables, and syntax highlighting. Use `--json` for machine-readable output suitable for scripting.
 
 ## Related
 
 - [Python API](./python-api)
 - [TypeScript API](./typescript-api)
+- [Quickstart](../quickstart)

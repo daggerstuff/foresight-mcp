@@ -1,0 +1,27 @@
+{
+  "id": "api/typescript-api",
+  "title": "TypeScript API Reference",
+  "description": "Complete TypeScript SDK documentation.",
+  "source": "@site/docs/api/typescript-api.md",
+  "sourceDirName": "api",
+  "slug": "/api/typescript-api",
+  "permalink": "/foresight-mcp/docs/api/typescript-api",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/api/typescript-api.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "TypeScript API",
+    "title": "TypeScript API Reference"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "Python API",
+    "permalink": "/foresight-mcp/docs/api/python-api"
+  },
+  "next": {
+    "title": "CLI Reference",
+    "permalink": "/foresight-mcp/docs/api/cli-reference"
+  }
+}

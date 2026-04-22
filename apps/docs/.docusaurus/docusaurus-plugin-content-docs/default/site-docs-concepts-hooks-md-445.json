@@ -1,0 +1,27 @@
+{
+  "id": "concepts/hooks",
+  "title": "Event Hooks",
+  "description": "Hooks enable extensibility by triggering external actions when events occur.",
+  "source": "@site/docs/concepts/hooks.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/hooks",
+  "permalink": "/foresight-mcp/docs/concepts/hooks",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/concepts/hooks.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "Hooks",
+    "title": "Event Hooks"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "Events",
+    "permalink": "/foresight-mcp/docs/concepts/events"
+  },
+  "next": {
+    "title": "WebSocket",
+    "permalink": "/foresight-mcp/docs/concepts/websocket"
+  }
+}

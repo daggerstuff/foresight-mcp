@@ -1,0 +1,27 @@
+{
+  "id": "api/cli-reference",
+  "title": "CLI Reference",
+  "description": "Command-line interface for Foresight operations.",
+  "source": "@site/docs/api/cli-reference.md",
+  "sourceDirName": "api",
+  "slug": "/api/cli-reference",
+  "permalink": "/foresight-mcp/docs/api/cli-reference",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/api/cli-reference.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "CLI Reference",
+    "title": "CLI Reference"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "TypeScript API",
+    "permalink": "/foresight-mcp/docs/api/typescript-api"
+  },
+  "next": {
+    "title": "Basic Usage",
+    "permalink": "/foresight-mcp/docs/examples/basic-usage"
+  }
+}

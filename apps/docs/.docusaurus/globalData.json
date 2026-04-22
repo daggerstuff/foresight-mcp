@@ -1,0 +1,128 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/foresight-mcp/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/foresight-mcp/docs",
+          "mainDocId": "intro",
+          "docs": [
+            {
+              "id": "api/cli-reference",
+              "path": "/foresight-mcp/docs/api/cli-reference",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "api/overview",
+              "path": "/foresight-mcp/docs/api/overview",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "api/python-api",
+              "path": "/foresight-mcp/docs/api/python-api",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "api/typescript-api",
+              "path": "/foresight-mcp/docs/api/typescript-api",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "concepts/blocks",
+              "path": "/foresight-mcp/docs/concepts/blocks",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "concepts/events",
+              "path": "/foresight-mcp/docs/concepts/events",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "concepts/hooks",
+              "path": "/foresight-mcp/docs/concepts/hooks",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "concepts/memory",
+              "path": "/foresight-mcp/docs/concepts/memory",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "concepts/websocket",
+              "path": "/foresight-mcp/docs/concepts/websocket",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "examples/basic-usage",
+              "path": "/foresight-mcp/docs/examples/basic-usage",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "examples/event-hooks",
+              "path": "/foresight-mcp/docs/examples/event-hooks",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "examples/websocket-client",
+              "path": "/foresight-mcp/docs/examples/websocket-client",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "guides/managing-blocks",
+              "path": "/foresight-mcp/docs/guides/managing-blocks",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "guides/querying-memories",
+              "path": "/foresight-mcp/docs/guides/querying-memories",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "guides/real-time-updates",
+              "path": "/foresight-mcp/docs/guides/real-time-updates",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "guides/setting-up-hooks",
+              "path": "/foresight-mcp/docs/guides/setting-up-hooks",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "guides/storing-memories",
+              "path": "/foresight-mcp/docs/guides/storing-memories",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "installation",
+              "path": "/foresight-mcp/docs/installation",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "intro",
+              "path": "/foresight-mcp/docs/intro",
+              "sidebar": "tutorialSidebar"
+            },
+            {
+              "id": "quickstart",
+              "path": "/foresight-mcp/docs/quickstart",
+              "sidebar": "tutorialSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "tutorialSidebar": {
+              "link": {
+                "path": "/foresight-mcp/docs/intro",
+                "label": "intro"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

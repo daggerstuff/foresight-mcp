@@ -1,0 +1,27 @@
+{
+  "id": "concepts/websocket",
+  "title": "WebSocket Subscriptions",
+  "description": "Real-time event streaming via WebSocket connections.",
+  "source": "@site/docs/concepts/websocket.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/websocket",
+  "permalink": "/foresight-mcp/docs/concepts/websocket",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/concepts/websocket.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "WebSocket",
+    "title": "WebSocket Subscriptions"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "Hooks",
+    "permalink": "/foresight-mcp/docs/concepts/hooks"
+  },
+  "next": {
+    "title": "Storing Memories",
+    "permalink": "/foresight-mcp/docs/guides/storing-memories"
+  }
+}

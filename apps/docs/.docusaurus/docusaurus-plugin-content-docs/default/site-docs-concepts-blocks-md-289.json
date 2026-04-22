@@ -1,0 +1,27 @@
+{
+  "id": "concepts/blocks",
+  "title": "Memory Blocks",
+  "description": "Memory Blocks provide structured, composable context containers with configurable retention and merge strategies.",
+  "source": "@site/docs/concepts/blocks.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/blocks",
+  "permalink": "/foresight-mcp/docs/concepts/blocks",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/concepts/blocks.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "Blocks",
+    "title": "Memory Blocks"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "Memory",
+    "permalink": "/foresight-mcp/docs/concepts/memory"
+  },
+  "next": {
+    "title": "Events",
+    "permalink": "/foresight-mcp/docs/concepts/events"
+  }
+}

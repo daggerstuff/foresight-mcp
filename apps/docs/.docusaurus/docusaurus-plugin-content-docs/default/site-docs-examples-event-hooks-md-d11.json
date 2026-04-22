@@ -1,0 +1,27 @@
+{
+  "id": "examples/event-hooks",
+  "title": "Event Hooks Examples",
+  "description": "Integrate Foresight with external systems.",
+  "source": "@site/docs/examples/event-hooks.md",
+  "sourceDirName": "examples",
+  "slug": "/examples/event-hooks",
+  "permalink": "/foresight-mcp/docs/examples/event-hooks",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/examples/event-hooks.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "Event Hooks",
+    "title": "Event Hooks Examples"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "Basic Usage",
+    "permalink": "/foresight-mcp/docs/examples/basic-usage"
+  },
+  "next": {
+    "title": "WebSocket Client",
+    "permalink": "/foresight-mcp/docs/examples/websocket-client"
+  }
+}

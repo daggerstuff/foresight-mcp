@@ -1,0 +1,27 @@
+{
+  "id": "concepts/memory",
+  "title": "Memory Architecture",
+  "description": "Foresight's core unit is the Memory - a persistent, contextual record with emotional metadata and configurable retention.",
+  "source": "@site/docs/concepts/memory.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/memory",
+  "permalink": "/foresight-mcp/docs/concepts/memory",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/docs/concepts/memory.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "sidebar_label": "Memory",
+    "title": "Memory Architecture"
+  },
+  "sidebar": "tutorialSidebar",
+  "previous": {
+    "title": "Installation",
+    "permalink": "/foresight-mcp/docs/installation"
+  },
+  "next": {
+    "title": "Blocks",
+    "permalink": "/foresight-mcp/docs/concepts/blocks"
+  }
+}
