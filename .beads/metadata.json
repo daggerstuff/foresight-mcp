@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "foresight_mcp",
+  "project_id": "31db8e52-0290-45a8-810d-84aada5448a7"
+}
