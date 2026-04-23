@@ -341,16 +341,16 @@ class ComplianceExporter:
                 "user_id": user_id,
                 "certification_date": deletion_date or datetime.now(timezone.utc).isoformat(),
                 "certification_statement": (
-                    f"This certifies that all personal data associated with user '{user_id}' "
-                    "has been permanently deleted from our systems in accordance with "
-                    "GDPR Article 17 (Right to Erasure)."
+                    f"This records that an erasure request has been made for user '{user_id}' "
+                    "under GDPR Article 17. Actual deletion must be verified separately."
                 ),
-                "data_categories_deleted": [
+                "data_categories_requested_for_deletion": [
                     "memory_records",
                     "access_logs",
                     "audit_trails",
                     "user_preferences",
                 ],
+                "deletion_verified": False,
                 "retention_exceptions": [],
                 "authorized_by": "system",
             }
@@ -369,7 +369,11 @@ class ComplianceExporter:
         }, indent=2)
 
     def to_csv(self, export: ComplianceExport) -> str:
-        """Export to CSV format."""
+        """Export to CSV format.
+
+        WARNING: CSV is unencrypted. For PHI data, use encrypted storage
+        or the JSON format with encryption at rest.
+        """
         output = io.StringIO()
         entries = export.data.get("entries", [])
 

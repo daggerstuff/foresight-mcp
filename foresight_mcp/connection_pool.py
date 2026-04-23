@@ -142,9 +142,13 @@ class PooledConnection:
     def __init__(self, conn: sqlite3.Connection, pool: ConnectionPool):
         self._conn = conn
         self._pool = pool
+        self._released = False
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
     def close(self):
+        if self._released:
+            return
+        self._released = True
         self._pool.release(self._conn)

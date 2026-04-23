@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, TypeVar
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,7 @@ class EventBus:
         self._handlers: dict[EventType, list[EventHandler]] = {}
         self._store = store
         self._stream_publisher = stream_publisher
+        self._lock = threading.Lock()
 
     def publish(self, event: Event) -> None:
         """
@@ -290,8 +292,9 @@ class EventBus:
                 logger.warning(f"Stream publishing failed: {e}")
                 # Don't let stream publishing failures block the event
 
-        # Call handlers
-        handlers = self._handlers.get(event.event_type, [])
+        # Snapshot handlers under lock, invoke outside to avoid holding lock during I/O
+        with self._lock:
+            handlers = list(self._handlers.get(event.event_type, []))
         for handler in handlers:
             try:
                 handler(event)
@@ -300,9 +303,10 @@ class EventBus:
 
     def subscribe(self, event_type: EventType, handler: EventHandler) -> None:
         """Subscribe to an event type."""
-        if event_type not in self._handlers:
-            self._handlers[event_type] = []
-        self._handlers[event_type].append(handler)
+        with self._lock:
+            if event_type not in self._handlers:
+                self._handlers[event_type] = []
+            self._handlers[event_type].append(handler)
 
     def unsubscribe(self, event_type: EventType, handler: EventHandler) -> None:
         """Unsubscribe from an event type."""
@@ -329,6 +333,9 @@ _event_bus: EventBus | None = None
 _event_store: EventStore | None = None
 
 
+_event_bus_lock = threading.Lock()
+
+
 def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
     """Get the global event bus instance.
 
@@ -336,9 +343,10 @@ def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
         stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
     """
     global _event_bus, _event_store
-    if _event_bus is None:
-        _event_store = EventStore()
-        _event_bus = EventBus(_event_store, stream_publisher)
+    with _event_bus_lock:
+        if _event_bus is None:
+            _event_store = EventStore()
+            _event_bus = EventBus(_event_store, stream_publisher)
     return _event_bus
 
 
