@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -33,11 +33,10 @@ class StreamEvent:
     entity_id: str
     payload: dict[str, Any]
     timestamp: str
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.metadata is None:
-            self.metadata: dict[str, Any] = {}
+        pass
 
     def to_dict(self) -> dict:
         return {
@@ -293,6 +292,7 @@ class KafkaProducer(StreamProducer):
     def close(self) -> None:
         """Close producer connection."""
         if self._producer:
+            self.flush()
             self._producer.close()
             self._producer = None
 
@@ -410,7 +410,12 @@ class KinesisProducer(StreamProducer):
 
     def close(self) -> None:
         """Close producer connection."""
-        self._client = None
+        if self._client:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
 
 
 # =============================================================================

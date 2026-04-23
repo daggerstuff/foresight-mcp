@@ -198,6 +198,7 @@ class KafkaConsumerGroup:
 
         consumer = self._get_consumer()
         self._running = True
+        backoff_seconds = 1
 
         while self._running:
             try:
@@ -223,7 +224,10 @@ class KafkaConsumerGroup:
                 self._stats.records_failed += 1
                 if not self._running:
                     break
-                # Could add reconnection logic here
+                logger.error(f"Consumer poll failed, retrying in {backoff_seconds}s: {e}")
+                import time
+                time.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 2, 60)  # Exponential backoff, max 60s
 
     def _process_record(self, record: ConsumerRecord) -> None:
         """Process a single record."""
