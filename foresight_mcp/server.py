@@ -404,8 +404,6 @@ def get_memory_diff(memory_id: str, version1: int, version2: int, user_id: str |
 # Memory System Components
 # =============================================================================
 
-_memory_system_initialized = False
-
 
 def get_memory_system():
     """Get or initialize the memory system components."""
@@ -629,7 +627,6 @@ def store_memory(content: str, category: str = "fact",
     uid = user_id or USER_ID
 
     # Deduplication: check for exact content match within same user+tenant
-    content_hash = hashlib.sha256(content.strip().lower().encode()).hexdigest()[:16]
     conn = get_db_connection()
     existing = conn.execute(
         "SELECT id, importance, activation_count FROM memories "

@@ -183,7 +183,12 @@ class EventStore:
             ).fetchall()
         finally:
             conn.close()
-        return [self._row_to_event(row) for row in rows]
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
 
     def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get events by type."""
@@ -195,7 +200,12 @@ class EventStore:
             ).fetchall()
         finally:
             conn.close()
-        return [self._row_to_event(row) for row in rows]
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
 
     def get_by_time_range(
         self,
@@ -213,7 +223,12 @@ class EventStore:
             ).fetchall()
         finally:
             conn.close()
-        return [self._row_to_event(row) for row in rows]
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
 
     def get_all(self, limit: int = 100, offset: int = 0) -> list[Event]:
         """Get all events (paginated)."""
@@ -225,19 +240,28 @@ class EventStore:
             ).fetchall()
         finally:
             conn.close()
-        return [self._row_to_event(row) for row in rows]
+        events = []
+        for row in rows:
+            event = self._row_to_event(row)
+            if event is not None:
+                events.append(event)
+        return events
 
-    def _row_to_event(self, row: tuple) -> Event:
-        """Convert database row to Event."""
-        return Event(
-            id=row[0],
-            event_type=EventType(row[1]),
-            timestamp=datetime.fromisoformat(row[2]),
-            actor=row[3],
-            entity_id=row[4],
-            payload=json.loads(row[5]),
-            metadata=json.loads(row[6]),
-        )
+    def _row_to_event(self, row: tuple) -> Event | None:
+        """Convert database row to Event, returning None for corrupt rows."""
+        try:
+            return Event(
+                id=row[0],
+                event_type=EventType(row[1]),
+                timestamp=datetime.fromisoformat(row[2]),
+                actor=row[3],
+                entity_id=row[4],
+                payload=json.loads(row[5]),
+                metadata=json.loads(row[6]),
+            )
+        except (IndexError, ValueError, KeyError, json.JSONDecodeError) as e:
+            logger.warning(f"Skipping corrupt event row: {e}")
+            return None
 
 
 # =============================================================================

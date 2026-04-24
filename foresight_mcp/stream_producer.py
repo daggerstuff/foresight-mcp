@@ -12,11 +12,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
+
+_TOPIC_ENTITY_RE = re.compile(r'[^a-zA-Z0-9._-]')
+_TOPIC_EVENT_RE = re.compile(r'[^a-zA-Z0-9._-]')
+_TOPIC_ENV_RE = re.compile(r'[^a-zA-Z0-9_-]')
+_MULTI_UNDERSCORE_RE = re.compile(r'_+')
 
 
 class StreamType(str, Enum):
@@ -83,7 +89,8 @@ class MockProducer(StreamProducer):
         return len(events)
 
     def close(self) -> None:
-        pass
+        self.published.clear()
+        self.failures.clear()
 
 
 class KafkaProducer(StreamProducer):
@@ -143,14 +150,13 @@ class KafkaProducer(StreamProducer):
 
     def _get_topic(self, entity: str, event: str) -> str:
         """Generate topic name with naming convention."""
-        import re
         # Normalize entity and event for topic naming
-        entity_clean = re.sub(r'[^a-zA-Z0-9._-]', '_', entity)
-        entity_clean = re.sub(r'_+', '_', entity_clean).lower().strip('_')
-        event_clean = re.sub(r'[^a-zA-Z0-9._-]', '_', event)
-        event_clean = re.sub(r'_+', '_', event_clean).lower().strip('_')
+        entity_clean = _TOPIC_ENTITY_RE.sub('_', entity)
+        entity_clean = _MULTI_UNDERSCORE_RE.sub('_', entity_clean).lower().strip('_')
+        event_clean = _TOPIC_EVENT_RE.sub('_', event)
+        event_clean = _MULTI_UNDERSCORE_RE.sub('_', event_clean).lower().strip('_')
         # Validate environment is safe
-        env_clean = re.sub(r'[^a-zA-Z0-9_-]', '', self.environment).lower()
+        env_clean = _TOPIC_ENV_RE.sub('', self.environment).lower()
         return f"foresight.{env_clean}.{entity_clean}.{event_clean}"
 
     def _validate_event(self, event: StreamEvent) -> bool:

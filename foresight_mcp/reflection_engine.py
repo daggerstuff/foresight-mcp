@@ -32,6 +32,9 @@ class ReflectionInsight:
     recommended_action: str  # 'preserve' | 'review' | 'consolidate' | 'investigate'
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self):
+        self.confidence = max(0.0, min(1.0, self.confidence))
+
     def to_dict(self) -> dict:
         return {
             'insight_type': self.insight_type,
@@ -108,7 +111,11 @@ class ReflectionEngine:
         Returns:
             ReflectionReport or None if insufficient data
         """
-        hours = {'weekly': 168, 'monthly': 720}.get(period, 168)
+        valid_periods = ('daily', 'weekly', 'monthly', 'quarterly')
+        if period not in valid_periods:
+            raise ValueError(f"Invalid period '{period}'. Must be one of: {', '.join(valid_periods)}")
+
+        hours = {'daily': 24, 'weekly': 168, 'monthly': 720, 'quarterly': 2160}.get(period, 168)
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         now = datetime.now(timezone.utc)
 
@@ -659,40 +666,47 @@ class ReflectionEngine:
         tenant_id: str,
     ) -> None:
         """Store reflection report as a memory for continuity."""
-        now = datetime.now(timezone.utc).isoformat()
-        content = f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
+        try:
+            now = datetime.now(timezone.utc).isoformat()
+            content = f"[Reflection: {report.period}] {report.memories_analyzed} memories analyzed, {len(report.insights)} insights found. Overall trend: {report.trend_summary.get('overall', 'unknown')}"
 
-        # Build gist from insight summaries for quick retrieval
-        insight_summaries = [i.summary for i in report.insights]
-        gist = '; '.join(insight_summaries) if insight_summaries else report.trend_summary.get('overall', 'unknown')
+            # Build gist from insight summaries for quick retrieval
+            insight_summaries = [i.summary for i in report.insights]
+            gist = '; '.join(insight_summaries) if insight_summaries else report.trend_summary.get('overall', 'unknown')
 
-        conn.execute(
-            """INSERT OR REPLACE INTO memories
-            (id, user_id, tenant_id, scope, retention, content,
-            tags, emotional_context, metrics, gist,
-            is_ghost, synthesized_from, created_at, updated_at,
-            category, importance)
-            VALUES (?, ?, ?, 'session', 'long_term', ?,
-            ?, ?, ?, ?,
-            0, ?, ?, ?,
-            ?, ?)""",
-            (
-                report.report_id,
-                user_id,
-                tenant_id,
-                content,
-                json.dumps([f'reflection:{report.period}']),
-                json.dumps({}),
-                json.dumps({'insights': len(report.insights)}),
-                gist,
-                json.dumps([r for r in []]),
-                now,
-                now,
-                'reflection',
-                0.9,  # Reflection memories are high importance
-            ),
-        )
-        conn.commit()
+            conn.execute(
+                """INSERT OR REPLACE INTO memories
+                (id, user_id, tenant_id, scope, retention, content,
+                tags, emotional_context, metrics, gist,
+                is_ghost, synthesized_from, created_at, updated_at,
+                category, importance)
+                VALUES (?, ?, ?, 'session', 'long_term', ?,
+                ?, ?, ?, ?,
+                0, ?, ?, ?,
+                ?, ?)""",
+                (
+                    report.report_id,
+                    user_id,
+                    tenant_id,
+                    content,
+                    json.dumps([f'reflection:{report.period}']),
+                    json.dumps({}),
+                    json.dumps({'insights': len(report.insights)}),
+                    gist,
+                    json.dumps([r for r in []]),
+                    now,
+                    now,
+                    'reflection',
+                    0.9, # Reflection memories are high importance
+                ),
+            )
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Failed to store reflection report {report.report_id}: {e}", exc_info=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
 
 
 # Global instance management

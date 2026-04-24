@@ -52,6 +52,9 @@ class Entity:
     properties: dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0
 
+    def __post_init__(self):
+        self.confidence = max(0.0, min(1.0, self.confidence))
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         return {
@@ -84,6 +87,9 @@ class Relationship:
     relationship_type: RelationshipType
     confidence: float = 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self.confidence = max(0.0, min(1.0, self.confidence))
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -325,6 +331,10 @@ Output (raw JSON only, no markdown):
                     )
                 )
 
+        # Limit relationships to top 20 by confidence
+        relationships.sort(key=lambda r: r.confidence, reverse=True)
+        relationships = relationships[:20]
+
         return ExtractionResult(entities=entities, relationships=relationships)
 
     async def extract_with_llm(self, content: str) -> ExtractionResult:
@@ -342,10 +352,10 @@ Output (raw JSON only, no markdown):
         Returns:
             ExtractionResult with entities and relationships
         """
-        try:
-            import httpx
+        import httpx
 
-            prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:3000])  # Truncate if too long
+        try:
+            prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:3000]) # Truncate if too long
 
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
@@ -364,43 +374,62 @@ Output (raw JSON only, no markdown):
                 )
                 response.raise_for_status()
 
-                data = response.json()
-                json_text = data["content"][0]["text"]
+            data = response.json()
+            json_text = data["content"][0]["text"]
 
-                # Parse JSON
-                parsed = json.loads(json_text)
+            # Strip markdown code fencing if present
+            json_text = re.sub(r'^```(?:json)?\s*\n?', '', json_text)
+            json_text = re.sub(r'\n?```\s*$', '', json_text)
+            json_text = json_text.strip()
 
-                entities = [
-                    Entity(
-                        id=self._generate_entity_id(e["name"], e["type"]),
-                        name=e["name"],
-                        entity_type=e["type"],  # type: ignore
-                        description=e.get("description"),
-                        properties=e.get("properties", {}),
-                        confidence=1.0,
+            # Parse JSON
+            parsed = json.loads(json_text)
+
+            entities = [
+                Entity(
+                    id=self._generate_entity_id(e["name"], e["type"]),
+                    name=e["name"],
+                    entity_type=e["type"], # type: ignore
+                    description=e.get("description"),
+                    properties=e.get("properties", {}),
+                    confidence=1.0,
+                )
+                for e in parsed.get("entities", [])
+            ]
+
+            # Build name->id map from extracted entities for correct relationship IDs
+            entity_name_to_id = {e.name.lower(): e.id for e in entities}
+
+            relationships = []
+            for r in parsed.get("relationships", []):
+                src_name = r["source"].lower()
+                tgt_name = r["target"].lower()
+                src_id = entity_name_to_id.get(src_name) or self._generate_entity_id(r["source"], "concept")
+                tgt_id = entity_name_to_id.get(tgt_name) or self._generate_entity_id(r["target"], "concept")
+                relationships.append(
+                    Relationship(
+                        source_entity_id=src_id,
+                        target_entity_id=tgt_id,
+                        relationship_type=r["type"], # type: ignore
+                        confidence=r.get("confidence", 1.0),
                     )
-                    for e in parsed.get("entities", [])
-                ]
+                )
 
-                # Build name->id map from extracted entities for correct relationship IDs
-                entity_name_to_id = {e.name.lower(): e.id for e in entities}
+            # Limit relationships to top 20 by confidence
+            relationships.sort(key=lambda r: r.confidence, reverse=True)
+            relationships = relationships[:20]
 
-                relationships = []
-                for r in parsed.get("relationships", []):
-                    src_name = r["source"].lower()
-                    tgt_name = r["target"].lower()
-                    src_id = entity_name_to_id.get(src_name) or self._generate_entity_id(r["source"], "concept")
-                    tgt_id = entity_name_to_id.get(tgt_name) or self._generate_entity_id(r["target"], "concept")
-                    relationships.append(
-                        Relationship(
-                            source_entity_id=src_id,
-                            target_entity_id=tgt_id,
-                            relationship_type=r["type"],  # type: ignore
-                            confidence=r.get("confidence", 1.0),
-                        )
-                    )
+            return ExtractionResult(entities=entities, relationships=relationships)
 
-                return ExtractionResult(entities=entities, relationships=relationships)
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code
+            if status_code in (401, 403):
+                logger.error(f"LLM auth error ({status_code}): check API key. Falling back to rules.")
+            elif status_code == 429:
+                logger.warning(f"LLM rate limited (429): backing off. Falling back to rules.")
+            else:
+                logger.warning(f"LLM HTTP error ({status_code}): {e}. Falling back to rules.")
+            return self._extract_rules_based(content)
 
         except Exception as e:
             logger.warning(f"LLM extraction failed, falling back to rules: {e}")

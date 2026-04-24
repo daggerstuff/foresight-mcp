@@ -119,7 +119,7 @@ class KafkaConsumerGroup:
         self,
         bootstrap_servers: str = "localhost:9092",
         group_id: str = "foresight-consumer",
-        topics: list[str] = None,
+        topics: list[str] | None = None,
         auto_commit: bool = True,
         auto_commit_interval: int = 5000,  # ms
         max_poll_records: int = 500,

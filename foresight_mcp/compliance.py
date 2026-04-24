@@ -285,7 +285,7 @@ class ComplianceExporter:
                 "total_events": total_events,
                 "anomaly_count": total_anomalies,
                 "anomaly_rate": total_anomalies / total_events if total_events > 0 else 0,
-                "anomalies": [dict(e) for e in anomaly_events],
+                "anomalies": list(anomaly_events),
                 "period": {"start": start_date, "end": end_date}
             }
         )
