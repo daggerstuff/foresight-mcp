@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 # Memory Scope: Defines the logical boundary of the memory
@@ -141,7 +141,7 @@ class MemoryObject:
         """Factory method to create a new memory with auto-generated ID and timestamp."""
         return cls(
             id=str(uuid.uuid4()),
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(UTC).isoformat(),
             scope=scope,
             retention=retention,
             content=content,

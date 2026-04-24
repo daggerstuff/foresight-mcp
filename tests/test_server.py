@@ -274,8 +274,7 @@ def test_inject_context_returns_formatted_output():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-         patch("foresight_mcp.server.TENANT_ID", "default"), \
-         patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_subconscious_agent"):
         result = inject_context("Let's talk about database and type hints")
 
     assert "Relevant Context" in result
@@ -293,8 +292,7 @@ def test_inject_context_respects_max_memories():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-         patch("foresight_mcp.server.TENANT_ID", "default"), \
-         patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_subconscious_agent"):
         result = inject_context("python topic", max_memories=2)
 
     # Count memory lines (lines starting with "- [")
@@ -311,8 +309,7 @@ def test_inject_context_no_match():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-         patch("foresight_mcp.server.TENANT_ID", "default"), \
-         patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_subconscious_agent"):
         result = inject_context("quantum computing algorithms", min_relevance=0.5)
 
     assert "0 memories surfaced" in result
@@ -324,8 +321,7 @@ def test_inject_context_empty_conversation_text():
 
     with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)), \
          patch("foresight_mcp.server.USER_ID", "inject_test_user"), \
-         patch("foresight_mcp.server.TENANT_ID", "default"), \
-         patch("foresight_mcp.server.get_subconscious_agent"):
+              patch("foresight_mcp.server.get_subconscious_agent"):
         result = inject_context("")
 
     assert "0 memories surfaced" in result

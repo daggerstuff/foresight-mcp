@@ -32,7 +32,6 @@ from .config import (  # noqa: F401 - re-exports
     DEFAULT_RATE_LIMIT,
     DEFAULT_TENANT_ID,
     DEFAULT_USER_ID,
-    TENANT_ID,
     USER_ID,
 )
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
