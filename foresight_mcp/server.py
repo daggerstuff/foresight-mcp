@@ -35,7 +35,7 @@ from .config import (  # noqa: F401 - re-exports
     TENANT_ID,
     USER_ID,
 )
-from .tenant_context import get_current_tenant_id
+from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .connection_pool import PooledConnection, get_pool
 from .crisis_detection import get_crisis_service
 from .event_bus import get_event_bus, memory_deleted, memory_retrieved, memory_stored, memory_updated
@@ -2015,7 +2015,7 @@ _tenant_context: TenantContext | None = None
 def get_tenant_context() -> TenantContext:
     """Get current tenant context."""
     global _tenant_context
-    if _tenant_context is None:
+    if _tenant_context is None or _tenant_context.tenant_id != get_current_tenant_id():
         _tenant_context = TenantContext(
             tenant_id=get_current_tenant_id(),
             rate_limit=DEFAULT_RATE_LIMIT,
@@ -2025,13 +2025,18 @@ def get_tenant_context() -> TenantContext:
 
 
 def set_tenant_context(tenant_id: str) -> None:
-    """Set tenant context for current session."""
-    global _tenant_context
-    _tenant_context = TenantContext(
-        tenant_id=tenant_id,
-        rate_limit=DEFAULT_RATE_LIMIT,
-        burst_limit=DEFAULT_BURST_LIMIT
+    """Set tenant context for current request.
+
+    Deprecated: Use set_current_tenant_id() from tenant_context module instead.
+    The TenantMiddleware handles per-request tenant isolation automatically.
+    """
+    import warnings
+    warnings.warn(
+        "set_tenant_context() is deprecated; use set_current_tenant_id() instead",
+        DeprecationWarning,
+        stacklevel=2,
     )
+    set_current_tenant_id(tenant_id)
 
 
 @mcp.tool()
@@ -2166,7 +2171,7 @@ def switch_tenant(tenant_id: str) -> str:
         return f"Tenant '{tenant_id}' not found"
 
     # Update context
-    set_tenant_context(tenant_id)
+    set_current_tenant_id(tenant_id)
     return f"Switched to tenant '{tenant_id}'"
 
 
