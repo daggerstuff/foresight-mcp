@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import sqlite3
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -228,7 +229,7 @@ class HookRegistry:
             timeout=row[7 + o],
             metadata=json.loads(row[8 + o]),
             enabled=bool(row[9 + o]),
-            created_at=datetime.fromisoformat(row[10 + o])
+            created_at=datetime.fromisoformat(row[10 + o]) if len(row) > 10 + o else datetime.now(timezone.utc)
         )
 
 
@@ -320,7 +321,8 @@ class HookExecutor:
         try:
             # Callable handlers are registered in-memory, not persisted
             # This is for hooks registered via register_callable()
-            pass
+            if hook.handler and callable(hook.handler):
+                hook.handler(event)
         except Exception as e:
             logger.error(f"Callable hook {hook.name} failed: {e}")
 
@@ -328,7 +330,8 @@ class HookExecutor:
         """Execute an async hook."""
         try:
             # Async handlers are registered in-memory, not persisted
-            pass
+            if hook.handler and callable(hook.handler):
+                await hook.handler(event)
         except Exception as e:
             logger.error(f"Async hook {hook.name} failed: {e}")
 
