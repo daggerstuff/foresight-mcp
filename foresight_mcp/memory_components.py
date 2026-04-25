@@ -259,7 +259,7 @@ class MemorySynthesizer:
         ts = memory.timestamp.replace("Z", "+00:00")
         try:
             memory_time = datetime.fromisoformat(ts).timestamp() * 1000
-        except:
+        except Exception as e:
             memory_time = 0
 
         age_ms = now - memory_time
