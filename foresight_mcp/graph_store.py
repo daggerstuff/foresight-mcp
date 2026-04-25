@@ -109,6 +109,8 @@ class GraphStore:
                     'relates_to', 'contradicts', 'supports', 'part_of', 'created'
                 )),
                 confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+        last_accessed TEXT DEFAULT CURRENT_TIMESTAMP,
+        decay_factor REAL DEFAULT 1.0 CHECK(decay_factor >= 0 AND decay_factor <= 1),
                 metadata TEXT DEFAULT '{}',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
@@ -230,6 +232,8 @@ class GraphStore:
                     'relates_to', 'contradicts', 'supports', 'part_of', 'created'
                 )),
                 confidence REAL DEFAULT 1.0 CHECK(confidence >= 0 AND confidence <= 1),
+        last_accessed TEXT DEFAULT CURRENT_TIMESTAMP,
+        decay_factor REAL DEFAULT 1.0 CHECK(decay_factor >= 0 AND decay_factor <= 1),
                 metadata TEXT DEFAULT '{}',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
