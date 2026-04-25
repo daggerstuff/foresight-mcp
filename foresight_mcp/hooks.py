@@ -21,8 +21,14 @@ from typing import Any, Callable, Coroutine, Union
 
 import httpx
 
-from .event_bus import Event, EventType, get_event_bus
+from .circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerConfig,
+    CircuitBreakerOpenError,
+    CircuitState,
+)
 from .connection_pool import get_pool
+from .event_bus import Event, EventType, get_event_bus
 from .tenant_context import get_current_tenant_id
 
 logger = logging.getLogger("foresight_hooks")
@@ -237,12 +243,20 @@ class HookExecutor:
     Handles:
     - Callable hooks (synchronous)
     - Async hooks
-    - HTTP webhook hooks (with retry)
+    - HTTP webhook hooks (with retry + circuit breaker)
     - Conditional execution
     - Error handling with retries
     """
 
     def __init__(self, registry: HookRegistry | None = None):
+        # Circuit breaker for HTTP hooks to prevent cascading failures
+        http_circuit_config = CircuitBreakerConfig(
+            failure_threshold=5,
+            recovery_timeout=30.0,
+            half_open_max_calls=3,
+            expected_exceptions=(ConnectionError, TimeoutError, httpx.HTTPError),
+        )
+        self._http_circuit_breaker = CircuitBreaker(http_circuit_config)
         """Initialize hook executor.
 
         Args:
