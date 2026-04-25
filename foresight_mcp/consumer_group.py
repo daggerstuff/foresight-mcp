@@ -97,7 +97,7 @@ class ConsumerState:
             with open(self.state_file, "w") as f:
                 json.dump({"offsets": self._offsets}, f, indent=2)
         except Exception as eh_err:
-                                logger.error(f"Error handler failed: {eh_err}", exc_info=True)
+            logger.error(f"Error handler failed: {eh_err}", exc_info=True)
 
     def get_offset(self, topic: str, partition: int) -> int | None:
         """Get last committed offset for topic/partition."""

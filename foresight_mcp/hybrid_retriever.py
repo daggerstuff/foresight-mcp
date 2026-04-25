@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import logging
 import math
+import sqlite3
 
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+
+from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_hybrid_retriever")
 
