@@ -9,8 +9,9 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
-import hashlib
-import hmac
+import logging
+
+logger = logging.getLogger(__name__)
 
 from .tenant_context import get_current_tenant_id, set_current_tenant_id, reset_tenant_context
 from .connection_pool import get_pool
@@ -100,36 +101,50 @@ class AuthManager:
             pool.release(conn)
 
     def _hash_password(self, password: str) -> str:
-        """Hash a password using a secure method (simplified bcrypt-like)."""
-        # In production, use bcrypt or argon2
-        salt = secrets.token_hex(16)
-        # Use PBKDF2 with SHA256 for key derivation
-        key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
-        return f"pbkdf2_sha256$100000${salt}${key.hex()}"
+        """Hash a password using Argon2 if available, else fallback to bcrypt."""
+        # Lazy import to avoid hard dependency
+        # Try Argon2 first
+        try:
+            from argon2 import PasswordHasher
+            ph = PasswordHasher()
+            return ph.hash(password)
+        except Exception:
+            # Fallback to bcrypt
+            try:
+                import bcrypt
+                hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+                return hashed.decode('utf-8')
+            except Exception:
+                # Final fallback: simple SHA256 with salt (not recommended for production)
+                import hashlib
+                salt = hashlib.sha256(os.urandom(16)).hexdigest()
+                hash_bytes = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+                return f"sha256${salt}${hash_bytes}"
 
     def _verify_password(self, password: str, password_hash: str) -> bool:
-        """Verify a password against its hash."""
+        """Verify a password against its stored Argon2 or bcrypt hash."""
+        # Attempt Argon2 verification first
+        # Attempt Argon2 verification
         try:
-            if not password_hash.startswith("pbkdf2_sha256$"):
-                return False
-
-            parts = password_hash.split("$")
-            if len(parts) != 4:
-                return False
-
-            _, iterations_str, salt, hash_value = parts
-            iterations = int(iterations_str)
-
-            computed_hash = hashlib.pbkdf2_hmac(
-                'sha256',
-                password.encode('utf-8'),
-                salt.encode('utf-8'),
-                iterations
-            )
-
-            return hmac.compare_digest(computed_hash.hex(), hash_value)
+            from argon2 import PasswordHasher
+            ph = PasswordHasher()
+            return ph.verify(password_hash, password)
         except Exception:
-            return False
+            # Try bcrypt verification
+            try:
+                import bcrypt
+                return bcrypt.checkpw(password.encode('utf-8'), password_hash.encode('utf-8'))
+            except Exception:
+                # Fallback to simple SHA256 verification
+                if password_hash.startswith("sha256$"):
+                    try:
+                        _, salt, stored_hash = password_hash.split("$")
+                        import hashlib
+                        calc_hash = hashlib.sha256((salt + password).encode('utf-8')).hexdigest()
+                        return calc_hash == stored_hash
+                    except Exception:
+                        return False
+                return False
 
     def create_user(self, username: str, email: str, password: str,
                    role: Role = Role.USER, tenant_access: Optional[list[str]] = None) -> User:
