@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from .connection_pool import get_pool
+
 logger = logging.getLogger("foresight_temporal")
 
 FreshnessTrend = Literal["stable", "strengthening", "weakening", "stale"]
@@ -63,12 +65,24 @@ class TemporalService:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
-                SELECT user_id, category, half_life_hours, min_importance,
-                       activation_boost, strengthening_threshold, stale_threshold
-                FROM decay_config
-                WHERE user_id = ? AND category = ? AND tenant_id = ?
-            """, (user_id, category, tenant_id))
+            cols = [row[1] for row in conn.execute("PRAGMA table_info(decay_config)").fetchall()]
+            has_tenant_id = "tenant_id" in cols
+
+            if has_tenant_id:
+                cursor = conn.execute("""
+                    SELECT user_id, category, half_life_hours, min_importance,
+                           activation_boost, strengthening_threshold, stale_threshold
+                    FROM decay_config
+                    WHERE user_id = ? AND category = ? AND tenant_id = ?
+                """, (user_id, category, tenant_id))
+            else:
+                # Backward compatibility for pre-tenant schemas (e.g., test fixtures)
+                cursor = conn.execute("""
+                    SELECT user_id, category, half_life_hours, min_importance,
+                           activation_boost, strengthening_threshold, stale_threshold
+                    FROM decay_config
+                    WHERE user_id = ? AND category = ?
+                """, (user_id, category))
 
             row = cursor.fetchone()
             if row:
@@ -253,6 +267,88 @@ class TemporalService:
             pool.release(conn)
 
     def batch_update_decay(self, user_id: str, tenant_id: str = "default") -> int:
+        """
+        Batch update decay for all user memories, handling optional tenant column.
+        """
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute("BEGIN")
+
+            # Get all memories for user (including tenant if column exists)
+            try:
+                cursor = conn.execute("""
+                    SELECT id, importance, created_at, activation_count,
+                           COALESCE(category, 'general') as category
+                    FROM memories
+                    WHERE user_id = ? AND tenant_id = ?
+                """, (user_id, tenant_id))
+            except Exception as e:
+                if "no column named tenant_id" in str(e):
+                    cursor = conn.execute("""
+                        SELECT id, importance, created_at, activation_count,
+                               COALESCE(category, 'general') as category
+                        FROM memories
+                        WHERE user_id = ?
+                    """, (user_id,))
+                else:
+                    raise
+
+            memories = cursor.fetchall()
+            updated_count = 0
+
+            for memory_id, importance, created_at, activation_count, category in memories:
+                new_importance, trend = self.calculate_decay(
+                    importance=importance,
+                    created_at=created_at,
+                    activation_count=activation_count,
+                    category=category,
+                    user_id=user_id
+                )
+
+                try:
+                    conn.execute("""
+                        UPDATE memories
+                        SET importance = ?,
+                            strength_trend = ?,
+                            updated_at = ?
+                        WHERE id = ? AND user_id = ? AND tenant_id = ?
+                    """, (
+                        new_importance,
+                        trend,
+                        datetime.now(timezone.utc).isoformat(),
+                        memory_id,
+                        user_id,
+                        tenant_id
+                    ))
+                except Exception as e:
+                    if "no column named tenant_id" in str(e):
+                        conn.execute("""
+                            UPDATE memories
+                            SET importance = ?,
+                                strength_trend = ?,
+                                updated_at = ?
+                            WHERE id = ? AND user_id = ?
+                        """, (
+                            new_importance,
+                            trend,
+                            datetime.now(timezone.utc).isoformat(),
+                            memory_id,
+                            user_id
+                        ))
+                    else:
+                        raise
+                updated_count += 1
+
+            conn.commit()
+            logger.info(f"Batch decay update completed: {updated_count} memories updated")
+            return updated_count
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            pool.release(conn)
         """
         Batch update decay for all user memories.
 

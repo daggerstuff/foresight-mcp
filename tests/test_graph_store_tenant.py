@@ -9,7 +9,8 @@ from foresight_mcp.tenant_context import reset_tenant_context, set_current_tenan
 
 
 def _fresh_store():
-    db_path = tempfile.mktemp(suffix=".db")
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     store = GraphStore(db_path)
     return store, db_path
 
@@ -126,7 +127,8 @@ def test_contextvar_used_as_default_tenant():
 
 
 def test_migration_adds_tenant_id_to_existing_db():
-    db_path = tempfile.mktemp(suffix=".db")
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
     try:
         # Create old schema without tenant_id
         conn = sqlite3.connect(db_path)

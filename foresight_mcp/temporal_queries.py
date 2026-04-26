@@ -9,6 +9,7 @@ Implements:
 from __future__ import annotations
 
 import logging
+from .connection_pool import get_pool
 
 import threading
 from dataclasses import dataclass
@@ -64,6 +65,75 @@ class TemporalQueryBuilder:
         category: str | None = None,
         tenant_id: str = "default"
     ) -> list[TemporalQueryResult]:
+        """
+        Get memories from a time window, handling optional tenant column.
+        """
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            window_hours = self._get_window_hours(window)
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
+
+            category_clause = "AND category = ?" if category else ""
+            base_params = [user_id, tenant_id, cutoff.isoformat(), min_importance]
+            if category:
+                base_params.append(category)
+            base_params.append(limit)
+
+            sql = f"""
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at >= ?
+                AND importance >= ?
+                {category_clause}
+                ORDER BY importance DESC, created_at DESC
+                LIMIT ?
+            """
+            try:
+                cursor = conn.execute(sql, base_params)
+            except Exception as e:
+                if "no column named tenant_id" in str(e):
+                    # Retry without tenant filter
+                    params = [user_id, cutoff.isoformat(), min_importance]
+                    if category:
+                        params.append(category)
+                    params.append(limit)
+                    sql_no_tenant = f"""
+                        SELECT
+                            id, content, importance, strength_trend,
+                            activation_count, created_at, accessed_at, category
+                        FROM memories
+                        WHERE user_id = ?
+                        AND created_at >= ?
+                        AND importance >= ?
+                        {category_clause}
+                        ORDER BY importance DESC, created_at DESC
+                        LIMIT ?
+                    """
+                    cursor = conn.execute(sql_no_tenant, params)
+                else:
+                    raise
+
+            rows = cursor.fetchall()
+            return [
+                TemporalQueryResult(
+                    memory_id=row[0],
+                    content=row[1],
+                    importance=row[2],
+                    strength_trend=row[3],
+                    activation_count=row[4],
+                    created_at=row[5],
+                    accessed_at=row[6],
+                    category=row[7],
+                )
+                for row in rows
+            ]
+        finally:
+            pool.release(conn)
         """
         Get memories from a time window.
 
@@ -129,6 +199,68 @@ class TemporalQueryBuilder:
         tenant_id: str = "default"
     ) -> list[TemporalQueryResult]:
         """
+        Get memories as of a specific time, with optional tenant handling.
+        """
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            category_clause = "AND category = ?" if category else ""
+            base_params = [user_id, tenant_id, target_date.isoformat(), min_importance]
+            if category:
+                base_params = [user_id, tenant_id, category, target_date.isoformat(), min_importance]
+
+            sql = f"""
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND created_at <= ?
+                AND importance > ?
+                {category_clause}
+                ORDER BY created_at DESC
+            """
+            try:
+                cursor = conn.execute(sql, base_params)
+            except Exception as e:
+                if "no column named tenant_id" in str(e):
+                    # Retry without tenant filter
+                    params = [user_id, target_date.isoformat(), min_importance]
+                    if category:
+                        params = [user_id, category, target_date.isoformat(), min_importance]
+                    sql_no_tenant = f"""
+                        SELECT
+                            id, content, importance, strength_trend,
+                            activation_count, created_at, accessed_at, category
+                        FROM memories
+                        WHERE user_id = ?
+                        AND created_at <= ?
+                        AND importance > ?
+                        {category_clause}
+                        ORDER BY created_at DESC
+                    """
+                    cursor = conn.execute(sql_no_tenant, params)
+                else:
+                    raise
+
+            rows = cursor.fetchall()
+            return [
+                TemporalQueryResult(
+                    memory_id=row[0],
+                    content=row[1],
+                    importance=row[2],
+                    strength_trend=row[3],
+                    activation_count=row[4],
+                    created_at=row[5],
+                    accessed_at=row[6],
+                    category=row[7],
+                )
+                for row in rows
+            ]
+        finally:
+            pool.release(conn)
+        """
         Get memories as they existed at a specific time.
 
         Useful for historical state queries.
@@ -187,6 +319,67 @@ class TemporalQueryBuilder:
         category: str | None = None,
         tenant_id: str = "default"
     ) -> list[TemporalQueryResult]:
+        """
+        Get memories by trend, handling optional tenant column.
+        """
+        pool = get_pool(self.db_path)
+        conn = pool.acquire()
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            category_clause = "AND category = ?" if category else ""
+            base_params = [user_id, tenant_id, trend, limit]
+            if category:
+                base_params = [user_id, tenant_id, category, trend, limit]
+
+            sql = f"""
+                SELECT
+                    id, content, importance, strength_trend,
+                    activation_count, created_at, accessed_at, category
+                FROM memories
+                WHERE user_id = ? AND tenant_id = ?
+                AND strength_trend = ?
+                {category_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            try:
+                cursor = conn.execute(sql, base_params)
+            except Exception as e:
+                if "no column named tenant_id" in str(e):
+                    params = [user_id, trend, limit]
+                    if category:
+                        params = [user_id, category, trend, limit]
+                    sql_no_tenant = f"""
+                        SELECT
+                            id, content, importance, strength_trend,
+                            activation_count, created_at, accessed_at, category
+                        FROM memories
+                        WHERE user_id = ?
+                        AND strength_trend = ?
+                        {category_clause}
+                        ORDER BY created_at DESC
+                        LIMIT ?
+                    """
+                    cursor = conn.execute(sql_no_tenant, params)
+                else:
+                    raise
+
+            rows = cursor.fetchall()
+            return [
+                TemporalQueryResult(
+                    memory_id=row[0],
+                    content=row[1],
+                    importance=row[2],
+                    strength_trend=row[3],
+                    activation_count=row[4],
+                    created_at=row[5],
+                    accessed_at=row[6],
+                    category=row[7],
+                )
+                for row in rows
+            ]
+        finally:
+            pool.release(conn)
         """
         Get memories by freshness trend.
 

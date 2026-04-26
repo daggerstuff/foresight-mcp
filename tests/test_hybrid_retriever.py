@@ -386,7 +386,7 @@ class TestHybridFusion:
         result = retriever.search("anxiety therapy", "test_user", limit=5)
 
         tfidf_results = [r for r in result.results if "tfidf_cosine" in r.source_signals]
-        assert len(semantic_results) > 0
+        assert len(tfidf_results) > 0
         for r in tfidf_results:
             assert r.tfidf_cosine_score > 0.0
 

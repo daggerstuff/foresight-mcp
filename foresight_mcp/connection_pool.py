@@ -3,9 +3,12 @@
 Provides thread-safe connection pooling with WAL mode, foreign keys,
 and automatic cleanup of stale connections.
 """
+from __future__ import annotations
+
 import sqlite3
 import threading
 import time
+import os
 from collections import deque
 
 from .config import DB_PATH
@@ -22,58 +25,96 @@ class ConnectionPool:
         self._in_use: set[sqlite3.Connection] = set()
         self._lock = threading.Lock()
 
-    def acquire(self) -> sqlite3.Connection:
-        """Get a connection from the pool."""
+    def acquire(self) -> "PooledConnection":
+        """Get a connection from the pool, reusing idle wrappers when possible."""
         with self._lock:
-            # Try to reuse an idle connection
+            # Try to reuse an idle connection (could be raw conn or wrapper)
             while self._pool:
-                conn, last_used = self._pool.popleft()
-                # Discard stale connections
+                item, last_used = self._pool.popleft()
+                # Discard stale connections based on underlying raw connection
+                raw = item._conn if isinstance(item, PooledConnection) else item
                 if time.time() - last_used > self.max_idle_seconds:
                     try:
-                        conn.close()
+                        raw.close()
                     except Exception:
                         pass
                     continue
                 # Validate connection is still alive
                 try:
-                    conn.execute("SELECT 1")
-                    # Add to _in_use INSIDE the lock to prevent race condition
-                    self._in_use.add(conn)
-                    return conn
+                    raw.execute("SELECT 1")
+                    self._in_use.add(raw)
+                    # Return the original wrapper if we have one, else wrap anew
+                    if isinstance(item, PooledConnection):
+                        return item
+                    else:
+                        return PooledConnection(raw, self)
                 except Exception:
                     try:
-                        conn.close()
+                        raw.close()
                     except Exception:
                         pass
                     continue
 
             # Create a new connection only if under the size limit
-            # Check AND add atomically within the lock
             if len(self._in_use) >= self.max_size:
                 raise RuntimeError(
                     f"Connection pool exhausted ({self.max_size} connections in use)"
                 )
             conn = self._new_connection()
-            self._in_use.add(conn)  # Still inside lock - atomic
-            return conn
+            self._in_use.add(conn)
+            return PooledConnection(conn, self)
 
-    def release(self, conn: sqlite3.Connection) -> None:
+    def _unwrap_connection(self, conn: sqlite3.Connection | PooledConnection) -> sqlite3.Connection:
+        """Get underlying sqlite3 connection from either wrapper or raw connection."""
+        if isinstance(conn, PooledConnection):
+            return conn._conn
+        return conn
+
+    def release(self, conn: sqlite3.Connection | PooledConnection) -> None:
         """Return a connection to the pool."""
+        if isinstance(conn, PooledConnection) and getattr(conn, "_released", False):
+            return
+        if isinstance(conn, PooledConnection):
+            wrapper_conn = conn
+            conn._released = True
+        else:
+            wrapper_conn = None
+        raw_conn = self._unwrap_connection(conn)
+
         with self._lock:
-            self._in_use.discard(conn)
-            if len(self._pool) < self.max_size:
+            if raw_conn not in self._in_use:
+                # Avoid double-release or unknown connections from reintroducing duplicates.
+                if any(stored_conn is raw_conn for stored_conn, _ in self._pool):
+                    if wrapper_conn is not None:
+                        wrapper_conn._released = True
+                    return
                 try:
-                    conn.execute("SELECT 1")
-                    self._pool.append((conn, time.time()))
+                    raw_conn.close()
+                except Exception:
+                    pass
+                if wrapper_conn is not None:
+                    wrapper_conn._released = True
+                return
+
+            self._in_use.discard(raw_conn)
+            if len(self._pool) < self.max_size and not any(
+                stored_conn is raw_conn for stored_conn, _ in self._pool
+            ):
+                try:
+                    raw_conn.execute("SELECT 1")
+                    self._pool.append((wrapper_conn if wrapper_conn is not None else raw_conn, time.time()))
+                    # Mark released flag if wrapper exists (already set earlier)
+                    # No further action needed
                     return
                 except Exception:
                     pass
             # Pool full or connection dead -- close it
             try:
-                conn.close()
+                raw_conn.close()
             except Exception:
                 pass
+            if wrapper_conn is not None:
+                wrapper_conn._released = True
 
     def _new_connection(self) -> sqlite3.Connection:
         """Create a new database connection with proper settings."""
@@ -110,28 +151,30 @@ class ConnectionPool:
             }
 
 
-# Global pool instance
-_pool: ConnectionPool | None = None
+# Global pools keyed by db path so tests can use isolated databases safely.
+_pools: dict[str, ConnectionPool] = {}
 _pool_lock = threading.Lock()
 
 
 def get_pool(db_path: str | None = None) -> ConnectionPool:
     """Get or create the global connection pool (thread-safe)."""
-    global _pool
+    global _pools
     with _pool_lock:
-        if _pool is None:
-            from .config import DB_PATH as default_path
-            _pool = ConnectionPool(db_path or default_path)
-        return _pool
+        from .config import DB_PATH as default_path
+
+        pool_path = os.path.abspath(db_path or default_path)
+        if pool_path not in _pools:
+            _pools[pool_path] = ConnectionPool(pool_path)
+        return _pools[pool_path]
 
 
 def reset_pool() -> None:
     """Reset the global pool (for testing)."""
-    global _pool
+    global _pools
     with _pool_lock:
-        if _pool is not None:
-            _pool.close_all()
-        _pool = None
+        for pool in _pools.values():
+            pool.close_all()
+        _pools = {}
 
 
 class PooledConnection:
@@ -153,5 +196,17 @@ class PooledConnection:
     def close(self):
         if self._released:
             return
-        self._released = True
-        self._pool.release(self._conn)
+        self._pool.release(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def __del__(self):
+        # Ensure connections are never leaked if callers forget to close.
+        try:
+            self.close()
+        except Exception:
+            pass

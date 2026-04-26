@@ -12,12 +12,14 @@ stored as memories themselves for continuity across sessions.
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 import logging
 import threading
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
+from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
 
@@ -164,7 +166,7 @@ class ReflectionEngine:
 
             return report
         finally:
-            pool.release(conn)
+            get_pool(self.db_path).release(conn)
 
     def _build_trend_summary(self, rows: list) -> Dict[str, Any]:
         """Build summary of temporal trends from memory rows."""

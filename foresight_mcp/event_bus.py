@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
-from .connection_pool import get_pool, PooledConnection
+from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -124,10 +124,9 @@ class EventStore:
         self.db_path = db_path
         self._init_db()
 
-    def _connect(self) -> PooledConnection:
+    def _connect(self):
         """Get a pooled connection."""
-        pool = get_pool(self.db_path)
-        return PooledConnection(pool.acquire(), pool)
+        return get_pool(self.db_path).acquire()
 
     def _init_db(self) -> None:
         """Initialize database schema."""

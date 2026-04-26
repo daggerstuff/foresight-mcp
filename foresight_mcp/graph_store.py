@@ -132,6 +132,54 @@ class GraphStore:
             )
             """)
 
+            # Memories table (if not existing, create full schema)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                scope TEXT DEFAULT 'session',
+                retention TEXT DEFAULT 'short_term',
+                category TEXT DEFAULT 'fact',
+                user_id TEXT DEFAULT 'default',
+                bank_id TEXT DEFAULT 'default',
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                tags TEXT DEFAULT '[]',
+                emotional_context TEXT DEFAULT '{}',
+                metrics TEXT DEFAULT '{}',
+                vector_id TEXT,
+                gist TEXT,
+                is_ghost INTEGER DEFAULT 0,
+                synthesized_from TEXT DEFAULT '[]',
+                accessed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                importance REAL DEFAULT 1.0,
+                decay_rate REAL DEFAULT 0.01,
+                activation_count INTEGER DEFAULT 0,
+                retrieval_count INTEGER DEFAULT 0,
+                strength_trend TEXT DEFAULT 'stable',
+                last_retrieved_at TEXT,
+                version INTEGER DEFAULT 1
+            )
+            """)
+
+            # Memory versions table
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_versions (
+                id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL DEFAULT 'default',
+                content TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                tags TEXT DEFAULT '[]',
+                emotional_context TEXT DEFAULT '{}',
+                metrics TEXT DEFAULT '{}',
+                rollback_of TEXT DEFAULT NULL,
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            )
+            """)
+
             # Migrate existing tables that lack tenant_id before creating indexes
             self._migrate_add_tenant_id(conn)
 
@@ -140,6 +188,7 @@ class GraphStore:
             # Indexes (after migration ensures tenant_id column exists)
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_user ON memory_entities(user_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_tenant ON memory_entities(tenant_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_memory_entities_tenant ON memory_entities(tenant_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_type ON memory_entities(entity_type)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_name ON memory_entities(name)")
 
@@ -557,6 +606,7 @@ class GraphStore:
                 # CRITICAL FIX: Batch edge lookups to avoid O(n²) explosion
                 # Instead of large IN clause, process in batches
                 edges = []
+                edge_rows = []
                 batch_size = 100  # Process nodes in batches to prevent huge IN clauses
                 for i in range(0, len(node_ids), batch_size):
                     batch = node_ids[i:i+batch_size]
@@ -566,12 +616,12 @@ class GraphStore:
                     cursor = conn.execute(f"""
                     SELECT source_entity_id, target_entity_id, relationship_type, confidence, metadata
                     FROM entity_relationships
-                    WHERE source_entity_id IN ({placeholders})
-                    AND target_entity_id IN ({placeholders})
+                    WHERE (source_entity_id IN ({placeholders})
+                    OR target_entity_id IN ({placeholders}))
                     AND tenant_id = ?
                     AND user_id = ?
                     """, batch + batch + [tid, user_id])
-                    edges.extend(cursor.fetchall())
+                    edge_rows.extend(cursor.fetchall())
 
                 edges = [
                     Relationship(
@@ -581,7 +631,7 @@ class GraphStore:
                         confidence=row[3],
                         metadata=json.loads(row[4] or "{}"),
                     )
-                    for row in cursor.fetchall()
+                    for row in edge_rows
                 ]
             else:
                 edges = []

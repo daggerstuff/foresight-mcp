@@ -35,7 +35,7 @@ from .config import (  # noqa: F401 - re-exports
     USER_ID,
 )
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
-from .connection_pool import PooledConnection, get_pool
+from .connection_pool import get_pool
 from .crisis_detection import get_crisis_service
 from .event_bus import get_event_bus, memory_deleted, memory_retrieved, memory_stored, memory_updated
 from .memory_components import MemoryCrisisTagger, MemoryLinker, MemorySynthesizer, SocraticGate
@@ -106,9 +106,7 @@ def get_db_connection():
     underlying sqlite3.Connection. Calling .close() returns the connection
     to the pool instead of truly closing it.
     """
-    pool = get_pool()
-    conn = pool.acquire()
-    return PooledConnection(conn, pool)
+    return get_pool().acquire()
 
 
 SCHEMA_VERSION = 2
@@ -1201,20 +1199,20 @@ def memory_status() -> str:
     """Get the current status of the memory system."""
     conn = get_db_connection()
     count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ?",
-        (USER_ID, get_current_tenant_id(),)
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?",
+        (USER_ID, get_current_tenant_id())
     ).fetchone()[0]
 
     # Count by scope
     scope_counts = conn.execute(
-        "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? GROUP BY scope",
-        (USER_ID, get_current_tenant_id(),)
+        "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
+        (USER_ID, get_current_tenant_id())
     ).fetchall()
 
     # Count crisis signals
     crisis_count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tags LIKE '%CRISIS%'",
-        (USER_ID, get_current_tenant_id(),)
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND tags LIKE '%CRISIS%'",
+        (USER_ID, get_current_tenant_id())
     ).fetchone()[0]
 
     conn.close()
@@ -1414,12 +1412,13 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
 
         for line in recent:
             content = f"[{block_name}] {line}"
+            tenant_id = get_current_tenant_id()
             conn = get_db_connection()
             existing = conn.execute(
                 "SELECT id, activation_count FROM memories "
                 "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
                 "ORDER BY created_at DESC LIMIT 1",
-                (uid, content),
+                (uid, tenant_id, content),
             ).fetchone()
             if existing:
                 conn.execute(
@@ -1439,8 +1438,8 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
                 "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
                 "created_at, updated_at, tags, emotional_context, metrics, "
                 "is_ghost, synthesized_from) "
-                "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
-                (mid, content, category, uid, BANK_ID, get_current_tenant_id(), now, now),
+                "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
+                (mid, content, category, uid, BANK_ID, tenant_id, now, now),
             )
             conn.commit()
             conn.close()

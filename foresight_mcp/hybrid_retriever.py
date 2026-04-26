@@ -35,6 +35,7 @@ from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_hybrid_retriever")
 
+
 MAX_QUERY_LENGTH = 500
 MAX_USER_ID_LENGTH = 128
 
@@ -64,6 +65,7 @@ class HybridResult:
 
     keyword_score: float = 0.0
     tfidf_cosine_score: float = 0.0
+    semantic_score: float = 0.0
     graph_score: float = 0.0
     temporal_score: float = 0.0
     combined_score: float = 0.0
@@ -80,6 +82,7 @@ class HybridResult:
             "created_at": self.created_at,
             "keyword_score": round(self.keyword_score, 4),
             "tfidf_cosine_score": round(self.tfidf_cosine_score, 4),
+            "semantic_score": round(self.semantic_score, 4),
             "graph_score": round(self.graph_score, 4),
             "temporal_score": round(self.temporal_score, 4),
             "combined_score": round(self.combined_score, 4),
@@ -118,11 +121,11 @@ class HybridRetriever:
     RRF_K = 60  # RRF smoothing constant
 
     # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
-    # tfidf_cosine=0.7 (topical similarity beyond exact match),
+    # semantic=0.7 (topical similarity beyond exact match),
     # temporal=0.6 (recency context, not relevance by itself)
     DEFAULT_WEIGHTS = {
         "keyword": 1.0,
-        "tfidf_cosine": 0.7,
+        "semantic": 0.7,
         "graph": 0.8,
         "temporal": 0.6,
     }
@@ -133,7 +136,14 @@ class HybridRetriever:
         weights: dict[str, float] | None = None,
     ):
         self.db_path = db_path
-        self.weights = weights or self.DEFAULT_WEIGHTS.copy()
+        merged = self.DEFAULT_WEIGHTS.copy()
+        if weights:
+            merged.update(weights)
+        if "semantic" not in merged and "tfidf_cosine" in merged:
+            merged["semantic"] = merged["tfidf_cosine"]
+        if "tfidf_cosine" not in merged and "semantic" in merged:
+            merged["tfidf_cosine"] = merged["semantic"]
+        self.weights = merged
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with WAL mode for concurrent safety."""
@@ -151,6 +161,7 @@ class HybridRetriever:
         min_importance: float = 0.1,
         use_keyword: bool = True,
         use_tfidf_cosine: bool = True,
+        use_semantic: bool | None = None,
         use_graph: bool = True,
         use_temporal: bool = True,
     ) -> HybridSearchResult:
@@ -164,13 +175,19 @@ class HybridRetriever:
             limit: Maximum results to return
             min_importance: Minimum importance filter
             use_keyword: Enable keyword signal
-            use_tfidf_cosine: Enable tfidf_cosine/TF-IDF cosine similarity signal
+            use_tfidf_cosine: Enable tf-idf cosine similarity signal
+            use_semantic: Backward-compatible alias for tf-idf cosine
             use_graph: Enable graph signal
             use_temporal: Enable temporal signal
 
         Returns:
             HybridSearchResult with merged, ranked results
         """
+        semantic_label = "tfidf_cosine"
+        if use_semantic is not None:
+            use_tfidf_cosine = use_semantic
+            semantic_label = "semantic"
+
         _validate_input(query, user_id)
 
         keyword_ranking: dict[str, int] = {}
@@ -227,7 +244,7 @@ class HybridRetriever:
             top_ids = [mid for mid, _ in merged[:limit]]
             memories = self._fetch_memories(conn, top_ids, user_id, tenant_id)
         finally:
-            pool.release(conn)
+            conn.close()
 
         # Build results with scores
         results = []
@@ -253,10 +270,13 @@ class HybridRetriever:
                 )
                 result.source_signals.append("keyword")
             if memory_id in tfidf_cosine_ranking:
+                result.semantic_score = self._rank_to_score(
+                    tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
+                )
                 result.tfidf_cosine_score = self._rank_to_score(
                     tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
                 )
-                result.source_signals.append("tfidf_cosine")
+                result.source_signals.append(semantic_label)
             if memory_id in graph_ranking:
                 result.graph_score = self._rank_to_score(
                     graph_ranking[memory_id], len(graph_ranking)
@@ -276,6 +296,7 @@ class HybridRetriever:
             signal_counts={
                 "keyword": len(keyword_ranking),
                 "tfidf_cosine": len(tfidf_cosine_ranking),
+                "semantic": len(tfidf_cosine_ranking),
                 "graph": len(graph_ranking),
                 "temporal": len(temporal_ranking),
             },
@@ -429,6 +450,17 @@ class HybridRetriever:
             ranked = dict(list(ranked.items())[:limit])
         return ranked
 
+    def _semantic_search(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        user_id: str,
+        tenant_id: str,
+        limit: int,
+    ) -> dict[str, int]:
+        """Backward-compatible entrypoint for semantic search alias."""
+        return self._tfidf_cosine_search(conn, query, user_id, tenant_id, limit)
+
     def _graph_search(
         self,
         conn: sqlite3.Connection,
@@ -453,14 +485,25 @@ class HybridRetriever:
         like_clauses = " OR ".join(
             ["e.name LIKE ? ESCAPE '!'" for _ in terms]
         )
-        params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
+        entity_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entities)").fetchall()}
+        if "tenant_id" in entity_cols:
+            sql = f"""
+                SELECT DISTINCT e.id
+                FROM memory_entities e
+                WHERE e.user_id = ? AND e.tenant_id = ?
+                  AND ({like_clauses})
+            """
+            params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
+        else:
+            sql = f"""
+                SELECT DISTINCT e.id
+                FROM memory_entities e
+                WHERE e.user_id = ?
+                  AND ({like_clauses})
+            """
+            params = [user_id] + [f"%{t}%" for t in escaped_terms]
 
-        cursor = conn.execute(f"""
-            SELECT DISTINCT e.id
-            FROM memory_entities e
-            WHERE e.user_id = ? AND e.tenant_id = ?
-            AND ({like_clauses})
-        """, params)
+        cursor = conn.execute(sql, params)
 
         entity_ids = [row[0] for row in cursor.fetchall()]
 
