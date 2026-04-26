@@ -137,7 +137,7 @@ class AuthManager:
         if tenant_access is None:
             tenant_access = []  # Empty means access to all tenants
 
-        user_id = secrets.token_urlsafe(16)
+        user_id = secrets.token_urlsafe(32)
         password_hash = self._hash_password(password)
         api_key = secrets.token_urlsafe(32)
 
@@ -396,7 +396,7 @@ def initialize_default_users() -> None:
             print("[AUTH] Default admin user created: username='admin' (password generated securely)")
 
             # Create a default readonly user for testing
-            readonly_password = secrets.token_urlsafe(16)
+            readonly_password = secrets.token_urlsafe(32)
             readonly_user = auth_manager.create_user(
                 username="readonly",
                 email="readonly@foresight.local",

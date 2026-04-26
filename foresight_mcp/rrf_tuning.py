@@ -236,7 +236,7 @@ def select_variant(
     import hashlib
 
     # Hash user ID to get consistent assignment
-    hash_value = int(hashlib.md5(user_id.encode()).hexdigest(), 16)
+    hash_value = int(hashlib.sha256(user_id.encode()).hexdigest(), 16)
     roll = (hash_value % 100) + 1
 
     cumulative = 0.0
