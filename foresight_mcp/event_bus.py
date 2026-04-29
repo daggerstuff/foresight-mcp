@@ -2,6 +2,7 @@
 Event Bus for Memory Operations
 Event sourcing with full audit trail for all memory operations.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,8 +22,10 @@ logger = logging.getLogger(__name__)
 # Event Types
 # =============================================================================
 
+
 class EventType(str, Enum):
     """Types of events in the system."""
+
     # Memory lifecycle
     MEMORY_STORED = "memory.stored"
     MEMORY_RETRIEVED = "memory.retrieved"
@@ -45,6 +48,7 @@ class EventType(str, Enum):
 # Event Base Class
 # =============================================================================
 
+
 @dataclass
 class Event:
     """
@@ -59,6 +63,7 @@ class Event:
     - Payload (event-specific data)
     - Metadata (correlation, causation)
     """
+
     id: str
     event_type: EventType
     timestamp: datetime
@@ -103,6 +108,7 @@ EventHandler = Callable[[Event], None]
 # =============================================================================
 # Event Store (SQLite-based)
 # =============================================================================
+
 
 class EventStore:
     """
@@ -178,20 +184,22 @@ class EventStore:
                     event.entity_id,
                     json.dumps(event.payload),
                     json.dumps(event.metadata),
-                )
+                ),
             )
             conn.commit()
         finally:
             conn.close()
 
-    def get_by_entity(self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
+    def get_by_entity(
+        self, entity_id: str, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
         """Get events by entity ID."""
         tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT * FROM events WHERE entity_id = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (entity_id, tid, limit, offset)
+                (entity_id, tid, limit, offset),
             ).fetchall()
         finally:
             conn.close()
@@ -202,14 +210,16 @@ class EventStore:
                 events.append(event)
         return events
 
-    def get_by_type(self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None) -> list[Event]:
+    def get_by_type(
+        self, event_type: EventType, limit: int = 100, offset: int = 0, tenant_id: str | None = None
+    ) -> list[Event]:
         """Get events by type."""
         tid = tenant_id or get_current_tenant_id()
         conn = self._connect()
         try:
             rows = conn.execute(
                 "SELECT * FROM events WHERE event_type = ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (event_type.value, tid, limit, offset)
+                (event_type.value, tid, limit, offset),
             ).fetchall()
         finally:
             conn.close()
@@ -221,12 +231,7 @@ class EventStore:
         return events
 
     def get_by_time_range(
-        self,
-        start: datetime,
-        end: datetime,
-        limit: int = 100,
-        offset: int = 0,
-        tenant_id: str | None = None
+        self, start: datetime, end: datetime, limit: int = 100, offset: int = 0, tenant_id: str | None = None
     ) -> list[Event]:
         """Get events by time range."""
         tid = tenant_id or get_current_tenant_id()
@@ -234,7 +239,7 @@ class EventStore:
         try:
             rows = conn.execute(
                 "SELECT * FROM events WHERE timestamp BETWEEN ? AND ? AND tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (start.isoformat(), end.isoformat(), tid, limit, offset)
+                (start.isoformat(), end.isoformat(), tid, limit, offset),
             ).fetchall()
         finally:
             conn.close()
@@ -252,7 +257,7 @@ class EventStore:
         try:
             rows = conn.execute(
                 "SELECT * FROM events WHERE tenant_id = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-                (tid, limit, offset)
+                (tid, limit, offset),
             ).fetchall()
         finally:
             conn.close()
@@ -262,6 +267,39 @@ class EventStore:
             if event is not None:
                 events.append(event)
         return events
+
+    def purge_old_events(self, retention_days: int = 90, tenant_id: str | None = None) -> int:
+        """
+        Delete events older than ``retention_days`` to prevent unbounded growth.
+
+        Args:
+            retention_days: Events older than this many days are deleted.
+            tenant_id: Scope deletion to a specific tenant, or all tenants if None.
+
+        Returns:
+            Number of rows deleted.
+        """
+        from datetime import timedelta
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
+        conn = self._connect()
+        try:
+            if tenant_id:
+                cursor = conn.execute(
+                    "DELETE FROM events WHERE timestamp < ? AND tenant_id = ?",
+                    (cutoff, tenant_id),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM events WHERE timestamp < ?",
+                    (cutoff,),
+                )
+            deleted = cursor.rowcount
+            conn.commit()
+            logger.info("Purged %d events older than %d days", deleted, retention_days)
+            return deleted
+        finally:
+            conn.close()
 
     def _row_to_event(self, row: tuple) -> Event | None:
         """Convert database row to Event, returning None for corrupt rows."""
@@ -408,15 +446,13 @@ def reset_event_bus() -> None:
 # Event Factory Functions
 # =============================================================================
 
+
 def _make_event(
-    event_type: EventType,
-    actor: str,
-    entity_id: str,
-    payload: dict[str, Any],
-    metadata: dict[str, Any] | None = None
+    event_type: EventType, actor: str, entity_id: str, payload: dict[str, Any], metadata: dict[str, Any] | None = None
 ) -> Event:
     """Create a new event with standard metadata."""
     import uuid
+
     return Event(
         id=str(uuid.uuid4()),
         event_type=event_type,

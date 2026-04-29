@@ -3,6 +3,7 @@
 Foresight MCP Server - Full memory system with psychological safety features.
 Restored from src/lib/ai/memory/ architecture.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -85,10 +86,16 @@ from .websocket.subscriptions import SubscriptionManager
 class MemoryOptions(BaseModel):
     category: str = Field(default="fact", description="Category label")
     scope: str = Field(default="session", description="Memory scope: session, arc, trait, or fact")
-    retention: str = Field(default="short_term", description="Retention policy: ephemeral, short_term, long_term, or permanent")
+    retention: str = Field(
+        default="short_term", description="Retention policy: ephemeral, short_term, long_term, or permanent"
+    )
     importance: float = Field(default=0.5, description="Initial importance score (0.0 to 1.0)")
-    emotional_context: dict[str, Any] | None = Field(default=None, description="Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)")
-    metrics: dict[str, Any] | None = Field(default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)")
+    emotional_context: dict[str, Any] | None = Field(
+        default=None, description="Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)"
+    )
+    metrics: dict[str, Any] | None = Field(
+        default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)"
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -117,7 +124,9 @@ class SubconsciousAction(BaseModel):
 
 class EntityQueryType(BaseModel):
     query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(description="Type of entity query")
-    entity_type: str | None = Field(default=None, description="Entity type for 'by_type' (person/place/concept/event/emotion/object)")
+    entity_type: str | None = Field(
+        default=None, description="Entity type for 'by_type' (person/place/concept/event/emotion/object)"
+    )
     name: str | None = Field(default=None, description="Name for 'by_name' partial match")
     entity_id: str | None = Field(default=None, description="Entity ID for 'relationships' or 'traverse'")
     direction: Literal["in", "out", "both"] = Field(default="both", description="Direction for relationships")
@@ -201,10 +210,7 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
     burst_limit = DEFAULT_BURST_LIMIT
     try:
         conn = get_db_connection()
-        row = conn.execute(
-            "SELECT rate_limit, burst_limit FROM tenants WHERE id = ?",
-            (tid,)
-        ).fetchone()
+        row = conn.execute("SELECT rate_limit, burst_limit FROM tenants WHERE id = ?", (tid,)).fetchone()
         conn.close()
         if row:
             rate_limit = row["rate_limit"] or DEFAULT_RATE_LIMIT
@@ -328,10 +334,7 @@ def init_db():
         )
     """)
 
-    applied = {
-        row["version"] for row in
-        conn.execute("SELECT version FROM schema_migrations").fetchall()
-    }
+    applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
 
     for version in sorted(_SCHEMA_MIGRATIONS):
         if version in applied:
@@ -362,6 +365,7 @@ def init_db():
 
     conn.close()
 
+
 # Initialize database on module load - deferred to runtime in main()
 # init_db()  # Deferred initialization
 
@@ -379,6 +383,7 @@ _SERVER_STATE: dict[str, Any] = {
 # Version Management Functions
 # =============================================================================
 
+
 def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     """Get all versions of a memory."""
     uid = user_id or USER_ID
@@ -387,7 +392,7 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     # Verify memory exists
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
+        (memory_id, uid, get_current_tenant_id()),
     ).fetchone()
 
     if not row:
@@ -400,7 +405,7 @@ def get_memory_versions(memory_id: str, user_id: str | None = None) -> str:
     # Get version history
     versions = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND tenant_id = ? ORDER BY version DESC",
-        (memory_id, get_current_tenant_id())
+        (memory_id, get_current_tenant_id()),
     ).fetchall()
     conn.close()
 
@@ -432,15 +437,24 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
     met_json = met if isinstance(met, str) else json.dumps(met)
 
     conn = get_db_connection()
-    conn.execute("""
+    conn.execute(
+        """
     INSERT INTO memory_versions (
         id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        version_id, memory_id, data["content"], version,
-        datetime.now(timezone.utc).isoformat(), tags_json,
-        emo_json, met_json, data.get("rollback_of")
-    ))
+    """,
+        (
+            version_id,
+            memory_id,
+            data["content"],
+            version,
+            datetime.now(timezone.utc).isoformat(),
+            tags_json,
+            emo_json,
+            met_json,
+            data.get("rollback_of"),
+        ),
+    )
     conn.commit()
     conn.close()
     return version_id
@@ -454,7 +468,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Verify memory ownership first
     current = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (memory_id, uid, get_current_tenant_id())
+        (memory_id, uid, get_current_tenant_id()),
     ).fetchone()
 
     if not current:
@@ -464,7 +478,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     # Get the version content (tenant enforced via memory ownership above)
     version_row = conn.execute(
         "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
-        (memory_id, target_version, get_current_tenant_id())
+        (memory_id, target_version, get_current_tenant_id()),
     ).fetchone()
 
     if not version_row:
@@ -480,34 +494,41 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
             "emotional_context": current["emotional_context"],
             "metrics": current["metrics"],
             "version": current["version"] or 1,
-            "rollback_of": None
-        }
+            "rollback_of": None,
+        },
     )
 
     # Update to target version content
     new_version = target_version + 1
-    conn.execute("""
+    conn.execute(
+        """
     UPDATE memories SET
         content = ?, tags = ?, emotional_context = ?, metrics = ?,
         version = ?, updated_at = ?
     WHERE id = ? AND user_id = ?
-    """, (
-        version_row["content"], version_row["tags"],
-        version_row["emotional_context"], version_row["metrics"],
-        new_version, datetime.now(timezone.utc).isoformat(),
-        memory_id, uid, get_current_tenant_id()
-    ))
+    """,
+        (
+            version_row["content"],
+            version_row["tags"],
+            version_row["emotional_context"],
+            version_row["metrics"],
+            new_version,
+            datetime.now(timezone.utc).isoformat(),
+            memory_id,
+            uid,
+            get_current_tenant_id(),
+        ),
+    )
     conn.commit()
     conn.close()
 
     # Emit rollback event
     event_bus = get_event_bus_with_stream()
-    event_bus.publish(memory_updated(
-        memory_id=memory_id,
-        old_content=current["content"],
-        new_content=version_row["content"],
-        actor=uid
-    ))
+    event_bus.publish(
+        memory_updated(
+            memory_id=memory_id, old_content=current["content"], new_content=version_row["content"], actor=uid
+        )
+    )
 
     return f"Rolled back memory {memory_id} to version {target_version}"
 
@@ -517,13 +538,11 @@ def get_memory_diff(memory_id: str, version1: int, version2: int, _user_id: str 
     conn = get_db_connection()
 
     v1 = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
-        (memory_id, version1)
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?", (memory_id, version1)
     ).fetchone()
 
     v2 = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?",
-        (memory_id, version2)
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?", (memory_id, version2)
     ).fetchone()
 
     conn.close()
@@ -535,7 +554,7 @@ def get_memory_diff(memory_id: str, version1: int, version2: int, _user_id: str 
         "memory_id": memory_id,
         "version1": {"version": version1, "content": v1["content"]},
         "version2": {"version": version2, "content": v2["content"]},
-        "changed_fields": ["content"]
+        "changed_fields": ["content"],
     }
 
 
@@ -673,7 +692,9 @@ class InputValidationMiddleware(_Middleware):
         return await call_next(context)
 
 
-mcp = FastMCP("Foresight", middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()])
+mcp = FastMCP(
+    "Foresight", middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()]
+)
 
 logger = logging.getLogger("foresight_server")
 
@@ -729,9 +750,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         return "Error: Content is required for 'store' action"
 
     opts = options.options or MemoryOptions()
-    memory_id = hashlib.sha256(
-        f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()
-    ).hexdigest()[:16]
+    memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
 
     # Deduplication
     conn = get_db_connection()
@@ -739,13 +758,13 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         "SELECT id, activation_count FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
         "ORDER BY created_at DESC LIMIT 1",
-        (uid, tenant_id, options.content.strip())
+        (uid, tenant_id, options.content.strip()),
     ).fetchone()
 
     if existing:
         conn.execute(
             "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), existing["id"])
+            (datetime.now(timezone.utc).isoformat(), existing["id"]),
         )
         conn.commit()
         conn.close()
@@ -760,7 +779,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         scope=cast(MemoryScope, opts.scope),
         retention=cast(RetentionPolicy, opts.retention),
         emotional_context=emo_ctx,
-        metrics=met
+        metrics=met,
     )
     memory.id = memory_id
 
@@ -776,16 +795,28 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
         "content, emotional_context, metrics, importance, activation_count, "
         "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (memory_id, uid, tenant_id, opts.category, memory.scope, memory.retention,
-         options.content.strip(), json.dumps(opts.emotional_context) if opts.emotional_context else None,
-         json.dumps(opts.metrics) if opts.metrics else None, opts.importance, 1,
-         datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat(),
-         json.dumps(memory.tags))
+        (
+            memory_id,
+            uid,
+            tenant_id,
+            opts.category,
+            memory.scope,
+            memory.retention,
+            options.content.strip(),
+            json.dumps(opts.emotional_context) if opts.emotional_context else None,
+            json.dumps(opts.metrics) if opts.metrics else None,
+            opts.importance,
+            1,
+            datetime.now(timezone.utc).isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps(memory.tags),
+        ),
     )
     conn.commit()
     conn.close()
 
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
+    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
 
 
@@ -796,8 +827,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-        (options.memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
     ).fetchone()
 
     if not row:
@@ -807,10 +837,16 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     updates_list = []
     values = []
     if options.updates.content:
-        create_version_snapshot(options.memory_id, {
-            "content": row["content"], "tags": row["tags"], "emotional_context": row["emotional_context"],
-            "metrics": row["metrics"], "version": row["version"] or 1
-        })
+        create_version_snapshot(
+            options.memory_id,
+            {
+                "content": row["content"],
+                "tags": row["tags"],
+                "emotional_context": row["emotional_context"],
+                "metrics": row["metrics"],
+                "version": row["version"] or 1,
+            },
+        )
         updates_list.extend(["content = ?", "version = ?"])
         values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
 
@@ -834,10 +870,20 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     updates_list.append("updated_at = ?")
     values.append(datetime.now(timezone.utc).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
-    conn.execute(f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?", values)
+    conn.execute(
+        f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?", values
+    )
     conn.commit()
     conn.close()
-    get_event_bus_with_stream().publish(memory_updated(memory_id=options.memory_id, old_content=row["content"], new_content=options.updates.content or row["content"], actor=uid))
+    get_event_bus_with_stream().publish(
+        memory_updated(
+            memory_id=options.memory_id,
+            old_content=row["content"],
+            new_content=options.updates.content or row["content"],
+            actor=uid,
+        )
+    )
+    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     return f"Updated memory {options.memory_id}"
 
 
@@ -847,7 +893,9 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
         return "Error: memory_id required for 'delete' action"
 
     conn = get_db_connection()
-    if not conn.execute("SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)).fetchone():
+    if not conn.execute(
+        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
+    ).fetchone():
         conn.close()
         return f"Memory {memory_id} not found."
 
@@ -855,6 +903,7 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id))
     conn.commit()
     conn.close()
+    get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     return f"Deleted memory {memory_id}"
 
 
@@ -864,7 +913,9 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
         return "Error: memory_id required for 'archive' action"
 
     conn = get_db_connection()
-    row = conn.execute("SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
+    ).fetchone()
 
     if not row:
         conn.close()
@@ -874,12 +925,24 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
         return "Cannot archive memory without vector_id. Embed first."
 
     ms = get_memory_system()
-    ghost = ms["linker"].to_ghost(MemoryObject(
-        id=row["id"], timestamp=row["created_at"], scope=row["scope"], retention=row["retention"],
-        content=row["content"], tags=json.loads(row["tags"]) or [], synthesized_from=json.loads(row["synthesized_from"]) or [],
-        is_ghost=bool(row.get("is_ghost", 0)), vector_id=row["vector_id"], gist=row.get("gist")
-    ))
-    conn.execute("UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ?", (ghost.content, ghost.gist, memory_id, uid))
+    ghost = ms["linker"].to_ghost(
+        MemoryObject(
+            id=row["id"],
+            timestamp=row["created_at"],
+            scope=row["scope"],
+            retention=row["retention"],
+            content=row["content"],
+            tags=json.loads(row["tags"]) or [],
+            synthesized_from=json.loads(row["synthesized_from"]) or [],
+            is_ghost=bool(row.get("is_ghost", 0)),
+            vector_id=row["vector_id"],
+            gist=row.get("gist"),
+        )
+    )
+    conn.execute(
+        "UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ?",
+        (ghost.content, ghost.gist, memory_id, uid),
+    )
     conn.commit()
     conn.close()
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
@@ -940,8 +1003,7 @@ def search_memories(
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
         row = conn.execute(
-            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
-            (mid, uid, tenant_id)
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (mid, uid, tenant_id)
         ).fetchone()
         conn.close()
 
@@ -965,16 +1027,14 @@ def search_memories(
         try:
             retriever = get_hybrid_retriever()
             hybrid_result = retriever.search(
-                options.query, uid, tenant_id=tenant_id,
-                limit=options.limit, min_importance=options.min_importance
+                options.query, uid, tenant_id=tenant_id, limit=options.limit, min_importance=options.min_importance
             )
             if hybrid_result.results:
                 results = []
                 for r in hybrid_result.results:
                     signals = ", ".join(r.source_signals) if r.source_signals else "hybrid"
                     results.append(
-                        f"- [{r.memory_id}] {r.content[:100]}... "
-                        f"(score={r.combined_score:.3f}, signals={signals})"
+                        f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
                     )
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
         except Exception as e:
@@ -984,10 +1044,14 @@ def search_memories(
     conn = get_db_connection()
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
+        query_sql = (
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
+        )
         params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
     else:
-        query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        query_sql = (
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        )
         params = (uid, tenant_id, options.limit, options.offset)
 
     rows = conn.execute(query_sql, params).fetchall()
@@ -1005,32 +1069,65 @@ def search_memories(
 # =============================================================================
 
 
-
 def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -> str:
     """Helper to handle memory version rollback."""
     if options.to_version is None:
         return "Error: to_version required for rollback"
 
     conn = get_db_connection()
-    row = conn.execute("SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+    ).fetchone()
     if not row:
         conn.close()
         return f"Memory {options.memory_id} not found."
 
-    version_row = conn.execute("SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?", (options.memory_id, options.to_version, tenant_id)).fetchone()
+    version_row = conn.execute(
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (options.memory_id, options.to_version, tenant_id),
+    ).fetchone()
     if not version_row:
         conn.close()
         return f"Version {options.to_version} not found for memory {options.memory_id}."
 
-    version_id = hashlib.sha256(f"{options.memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
-    conn.execute("INSERT INTO memory_versions (id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                 (version_id, options.memory_id, row["content"], row["version"] or 1, datetime.now(timezone.utc).isoformat(), row["tags"], row["emotional_context"], row["metrics"], None))
+    version_id = hashlib.sha256(
+        f"{options.memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()
+    ).hexdigest()[:16]
+    conn.execute(
+        "INSERT INTO memory_versions (id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            version_id,
+            options.memory_id,
+            row["content"],
+            row["version"] or 1,
+            datetime.now(timezone.utc).isoformat(),
+            row["tags"],
+            row["emotional_context"],
+            row["metrics"],
+            None,
+        ),
+    )
     new_version = options.to_version + 1
-    conn.execute("UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ?",
-                 (version_row["content"], version_row["tags"], version_row["emotional_context"], version_row["metrics"], new_version, datetime.now(timezone.utc).isoformat(), options.memory_id, uid))
+    conn.execute(
+        "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        (
+            version_row["content"],
+            version_row["tags"],
+            version_row["emotional_context"],
+            version_row["metrics"],
+            new_version,
+            datetime.now(timezone.utc).isoformat(),
+            options.memory_id,
+            uid,
+        ),
+    )
     conn.commit()
     conn.close()
-    get_event_bus_with_stream().publish(memory_updated(memory_id=options.memory_id, old_content=row["content"], new_content=version_row["content"], actor=uid))
+    get_event_bus_with_stream().publish(
+        memory_updated(
+            memory_id=options.memory_id, old_content=row["content"], new_content=version_row["content"], actor=uid
+        )
+    )
     return f"Rolled back memory {options.memory_id} to version {options.to_version} (now at {new_version})"
 
 
@@ -1040,12 +1137,20 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
         return "Error: version1 and version2 required for diff"
 
     conn = get_db_connection()
-    if not conn.execute("SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)).fetchone():
+    if not conn.execute(
+        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+    ).fetchone():
         conn.close()
         return f"Memory {options.memory_id} not found."
 
-    v1 = conn.execute("SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?", (options.memory_id, options.version1, tenant_id)).fetchone()
-    v2 = conn.execute("SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?", (options.memory_id, options.version2, tenant_id)).fetchone()
+    v1 = conn.execute(
+        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (options.memory_id, options.version1, tenant_id),
+    ).fetchone()
+    v2 = conn.execute(
+        "SELECT content, created_at FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (options.memory_id, options.version2, tenant_id),
+    ).fetchone()
     conn.close()
 
     if not v1:
@@ -1053,15 +1158,16 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
     if not v2:
         return f"Version {options.version2} not found."
 
-    res = [f"Diff for {options.memory_id}:", f"V{options.version1}: {v1['content'][:50]}...", f"V{options.version2}: {v2['content'][:50]}..."]
+    res = [
+        f"Diff for {options.memory_id}:",
+        f"V{options.version1}: {v1['content'][:50]}...",
+        f"V{options.version2}: {v2['content'][:50]}...",
+    ]
     res.append("Changed." if v1["content"] != v2["content"] else "Identical.")
     return "\n".join(res)
 
 
-def manage_memory_versions(
-    options: VersionAction,
-    user_id: str | None = None
-) -> str:
+def manage_memory_versions(options: VersionAction, user_id: str | None = None) -> str:
     """
     Manage memory versioning: diff or rollback.
 
@@ -1084,6 +1190,7 @@ def manage_memory_versions(
 # =============================================================================
 # Subconscious Memory Block Tools
 # =============================================================================
+
 
 def _handle_subconscious_list(agent) -> str:
     """Helper for subconscious list action."""
@@ -1111,10 +1218,7 @@ def _handle_subconscious_update(agent, label: str, content: str | None) -> str:
 
 
 @mcp.tool()
-def manage_subconscious(
-    options: SubconsciousAction,
-    user_id: str | None = None
-) -> str:
+def manage_subconscious(options: SubconsciousAction, user_id: str | None = None) -> str:
     """
     Manage subconscious memory blocks (guidance, preferences, context).
 
@@ -1187,17 +1291,14 @@ def _bridge_subconscious_to_memories(agent, uid: str) -> int:
             ).fetchone()
             if existing:
                 conn.execute(
-                    "UPDATE memories SET activation_count = activation_count + 1, "
-                    "updated_at = ? WHERE id = ?",
+                    "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? WHERE id = ?",
                     (now, existing["id"]),
                 )
                 conn.commit()
                 conn.close()
                 continue
 
-            mid = hashlib.sha256(
-                f"{content}{now}".encode()
-            ).hexdigest()[:16]
+            mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
             conn.execute(
                 "INSERT OR IGNORE INTO memories "
                 "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
@@ -1219,11 +1320,7 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
     Returns the number of entities stored.
     """
 
-    user_content = " ".join(
-        msg.get("content", "")
-        for msg in messages
-        if msg.get("role") == "user"
-    )[:3000]
+    user_content = " ".join(msg.get("content", "") for msg in messages if msg.get("role") == "user")[:3000]
 
     if not user_content.strip():
         return 0
@@ -1242,10 +1339,7 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
 
 @mcp.tool()
 def process_session_transcript(
-    session_id: str,
-    messages: list[dict],
-    project_path: str | None = None,
-    user_id: str | None = None
+    session_id: str, messages: list[dict], project_path: str | None = None, user_id: str | None = None
 ) -> str:
     """
     Process a session transcript and extract memories.
@@ -1262,11 +1356,7 @@ def process_session_transcript(
     uid = user_id or USER_ID
     agent = get_subconscious_agent(uid)
 
-    _run_async(agent.process_transcript(
-        session_id=session_id,
-        messages=messages,
-        project_path=project_path
-    ))
+    _run_async(agent.process_transcript(session_id=session_id, messages=messages, project_path=project_path))
 
     _bridge_subconscious_to_memories(agent, uid)
     _bridge_transcript_entities(messages, uid)
@@ -1278,6 +1368,7 @@ def process_session_transcript(
 # WebSocket Subscription Tools
 # =============================================================================
 
+
 def get_subscription_manager() -> SubscriptionManager:
     """Get or create the global subscription manager."""
     if _SERVER_STATE["subscription_manager"] is None:
@@ -1285,28 +1376,117 @@ def get_subscription_manager() -> SubscriptionManager:
     return _SERVER_STATE["subscription_manager"]
 
 
-
-
-
 # =============================================================================
 # In-Context Memory Injection
 # =============================================================================
 
-_STOP_WORDS = frozenset({
-    "the", "a", "an", "is", "are", "was", "were", "be", "been",
-    "have", "has", "had", "do", "does", "did", "will", "would",
-    "could", "should", "may", "might", "can", "this", "that",
-    "these", "those", "i", "you", "he", "she", "it", "we", "they",
-    "me", "him", "her", "us", "them", "my", "your", "his", "its",
-    "our", "their", "and", "but", "or", "not", "no", "so", "if",
-    "then", "than", "too", "very", "just", "about", "also", "with",
-    "from", "into", "for", "on", "at", "to", "of", "in", "by", "up",
-    "out", "off", "all", "some", "any", "each", "every", "both",
-    "few", "more", "most", "other", "such", "only", "own", "same",
-    "what", "when", "where", "who", "how", "why", "which", "while",
-    "during", "before", "after", "above", "below", "between",
-    "under", "again", "further", "once",
-})
+_STOP_WORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "be",
+        "been",
+        "have",
+        "has",
+        "had",
+        "do",
+        "does",
+        "did",
+        "will",
+        "would",
+        "could",
+        "should",
+        "may",
+        "might",
+        "can",
+        "this",
+        "that",
+        "these",
+        "those",
+        "i",
+        "you",
+        "he",
+        "she",
+        "it",
+        "we",
+        "they",
+        "me",
+        "him",
+        "her",
+        "us",
+        "them",
+        "my",
+        "your",
+        "his",
+        "its",
+        "our",
+        "their",
+        "and",
+        "but",
+        "or",
+        "not",
+        "no",
+        "so",
+        "if",
+        "then",
+        "than",
+        "too",
+        "very",
+        "just",
+        "about",
+        "also",
+        "with",
+        "from",
+        "into",
+        "for",
+        "on",
+        "at",
+        "to",
+        "of",
+        "in",
+        "by",
+        "up",
+        "out",
+        "off",
+        "all",
+        "some",
+        "any",
+        "each",
+        "every",
+        "both",
+        "few",
+        "more",
+        "most",
+        "other",
+        "such",
+        "only",
+        "own",
+        "same",
+        "what",
+        "when",
+        "where",
+        "who",
+        "how",
+        "why",
+        "which",
+        "while",
+        "during",
+        "before",
+        "after",
+        "above",
+        "below",
+        "between",
+        "under",
+        "again",
+        "further",
+        "once",
+    }
+)
 
 
 def _extract_terms(text: str) -> list[str]:
@@ -1330,9 +1510,7 @@ def _score_memory_relevance(
     """
     content_lower = (memory["content"] or "").lower()
 
-    overlap = sum(
-        1 for t in terms if re.search(rf"\b{re.escape(t)}\b", content_lower)
-    )
+    overlap = sum(1 for t in terms if re.search(rf"\b{re.escape(t)}\b", content_lower))
 
     overlap_score = overlap / max(len(terms), 1)
 
@@ -1417,10 +1595,7 @@ def inject_context(
             seen_ids.add(row["id"])
             all_rows.append(row)
 
-    scored = [
-        (row, _score_memory_relevance(row, terms, now))
-        for row in all_rows
-    ]
+    scored = [(row, _score_memory_relevance(row, terms, now)) for row in all_rows]
     scored.sort(key=lambda pair: pair[1], reverse=True)
 
     top = [(row, score) for row, score in scored if score >= min_relevance]
@@ -1434,9 +1609,7 @@ def inject_context(
             snippet = (row["content"] or "")[:120]
             if len(row["content"] or "") > 120:
                 snippet += "..."
-            lines.append(
-                f"- [{row['id']}] (importance: {importance_val:.1f}) {snippet}"
-            )
+            lines.append(f"- [{row['id']}] (importance: {importance_val:.1f}) {snippet}")
 
     sub_lines = _subconscious_context_for_terms(uid, terms)
     if sub_lines:
@@ -1498,9 +1671,11 @@ if __name__ == "__main__":
 # Multi-Tenant Isolation Functions
 # =============================================================================
 
+
 @dataclass
 class TenantContext:
     """Tenant context for isolation."""
+
     tenant_id: str
     rate_limit: int = 100
     burst_limit: int = 20
@@ -1557,11 +1732,9 @@ def switch_tenant(tenant_id: str) -> str:
 # Temporal and Status Tools
 # =============================================================================
 
+
 @mcp.tool()
-def query_memories_temporal(
-    options: TemporalWindow,
-    user_id: str | None = None
-) -> str:
+def query_memories_temporal(options: TemporalWindow, user_id: str | None = None) -> str:
     """
     Query memories based on temporal signals (window, trend).
 
@@ -1574,39 +1747,32 @@ def query_memories_temporal(
 
     if options.trend:
         results = builder.get_memories_by_trend(
-            user_id=uid,
-            trend=options.trend,
-            limit=options.limit,
-            category=options.category
+            user_id=uid, trend=options.trend, limit=options.limit, category=options.category
         )
     else:
         results = builder.get_memories_from_window(
-            user_id=uid,
-            window=options.window,
-            limit=options.limit,
-            min_importance=0.1,
-            category=options.category
+            user_id=uid, window=options.window, limit=options.limit, min_importance=0.1, category=options.category
         )
 
-    return json.dumps([
-        {
-            "memory_id": r.memory_id,
-            "content": r.content,
-            "importance": r.importance,
-            "strength_trend": r.strength_trend,
-            "activation_count": r.activation_count,
-            "created_at": r.created_at,
-            "category": r.category,
-        }
-        for r in results
-    ], indent=2)
+    return json.dumps(
+        [
+            {
+                "memory_id": r.memory_id,
+                "content": r.content,
+                "importance": r.importance,
+                "strength_trend": r.strength_trend,
+                "activation_count": r.activation_count,
+                "created_at": r.created_at,
+                "category": r.category,
+            }
+            for r in results
+        ],
+        indent=2,
+    )
 
 
 @mcp.tool()
-def get_system_status(
-    options: SystemStatusOptions | None = None,
-    user_id: str | None = None
-) -> str:
+def get_system_status(options: SystemStatusOptions | None = None, user_id: str | None = None) -> str:
     """
     Get system health, memory statistics, and temporal trends.
 
@@ -1620,13 +1786,12 @@ def get_system_status(
 
     # Basic stats
     count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?",
-        (uid, get_current_tenant_id())
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, get_current_tenant_id())
     ).fetchone()[0]
 
     scope_counts = conn.execute(
         "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
-        (uid, get_current_tenant_id())
+        (uid, get_current_tenant_id()),
     ).fetchall()
     conn.close()
 
@@ -1634,7 +1799,7 @@ def get_system_status(
         "status": "healthy",
         "memory_count": count,
         "by_scope": {r[0]: r[1] for r in scope_counts},
-        "tenant_id": get_current_tenant_id()
+        "tenant_id": get_current_tenant_id(),
     }
 
     # Add temporal stats/trends if requested
@@ -1654,11 +1819,7 @@ def memory_status() -> str:
 
 def store_memory(content: str, user_id: str | None = None, **kwargs) -> str:
     """Legacy alias for manage_memories(action="store") used by tests."""
-    options = MemoryAction(
-        action="store",
-        content=content,
-        options=MemoryOptions(**kwargs)
-    )
+    options = MemoryAction(action="store", content=content, options=MemoryOptions(**kwargs))
     return manage_memories(options, user_id=user_id)
 
 
@@ -1700,18 +1861,13 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     return manage_memories(options, user_id=user_id)
 
 
-
-
-
 # =============================================================================
 # Entity and Graph Tools
 # =============================================================================
 
+
 @mcp.tool()
-def manage_entities(
-    action: EntityAction,
-    user_id: str | None = None
-) -> str:
+def manage_entities(action: EntityAction, user_id: str | None = None) -> str:
     """
     Manage entities and relationships (extract, link).
 
@@ -1727,11 +1883,14 @@ def manage_entities(
             return "Content is required for entity extraction"
         extractor = get_entity_extractor()
         result = _run_async(extractor.extract(action.content))
-        return json.dumps({
-            "user_id": uid,
-            "entities": [e.to_dict() for e in result.entities],
-            "relationships": [r.to_dict() for r in result.relationships],
-        }, indent=2)
+        return json.dumps(
+            {
+                "user_id": uid,
+                "entities": [e.to_dict() for e in result.entities],
+                "relationships": [r.to_dict() for r in result.relationships],
+            },
+            indent=2,
+        )
 
     if action.action == "link":
         if not action.memory_id or not action.entity_ids:
@@ -1767,10 +1926,7 @@ def _handle_entity_query_relationships(uid: str, store, query: EntityQuery) -> s
 
 
 @mcp.tool()
-def query_entities(
-    query: EntityQuery,
-    user_id: str | None = None
-) -> str:
+def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
     """
     Query entities and graph relationships.
 
@@ -1794,10 +1950,13 @@ def query_entities(
         if not query.entity_id:
             return "entity_id is required for traversal"
         result = store.traverse_graph(query.entity_id, uid, query.max_depth, query.limit)
-        return json.dumps({
-            "nodes": [e.to_dict() for e in result.nodes],
-            "edges": [r.to_dict() for r in result.edges],
-        }, indent=2)
+        return json.dumps(
+            {
+                "nodes": [e.to_dict() for e in result.nodes],
+                "edges": [r.to_dict() for r in result.edges],
+            },
+            indent=2,
+        )
 
     return "Invalid query_type"
 
@@ -1806,13 +1965,14 @@ def query_entities(
 # Enhanced Synthesis Tools
 # =============================================================================
 
+
 def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction) -> str:
     """Helper for analyze synthesize action."""
     synthesizer = get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
     conn = get_db_connection()
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
-        (uid, tenant_id, options.limit)
+        (uid, tenant_id, options.limit),
     ).fetchall()
     conn.close()
 
@@ -1822,11 +1982,17 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     memories = []
     for r in rows:
         emo = json.loads(r["emotional_context"]) if r["emotional_context"] else {}
-        memories.append(MemoryObject(
-            id=r["id"], timestamp=r["created_at"], scope=r["scope"], retention=r["retention"],
-            content=r["content"], tags=json.loads(r["tags"]),
-            emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5)) if emo else None
-        ))
+        memories.append(
+            MemoryObject(
+                id=r["id"],
+                timestamp=r["created_at"],
+                scope=r["scope"],
+                retention=r["retention"],
+                content=r["content"],
+                tags=json.loads(r["tags"]),
+                emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5)) if emo else None,
+            )
+        )
 
     if options.enhanced:
         result = _run_async(synthesizer.synthesize(memories, user_id=uid))
@@ -1836,17 +2002,19 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     if not result:
         return "No results."
 
-    return json.dumps({
-        "merged_ids": result.merged_ids, "new_memory_id": result.new_memory_id,
-        "compression": result.compression_ratio, "stance_shifts": len(result.stance_shifts)
-    }, indent=2)
+    return json.dumps(
+        {
+            "merged_ids": result.merged_ids,
+            "new_memory_id": result.new_memory_id,
+            "compression": result.compression_ratio,
+            "stance_shifts": len(result.stance_shifts),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
-def analyze_memories(
-    options: AnalysisAction,
-    user_id: str | None = None
-) -> str:
+def analyze_memories(options: AnalysisAction, user_id: str | None = None) -> str:
     """
     Perform analysis on memories: synthesis or reflection.
 
@@ -1871,8 +2039,6 @@ def analyze_memories(
 # =============================================================================
 # Hybrid Retrieval Tools
 # =============================================================================
-
-
 
 
 # =============================================================================

@@ -8,6 +8,7 @@ This module provides:
 - Whisper injection mechanism for pre-prompt context
 - Background processing of transcripts
 """
+
 from __future__ import annotations
 
 import logging
@@ -127,6 +128,7 @@ Finding information:
 @dataclass
 class MemoryBlock:
     """A single memory block with label, content, and metadata."""
+
     label: str
     content: str
     description: str = ""
@@ -164,6 +166,7 @@ class MemoryBlock:
 @dataclass
 class SubconsciousState:
     """State container for Subconscious agent."""
+
     blocks: dict[str, MemoryBlock] = field(default_factory=dict)
     last_sync: datetime | None = None
     session_count: int = 0
@@ -183,7 +186,14 @@ class SubconsciousState:
         return self.blocks.get(label)
 
     def update_block(self, label: str, content: str) -> None:
-        """Update a memory block's content."""
+        """Update a memory block's content.
+
+        ``label`` must be one of the predefined block names or an existing
+        custom block already in ``self.blocks``.  Arbitrary labels are
+        rejected to prevent typos silently creating orphan blocks.
+        """
+        if label not in DEFAULT_MEMORY_BLOCKS and label not in self.blocks:
+            raise ValueError(f"Unknown block label {label!r}. Must be one of: {sorted(DEFAULT_MEMORY_BLOCKS)}")
         if label in self.blocks:
             self.blocks[label].update(content)
         else:
@@ -232,11 +242,7 @@ class SubconsciousState:
 
     def get_all_blocks(self) -> list[dict]:
         """Get all non-empty blocks as dictionaries."""
-        return [
-            block.to_dict()
-            for block in self.blocks.values()
-            if not block.is_empty()
-        ]
+        return [block.to_dict() for block in self.blocks.values() if not block.is_empty()]
 
 
 class SubconsciousAgent:
@@ -273,7 +279,8 @@ class SubconsciousAgent:
 
         Args:
             session_id: Unique session identifier
-            messages: List of message dicts with role/content/timestamp
+            messages: List of message dicts — each must have 'role' (str) and
+                      'content' (str) keys. Extra keys are ignored.
             project_path: Optional project path for context
         """
         if not session_id:
@@ -282,18 +289,26 @@ class SubconsciousAgent:
             logger.warning("No messages to process")
             return
 
-        # Extract user preferences, patterns, project context from messages
-        for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+        valid_roles = {"user", "assistant", "system", "tool"}
+        for i, msg in enumerate(messages):
+            if not isinstance(msg, dict):
+                raise ValueError(f"messages[{i}] must be a dict, got {type(msg).__name__}")
+            if "role" not in msg or not isinstance(msg.get("role"), str):
+                raise ValueError(f"messages[{i}] missing required 'role' string field")
+            if "content" not in msg or not isinstance(msg.get("content"), str):
+                raise ValueError(f"messages[{i}] missing required 'content' string field")
+            if msg["role"] not in valid_roles:
+                raise ValueError(
+                    f"messages[{i}] has invalid role {msg['role']!r}; must be one of {sorted(valid_roles)}"
+                )
 
-            if role == "user":
-                self._process_user_message(content, session_id)
+        for msg in messages:
+            if msg["role"] == "user":
+                self._process_user_message(msg["content"], session_id)
 
         self.state.session_count += 1
         self.state.last_sync = datetime.now(timezone.utc)
-
-        logger.info(f"Processed transcript for session {session_id}")
+        logger.info("Processed transcript for session %s", session_id)
 
     def _process_user_message(self, content: str, session_id: str) -> None:
         """Process a user message for preferences and pending items."""
@@ -308,19 +323,13 @@ class SubconsciousAgent:
     def _extract_preference(self, content: str) -> None:
         """Extract user preference from message content."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        self.state.append_to_block(
-            USER_PREFERENCES,
-            f"- [{timestamp}] {content.strip()}"
-        )
+        self.state.append_to_block(USER_PREFERENCES, f"- [{timestamp}] {content.strip()}")
         logger.info(f"Extracted preference: {content[:50]}...")
 
     def _extract_pending_item(self, content: str, session_id: str) -> None:
         """Extract TODO/pending item from content."""
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        self.state.append_to_block(
-            PENDING_ITEMS,
-            f"- [{timestamp}] {content.strip()} (session: {session_id})"
-        )
+        self.state.append_to_block(PENDING_ITEMS, f"- [{timestamp}] {content.strip()} (session: {session_id})")
         logger.info(f"Extracted pending item: {content[:50]}...")
 
     def get_whisper(self) -> str:

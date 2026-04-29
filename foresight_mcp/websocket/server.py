@@ -7,6 +7,7 @@ Handles WebSocket connections with:
 - Reconnection with last event ID
 - Subscription management
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +23,7 @@ logger = logging.getLogger("foresight_websocket")
 
 class ConnectionState(str, Enum):
     """WebSocket connection state."""
+
     CONNECTING = "connecting"
     CONNECTED = "connected"
     AUTHENTICATED = "authenticated"
@@ -31,6 +33,7 @@ class ConnectionState(str, Enum):
 @dataclass
 class Connection:
     """Represents a WebSocket connection."""
+
     id: str
     send: Callable[[str], Any]
     close: Callable[[], Any]
@@ -183,6 +186,7 @@ class WebSocketHandler:
 
         if action == "subscribe":
             from .subscriptions import get_subscription_manager
+
             sub_manager = get_subscription_manager()
 
             subscription_id = message.get("subscription_id", str(uuid.uuid4()))
@@ -205,6 +209,7 @@ class WebSocketHandler:
 
         if action == "unsubscribe":
             from .subscriptions import get_subscription_manager
+
             sub_manager = get_subscription_manager()
             subscription_id = message.get("subscription_id")
 
@@ -299,16 +304,36 @@ class WebSocketServer:
             self._subscribe_to_events()
 
     async def _server_loop(self) -> None:
-        """Main server loop for cleanup tasks."""
+        """
+        Main server loop for cleanup tasks.
+
+        Uses adaptive sleep: backs off up to _MAX_CLEANUP_INTERVAL when there
+        are few/no stale connections, and resets to _MIN_CLEANUP_INTERVAL when
+        work is found. This avoids burning CPU on a fixed 60-second tick when
+        the server is idle, while staying responsive under load.
+        """
+        _MIN_CLEANUP_INTERVAL = 10.0  # seconds — floor when connections are stale
+        _MAX_CLEANUP_INTERVAL = 300.0  # seconds — ceiling when server is quiet
+        _BACKOFF_FACTOR = 2.0
+
+        interval = _MIN_CLEANUP_INTERVAL
         while self._running:
             try:
-                # Cleanup stale connections periodically
-                await self.handler.cleanup_stale_connections()
-                await asyncio.sleep(60)  # Check every minute
+                removed = await self.handler.cleanup_stale_connections()
+                if removed:
+                    # Work was found — reset to minimum interval
+                    interval = _MIN_CLEANUP_INTERVAL
+                    logger.debug("Cleaned up %d stale WebSocket connection(s)", len(removed))
+                else:
+                    # Nothing to do — back off exponentially up to the ceiling
+                    interval = min(interval * _BACKOFF_FACTOR, _MAX_CLEANUP_INTERVAL)
+
+                await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Server loop error: {e}")
+            except Exception as exc:
+                logger.error("Server loop error: %s", exc)
+                await asyncio.sleep(_MIN_CLEANUP_INTERVAL)
 
     async def stop(self) -> None:
         """Stop the WebSocket server."""
@@ -373,10 +398,8 @@ class WebSocketServer:
 # Integration with Event Bus
 # =============================================================================
 
-def setup_event_bus_websocket_integration(
-    event_bus,
-    websocket_server: WebSocketServer
-) -> None:
+
+def setup_event_bus_websocket_integration(event_bus, websocket_server: WebSocketServer) -> None:
     """
     Set up event bus to broadcast events via WebSocket.
 

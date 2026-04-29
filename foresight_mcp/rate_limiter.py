@@ -2,6 +2,7 @@
 Rate Limiter for Multi-Tenant Isolation
 Token bucket algorithm for per-tenant rate limiting.
 """
+
 from __future__ import annotations
 
 import threading
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 
 class RateLimitExceeded(Exception):
     """Raised when rate limit is exceeded."""
+
     def __init__(self, remaining: int, reset_time: float):
         self.remaining = remaining
         self.reset_time = reset_time
@@ -20,6 +22,7 @@ class RateLimitExceeded(Exception):
 @dataclass
 class TokenBucket:
     """Token bucket for rate limiting."""
+
     tokens: float
     last_update: float
     rate: float  # tokens per second
@@ -36,6 +39,7 @@ class RateLimiter:
     - Burst limit (max requests in short period)
     - Automatic token regeneration
     """
+
     rate_limit: int = 100  # requests per minute
     burst_limit: int = 20  # burst requests
     _buckets: dict[str, TokenBucket] = field(default_factory=dict)
@@ -50,15 +54,12 @@ class RateLimiter:
         if tenant_id not in self._buckets:
             rl = rate_limit if rate_limit is not None else self.rate_limit
             bl = burst_limit if burst_limit is not None else self.burst_limit
-            self._buckets[tenant_id] = TokenBucket(
-                tokens=bl,
-                last_update=time.time(),
-                rate=rl / 60.0,
-                burst=bl
-            )
+            self._buckets[tenant_id] = TokenBucket(tokens=bl, last_update=time.time(), rate=rl / 60.0, burst=bl)
         return self._buckets[tenant_id]
 
-    def acquire(self, tenant_id: str, tokens: int = 1, rate_limit: int | None = None, burst_limit: int | None = None) -> bool:
+    def acquire(
+        self, tenant_id: str, tokens: int = 1, rate_limit: int | None = None, burst_limit: int | None = None
+    ) -> bool:
         """
         Acquire tokens from tenant's bucket.
 
@@ -66,17 +67,13 @@ class RateLimiter:
         """
         with self._lock:
             bucket = self._get_bucket(tenant_id, rate_limit, burst_limit)
-            now = time.time()
+            now = time.monotonic()  # monotonic avoids wall-clock jumps (NTP, DST)
 
             # Regenerate tokens based on time elapsed
             elapsed = now - bucket.last_update
-            bucket.tokens = min(
-                bucket.burst,
-                bucket.tokens + elapsed * bucket.rate
-            )
+            bucket.tokens = min(bucket.burst, bucket.tokens + elapsed * bucket.rate)
             bucket.last_update = now
 
-            # Check if we have enough tokens
             if bucket.tokens >= tokens:
                 bucket.tokens -= tokens
                 return True
@@ -86,13 +83,13 @@ class RateLimiter:
         """Get remaining tokens for tenant."""
         with self._lock:
             bucket = self._get_bucket(tenant_id)
-            now = time.time()
+            now = time.monotonic()
 
-            # Calculate current tokens
+            # Single time.monotonic() call — no drift between token regen and read
             elapsed = now - bucket.last_update
             current = min(
                 bucket.burst,
-                bucket.tokens + elapsed * bucket.rate
+                bucket.tokens + elapsed * bucket.rate,
             )
             return int(current)
 

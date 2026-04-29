@@ -6,6 +6,7 @@ Implements:
 - Real-time trend calculation on memory access
 - Batch decay update service for periodic recalculation
 """
+
 from __future__ import annotations
 
 import logging
@@ -22,10 +23,8 @@ logger = logging.getLogger("foresight_temporal")
 
 def _is_missing_tenant_column_error(error: Exception) -> bool:
     message = str(error).lower()
-    return (
-        "no such column: tenant_id" in message
-        or "no column named tenant_id" in message
-    )
+    return "no such column: tenant_id" in message or "no column named tenant_id" in message
+
 
 FreshnessTrend = Literal["stable", "strengthening", "weakening", "stale"]
 
@@ -33,6 +32,7 @@ FreshnessTrend = Literal["stable", "strengthening", "weakening", "stale"]
 @dataclass
 class DecayConfig:
     """Configuration for memory decay calculations."""
+
     half_life_hours: float = 168.0  # 1 week default
     min_importance: float = 0.1
     activation_boost: float = 1.2
@@ -41,7 +41,7 @@ class DecayConfig:
     category_multiplier: float = 1.0
 
     @classmethod
-    def from_db_row(cls, row: tuple) -> 'DecayConfig':
+    def from_db_row(cls, row: tuple) -> "DecayConfig":
         """Create DecayConfig from database row."""
         return cls(
             half_life_hours=row[2],
@@ -77,20 +77,26 @@ class TemporalService:
             has_tenant_id = "tenant_id" in cols
 
             if has_tenant_id:
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT user_id, category, half_life_hours, min_importance,
                            activation_boost, strengthening_threshold, stale_threshold
                     FROM decay_config
                     WHERE user_id = ? AND category = ? AND tenant_id = ?
-                """, (user_id, category, tenant_id))
+                """,
+                    (user_id, category, tenant_id),
+                )
             else:
                 # Backward compatibility for pre-tenant schemas (e.g., test fixtures)
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT user_id, category, half_life_hours, min_importance,
                            activation_boost, strengthening_threshold, stale_threshold
                     FROM decay_config
                     WHERE user_id = ? AND category = ?
-                """, (user_id, category))
+                """,
+                    (user_id, category),
+                )
 
             row = cursor.fetchone()
             if row:
@@ -107,7 +113,7 @@ class TemporalService:
         created_at: str,
         activation_count: int,
         category: str = "general",
-        user_id: str = "default"
+        user_id: str = "default",
     ) -> tuple[float, FreshnessTrend]:
         """
         Calculate decay for a memory.
@@ -140,21 +146,12 @@ class TemporalService:
         new_importance = max(config.min_importance, importance * decay_factor)
 
         # Calculate trend
-        trend = self._calculate_trend(
-            new_importance,
-            activation_count,
-            hours_elapsed,
-            config
-        )
+        trend = self._calculate_trend(new_importance, activation_count, hours_elapsed, config)
 
         return new_importance, trend
 
     def _calculate_trend(
-        self,
-        importance: float,
-        activation_count: int,
-        hours_since_creation: float,
-        config: DecayConfig
+        self, importance: float, activation_count: int, hours_since_creation: float, config: DecayConfig
     ) -> FreshnessTrend:
         """
         Calculate freshness trend based on activation and importance.
@@ -186,7 +183,7 @@ class TemporalService:
         user_id: str,
         importance: float = 1.0,
         activation_boost: float | None = None,
-        tenant_id: str = "default"
+        tenant_id: str = "default",
     ) -> tuple[float, FreshnessTrend]:
         """
         Call when a memory is retrieved/accessed.
@@ -213,16 +210,22 @@ class TemporalService:
         try:
             # Get current memory data
             try:
-                cursor = conn.execute("""
+                cursor = conn.execute(
+                    """
                     SELECT importance, activation_count, created_at, category
                     FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?
-                """, (memory_id, user_id, tenant_id))
+                """,
+                    (memory_id, user_id, tenant_id),
+                )
             except Exception as e:
                 if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute("""
+                    cursor = conn.execute(
+                        """
                         SELECT importance, activation_count, created_at, category
                         FROM memories WHERE id = ? AND user_id = ?
-                    """, (memory_id, user_id))
+                    """,
+                        (memory_id, user_id),
+                    )
                 else:
                     raise
 
@@ -248,16 +251,13 @@ class TemporalService:
             now = datetime.now(timezone.utc)
             hours_elapsed = (now - created).total_seconds() / 3600
 
-            trend = self._calculate_trend(
-                new_importance,
-                new_activation_count,
-                hours_elapsed,
-                config
-            )
+            trend = self._calculate_trend(new_importance, new_activation_count, hours_elapsed, config)
 
-            # Update database
+            # Update database — capture now once to avoid two syscalls
+            now_iso = now.isoformat()
             try:
-                conn.execute("""
+                conn.execute(
+                    """
                     UPDATE memories
                     SET accessed_at = ?,
                         activation_count = ?,
@@ -266,20 +266,23 @@ class TemporalService:
                         strength_trend = ?,
                         last_retrieved_at = ?
                     WHERE id = ? AND user_id = ? AND tenant_id = ?
-                """, (
-                    datetime.now(timezone.utc).isoformat(),
-                    new_activation_count,
-                    new_importance,
-                    config.min_importance,
-                    trend,
-                    datetime.now(timezone.utc).isoformat(),
-                    memory_id,
-                    user_id,
-                    tenant_id
-                ))
+                """,
+                    (
+                        now_iso,
+                        new_activation_count,
+                        new_importance,
+                        config.min_importance,
+                        trend,
+                        now_iso,
+                        memory_id,
+                        user_id,
+                        tenant_id,
+                    ),
+                )
             except Exception as e:
                 if _is_missing_tenant_column_error(e):
-                    conn.execute("""
+                    conn.execute(
+                        """
                         UPDATE memories
                         SET accessed_at = ?,
                             activation_count = ?,
@@ -288,16 +291,18 @@ class TemporalService:
                             strength_trend = ?,
                             last_retrieved_at = ?
                         WHERE id = ? AND user_id = ?
-                    """, (
-                        datetime.now(timezone.utc).isoformat(),
-                        new_activation_count,
-                        new_importance,
-                        config.min_importance,
-                        trend,
-                        datetime.now(timezone.utc).isoformat(),
-                        memory_id,
-                        user_id,
-                    ))
+                    """,
+                        (
+                            now_iso,
+                            new_activation_count,
+                            new_importance,
+                            config.min_importance,
+                            trend,
+                            now_iso,
+                            memory_id,
+                            user_id,
+                        ),
+                    )
                 else:
                     raise
 
@@ -307,87 +312,108 @@ class TemporalService:
         finally:
             pool.release(conn)
 
-    def batch_update_decay(self, user_id: str, tenant_id: str = "default") -> int:
+    def batch_update_decay(
+        self,
+        user_id: str,
+        tenant_id: str = "default",
+        batch_size: int = 500,
+    ) -> int:
         """
-        Batch update decay for all user memories, handling optional tenant column.
+        Batch update decay for all user memories in paginated chunks.
+
+        Processes memories in batches of ``batch_size`` to avoid loading
+        the entire dataset into memory for users with large memory stores.
+
+        Args:
+            user_id: User ID to process.
+            tenant_id: Tenant scope.
+            batch_size: Number of memories to process per DB round-trip.
+
+        Returns:
+            Total number of memories updated.
         """
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            conn.execute("BEGIN")
+            updated_count = 0
+            offset = 0
 
-            # Get all memories for user (including tenant if column exists)
-            try:
-                cursor = conn.execute("""
-                    SELECT id, importance, created_at, activation_count,
-                           COALESCE(category, 'general') as category
-                    FROM memories
-                    WHERE user_id = ? AND tenant_id = ?
-                """, (user_id, tenant_id))
-            except Exception as e:
-                if _is_missing_tenant_column_error(e):
-                    cursor = conn.execute("""
-                        SELECT id, importance, created_at, activation_count,
-                               COALESCE(category, 'general') as category
-                        FROM memories
-                        WHERE user_id = ?
-                    """, (user_id,))
-                else:
+            while True:
+                conn.execute("BEGIN")
+                try:
+                    try:
+                        cursor = conn.execute(
+                            """
+                            SELECT id, importance, created_at, activation_count,
+                                   COALESCE(category, 'general') as category
+                            FROM memories
+                            WHERE user_id = ? AND tenant_id = ?
+                            LIMIT ? OFFSET ?
+                            """,
+                            (user_id, tenant_id, batch_size, offset),
+                        )
+                    except Exception as e:
+                        if _is_missing_tenant_column_error(e):
+                            cursor = conn.execute(
+                                """
+                                SELECT id, importance, created_at, activation_count,
+                                       COALESCE(category, 'general') as category
+                                FROM memories
+                                WHERE user_id = ?
+                                LIMIT ? OFFSET ?
+                                """,
+                                (user_id, batch_size, offset),
+                            )
+                        else:
+                            raise
+
+                    memories = cursor.fetchall()
+                    if not memories:
+                        conn.execute("COMMIT")
+                        break
+
+                    now = datetime.now(timezone.utc).isoformat()
+                    for memory_id, importance, created_at, activation_count, category in memories:
+                        new_importance, trend = self.calculate_decay(
+                            importance=importance,
+                            created_at=created_at,
+                            activation_count=activation_count,
+                            category=category,
+                            user_id=user_id,
+                        )
+                        try:
+                            conn.execute(
+                                """
+                                UPDATE memories
+                                SET importance = ?, strength_trend = ?, updated_at = ?
+                                WHERE id = ? AND user_id = ? AND tenant_id = ?
+                                """,
+                                (new_importance, trend, now, memory_id, user_id, tenant_id),
+                            )
+                        except Exception as e:
+                            if _is_missing_tenant_column_error(e):
+                                conn.execute(
+                                    """
+                                    UPDATE memories
+                                    SET importance = ?, strength_trend = ?, updated_at = ?
+                                    WHERE id = ? AND user_id = ?
+                                    """,
+                                    (new_importance, trend, now, memory_id, user_id),
+                                )
+                            else:
+                                raise
+                        updated_count += 1
+
+                    conn.execute("COMMIT")
+                    offset += batch_size
+
+                except Exception:
+                    conn.execute("ROLLBACK")
                     raise
 
-            memories = cursor.fetchall()
-            updated_count = 0
-
-            for memory_id, importance, created_at, activation_count, category in memories:
-                new_importance, trend = self.calculate_decay(
-                    importance=importance,
-                    created_at=created_at,
-                    activation_count=activation_count,
-                    category=category,
-                    user_id=user_id
-                )
-
-                try:
-                    conn.execute("""
-                        UPDATE memories
-                        SET importance = ?,
-                            strength_trend = ?,
-                            updated_at = ?
-                        WHERE id = ? AND user_id = ? AND tenant_id = ?
-                    """, (
-                        new_importance,
-                        trend,
-                        datetime.now(timezone.utc).isoformat(),
-                        memory_id,
-                        user_id,
-                        tenant_id
-                    ))
-                except Exception as e:
-                    if _is_missing_tenant_column_error(e):
-                        conn.execute("""
-                            UPDATE memories
-                            SET importance = ?,
-                                strength_trend = ?,
-                                updated_at = ?
-                            WHERE id = ? AND user_id = ?
-                        """, (
-                            new_importance,
-                            trend,
-                            datetime.now(timezone.utc).isoformat(),
-                            memory_id,
-                            user_id
-                        ))
-                    else:
-                        raise
-                updated_count += 1
-
-            conn.commit()
-            logger.info(f"Batch decay update completed: {updated_count} memories updated")
+            logger.info("Batch decay update completed: %d memories updated", updated_count)
             return updated_count
-        except Exception:
-            conn.rollback()
-            raise
         finally:
             pool.release(conn)
 
@@ -405,7 +431,8 @@ class TemporalService:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            cursor = conn.execute("""
+            cursor = conn.execute(
+                """
                 SELECT
                     COUNT(*) as total_memories,
                     AVG(importance) as avg_importance,
@@ -415,12 +442,14 @@ class TemporalService:
                     SUM(CASE WHEN strength_trend = 'stale' THEN 1 ELSE 0 END) as stale_count,
                     SUM(activation_count) as total_activations
                 FROM memories
-                WHERE user_id = ?
-            """, (user_id,))
+                WHERE user_id = ? AND tenant_id = ?
+            """,
+                (user_id, tenant_id),
+            )
 
             row = cursor.fetchone()
             return {
-                "total_memories": row[0],
+                "total_memories": row[0] or 0,
                 "avg_importance": row[1] or 0,
                 "stable_count": row[2] or 0,
                 "strengthening_count": row[3] or 0,
@@ -444,6 +473,7 @@ def get_temporal_service(db_path: str | None = None) -> TemporalService:
         if _temporal_service is None:
             if db_path is None:
                 from .config import DB_PATH
+
                 db_path = DB_PATH
             _temporal_service = TemporalService(db_path)
     return _temporal_service

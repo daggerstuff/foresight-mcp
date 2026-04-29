@@ -116,6 +116,10 @@ class HybridRetriever:
     where k = 60 (standard RRF constant).
 
     Query optimization: All sub-queries use batched IN clauses to avoid N+1 patterns.
+
+    TF-IDF caching: IDF vectors are cached per (user_id, tenant_id) key and
+    invalidated when the memory count for that scope changes. This avoids
+    recomputing IDF from scratch on every query.
     """
 
     RRF_K = 60  # RRF smoothing constant
@@ -144,6 +148,12 @@ class HybridRetriever:
         if "tfidf_cosine" not in merged and "semantic" in merged:
             merged["tfidf_cosine"] = merged["semantic"]
         self.weights = merged
+
+        # TF-IDF cache: maps (user_id, tenant_id) -> {"idf": dict, "doc_count": int,
+        #   "docs": dict[id, list[str]]}
+        # Invalidated when doc_count changes (new/deleted memories).
+        self._tfidf_cache: dict[tuple[str, str], dict] = {}
+        self._tfidf_cache_lock = threading.Lock()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get a database connection with WAL mode for concurrent safety."""
@@ -351,6 +361,100 @@ class HybridRetriever:
         scored.sort(key=lambda x: x[1], reverse=True)
         return {mid: rank + 1 for rank, (mid, _) in enumerate(scored)}
 
+    def _build_tfidf_cache(
+        self,
+        conn: sqlite3.Connection,
+        user_id: str,
+        tenant_id: str,
+    ) -> dict:
+        """
+        Build (or return cached) TF-IDF corpus data for a user/tenant scope.
+
+        Cache key: (user_id, tenant_id).
+        Cache is invalidated when the memory count changes, which covers
+        inserts and deletes without requiring explicit invalidation calls.
+
+        Returns a dict with keys:
+            "idf"       – {term: float}
+            "docs"      – {memory_id: list[str]}  (tokenized)
+            "doc_count" – int
+        """
+        cache_key = (user_id, tenant_id)
+
+        # Check current doc count first (cheap query)
+        count_row = conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            (user_id, tenant_id),
+        ).fetchone()
+        current_count: int = count_row[0] if count_row else 0
+
+        with self._tfidf_cache_lock:
+            cached = self._tfidf_cache.get(cache_key)
+            if cached is not None and cached["doc_count"] == current_count:
+                return cached
+
+        # Cache miss or stale — rebuild outside the lock to avoid blocking
+        # other threads during the DB fetch.
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            (user_id, tenant_id),
+        ).fetchall()
+
+        docs: dict[str, list[str]] = {mid: content.lower().split() for mid, content in rows}
+        n_docs = len(docs)
+
+        doc_freq: dict[str, int] = {}
+        for tokens in docs.values():
+            for token in set(tokens):
+                doc_freq[token] = doc_freq.get(token, 0) + 1
+
+        idf: dict[str, float] = {
+            term: math.log(n_docs / df) if df > 0 else 0.0
+            for term, df in doc_freq.items()
+        }
+
+        entry = {"idf": idf, "docs": docs, "doc_count": current_count}
+        with self._tfidf_cache_lock:
+            self._tfidf_cache[cache_key] = entry
+
+        return entry
+
+    def invalidate_tfidf_cache(self, user_id: str, tenant_id: str) -> None:
+        """Explicitly invalidate the TF-IDF cache for a user/tenant scope.
+
+        Call this after bulk memory operations to force an immediate rebuild
+        on the next query rather than waiting for the count-based check.
+        """
+        with self._tfidf_cache_lock:
+            self._tfidf_cache.pop((user_id, tenant_id), None)
+
+    @staticmethod
+    def _tfidf_vector(tokens: list[str], idf: dict[str, float]) -> dict[str, float]:
+        """Build a TF-IDF vector (sparse dict) for a token list."""
+        tf_counts: dict[str, int] = {}
+        for token in tokens:
+            tf_counts[token] = tf_counts.get(token, 0) + 1
+        total = len(tokens) if tokens else 1
+        return {
+            term: (count / total) * idf.get(term, 0.0)
+            for term, count in tf_counts.items()
+        }
+
+    @staticmethod
+    def _cosine_similarity(
+        vec_a: dict[str, float], vec_b: dict[str, float]
+    ) -> float:
+        """Compute cosine similarity between two sparse vectors."""
+        common = vec_a.keys() & vec_b.keys()
+        if not common:
+            return 0.0
+        dot = sum(vec_a[k] * vec_b[k] for k in common)
+        norm_a = math.sqrt(sum(v * v for v in vec_a.values()))
+        norm_b = math.sqrt(sum(v * v for v in vec_b.values()))
+        if norm_a == 0.0 or norm_b == 0.0:
+            return 0.0
+        return dot / (norm_a * norm_b)
+
     def _tfidf_cosine_search(
         self,
         conn: sqlite3.Connection,
@@ -362,8 +466,8 @@ class HybridRetriever:
         """
         Semantic search using TF-IDF cosine similarity.
 
-        Builds TF-IDF vectors for all user memories and the query,
-        then ranks memories by cosine similarity to the query.
+        IDF vectors are cached per (user_id, tenant_id) and only rebuilt
+        when the memory count changes, avoiding per-query recomputation.
         Pure Python implementation -- no external ML dependencies.
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
@@ -372,80 +476,26 @@ class HybridRetriever:
         if not terms:
             return {}
 
-        cursor = conn.execute("""
-            SELECT id, content
-            FROM memories
-            WHERE user_id = ? AND tenant_id = ?
-            AND is_ghost = 0
-        """, (user_id, tenant_id))
+        corpus = self._build_tfidf_cache(conn, user_id, tenant_id)
+        docs = corpus["docs"]
+        idf = corpus["idf"]
 
-        rows = cursor.fetchall()
-        if not rows:
+        if not docs:
             return {}
 
-        # Tokenize all documents
-        docs: dict[str, list[str]] = {}
-        for row in rows:
-            mid, content = row
-            docs[mid] = content.lower().split()
+        query_vector = self._tfidf_vector(terms, idf)
 
-        n_docs = len(docs)
-        if n_docs == 0:
-            return {}
-
-        # Build document frequency map (how many docs contain each term)
-        doc_freq: dict[str, int] = {}
-        for tokens in docs.values():
-            seen: set[str] = set(tokens)
-            for token in seen:
-                doc_freq[token] = doc_freq.get(token, 0) + 1
-
-        # Compute IDF for each term: log(N / df)
-        idf: dict[str, float] = {}
-        for term, df in doc_freq.items():
-            idf[term] = math.log(n_docs / df) if df > 0 else 0.0
-
-        def _tfidf_vector(tokens: list[str]) -> dict[str, float]:
-            """Build a TF-IDF vector (sparse dict) for a token list."""
-            tf_counts: dict[str, int] = {}
-            for token in tokens:
-                tf_counts[token] = tf_counts.get(token, 0) + 1
-            total = len(tokens) if tokens else 1
-            vec: dict[str, float] = {}
-            for term, count in tf_counts.items():
-                tf = count / total
-                vec[term] = tf * idf.get(term, 0.0)
-            return vec
-
-        def _cosine_similarity(
-            vec_a: dict[str, float], vec_b: dict[str, float]
-        ) -> float:
-            """Compute cosine similarity between two sparse vectors."""
-            common = set(vec_a.keys()) & set(vec_b.keys())
-            if not common:
-                return 0.0
-            dot = sum(vec_a[k] * vec_b[k] for k in common)
-            norm_a = math.sqrt(sum(v * v for v in vec_a.values()))
-            norm_b = math.sqrt(sum(v * v for v in vec_b.values()))
-            if norm_a == 0.0 or norm_b == 0.0:
-                return 0.0
-            return dot / (norm_a * norm_b)
-
-        # Build query vector
-        query_vector = _tfidf_vector(terms)
-
-        # Score each document by cosine similarity to query
-        scored: list[tuple] = []
-        for mid, tokens in docs.items():
-            doc_vector = _tfidf_vector(tokens)
-            sim = _cosine_similarity(query_vector, doc_vector)
-            scored.append((mid, sim))
-
+        scored: list[tuple[str, float]] = [
+            (mid, self._cosine_similarity(query_vector, self._tfidf_vector(tokens, idf)))
+            for mid, tokens in docs.items()
+        ]
         scored.sort(key=lambda x: x[1], reverse=True)
 
-        # Only return documents with non-zero similarity, up to limit
-        ranked = {mid: rank + 1 for rank, (mid, sim) in enumerate(scored)
-                  if sim > 0.0}
+        ranked = {
+            mid: rank + 1
+            for rank, (mid, sim) in enumerate(scored)
+            if sim > 0.0
+        }
         if limit and len(ranked) > limit:
             ranked = dict(list(ranked.items())[:limit])
         return ranked
