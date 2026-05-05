@@ -59,41 +59,48 @@ def create_test_db():
     """)
 
     conn.execute("""
-        CREATE TABLE memory_entities (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            entity_type TEXT,
-            description TEXT,
-            properties TEXT DEFAULT '{}',
-            confidence REAL DEFAULT 1.0,
-            user_id TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+ CREATE TABLE memory_entities (
+ id TEXT PRIMARY KEY,
+ tenant_id TEXT NOT NULL DEFAULT 'default',
+ user_id TEXT NOT NULL,
+ name TEXT NOT NULL,
+ entity_type TEXT NOT NULL,
+ description TEXT,
+ properties TEXT DEFAULT '{}',
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(tenant_id, user_id, name, entity_type)
+ )
+ """)
 
     conn.execute("""
-        CREATE TABLE entity_relationships (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_entity_id TEXT,
-            target_entity_id TEXT,
-            relationship_type TEXT,
-            confidence REAL DEFAULT 1.0,
-            metadata TEXT DEFAULT '{}',
-            user_id TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+ CREATE TABLE entity_relationships (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ tenant_id TEXT NOT NULL DEFAULT 'default',
+ user_id TEXT NOT NULL,
+ source_entity_id TEXT NOT NULL,
+ target_entity_id TEXT NOT NULL,
+ relationship_type TEXT NOT NULL,
+ confidence REAL DEFAULT 1.0,
+ decay_factor REAL DEFAULT 1.0,
+ last_accessed TEXT DEFAULT CURRENT_TIMESTAMP,
+ metadata TEXT DEFAULT '{}',
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ UNIQUE(tenant_id, user_id, source_entity_id, target_entity_id, relationship_type)
+ )
+ """)
 
     conn.execute("""
-        CREATE TABLE memory_entity_links (
-            memory_id TEXT,
-            entity_id TEXT,
-            user_id TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            PRIMARY KEY (memory_id, entity_id)
-        )
-    """)
+ CREATE TABLE memory_entity_links (
+ memory_id TEXT NOT NULL,
+ entity_id TEXT NOT NULL,
+ tenant_id TEXT NOT NULL DEFAULT 'default',
+ user_id TEXT NOT NULL,
+ relevance_score REAL DEFAULT 1.0,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY (memory_id, entity_id)
+ )
+ """)
 
     now = datetime.now(timezone.utc)
     uid = "test_user"
@@ -123,21 +130,21 @@ def create_test_db():
 
     for eid, name, etype, euid in entities:
         conn.execute(
-            "INSERT INTO memory_entities (id, name, entity_type, user_id) VALUES (?, ?, ?, ?)",
+            "INSERT INTO memory_entities (id, tenant_id, name, entity_type, user_id) VALUES (?, 'default', ?, ?, ?)",
             (eid, name, etype, euid),
         )
 
     # Relationships to make anxiety a hub
     conn.execute(
-        "INSERT INTO entity_relationships (source_entity_id, target_entity_id, relationship_type, user_id) VALUES (?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_anxiety", "entity_therapy", "relates_to", uid),
     )
     conn.execute(
-        "INSERT INTO entity_relationships (source_entity_id, target_entity_id, relationship_type, user_id) VALUES (?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_anxiety", "entity_stress", "relates_to", uid),
     )
     conn.execute(
-        "INSERT INTO entity_relationships (source_entity_id, target_entity_id, relationship_type, user_id) VALUES (?, ?, ?, ?)",
+        "INSERT INTO entity_relationships (tenant_id, source_entity_id, target_entity_id, relationship_type, user_id) VALUES ('default', ?, ?, ?, ?)",
         ("entity_stress", "entity_therapy", "supports", uid),
     )
 

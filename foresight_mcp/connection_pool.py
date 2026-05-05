@@ -27,31 +27,23 @@ class ConnectionPool:
         self._lock = threading.Lock()
 
     def acquire(self) -> PooledConnection:
-        """Get a connection from the pool, reusing idle wrappers when possible."""
+        """Get a connection from the pool."""
         with self._lock:
-            # Try to reuse an idle connection (could be raw conn or wrapper)
             while self._pool:
-                item, last_used = self._pool.popleft()
-                # Discard stale connections based on underlying raw connection
-                raw = item._conn if isinstance(item, PooledConnection) else item
+                raw, last_used = self._pool.popleft()
                 if time.time() - last_used > self.max_idle_seconds:
                     with suppress(Exception):
                         raw.close()
                     continue
-                # Validate connection is still alive
                 try:
                     raw.execute("SELECT 1")
                     self._in_use.add(raw)
-                    # Return the original wrapper if we have one, else wrap anew
-                    if isinstance(item, PooledConnection):
-                        return item
                     return PooledConnection(raw, self)
                 except Exception:
                     with suppress(Exception):
                         raw.close()
                     continue
 
-            # Create a new connection only if under the size limit
             if len(self._in_use) >= self.max_size:
                 raise RuntimeError(
                     f"Connection pool exhausted ({self.max_size} connections in use)"
@@ -60,58 +52,34 @@ class ConnectionPool:
             self._in_use.add(conn)
             return PooledConnection(conn, self)
 
-    def _unwrap_and_track(
-        self, conn: sqlite3.Connection | PooledConnection
-    ) -> tuple[sqlite3.Connection, PooledConnection | None]:
-        """Return the raw sqlite3 connection and nearest wrapper owning it."""
-        tracked: PooledConnection | None = None
-        while isinstance(conn, PooledConnection):
-            if isinstance(conn._conn, sqlite3.Connection):
-                tracked = conn
-            conn = conn._conn
-        return conn, tracked
-
     def release(self, conn: sqlite3.Connection | PooledConnection) -> None:
         """Return a connection to the pool."""
-        if isinstance(conn, PooledConnection) and getattr(conn, "_released", False):
-            return
         if isinstance(conn, PooledConnection):
-            raw_conn, wrapper_conn = self._unwrap_and_track(conn)
+            if conn._released:
+                return
             conn._released = True
+            raw = conn._conn
         else:
-            raw_conn = conn
-            wrapper_conn = None
+            raw = conn
 
         with self._lock:
-            if raw_conn not in self._in_use:
-                # Avoid double-release or unknown connections from reintroducing duplicates.
-                if any(stored_conn is raw_conn for stored_conn, _ in self._pool):
-                    if wrapper_conn is not None:
-                        wrapper_conn._released = True
-                    return
+            if raw not in self._in_use:
                 with suppress(Exception):
-                    raw_conn.close()
-                if wrapper_conn is not None:
-                    wrapper_conn._released = True
+                    raw.close()
                 return
 
-            self._in_use.discard(raw_conn)
+            self._in_use.discard(raw)
             if len(self._pool) < self.max_size and not any(
-                stored_conn is raw_conn for stored_conn, _ in self._pool
+                stored is raw for stored, _ in self._pool
             ):
                 try:
-                    raw_conn.execute("SELECT 1")
-                    self._pool.append((wrapper_conn if wrapper_conn is not None else raw_conn, time.time()))
-                    # Mark released flag if wrapper exists (already set earlier)
-                    # No further action needed
+                    raw.execute("SELECT 1")
+                    self._pool.append((raw, time.time()))
                     return
                 except Exception:
                     pass
-            # Pool full or connection dead -- close it
             with suppress(Exception):
-                raw_conn.close()
-            if wrapper_conn is not None:
-                wrapper_conn._released = True
+                raw.close()
 
     def _new_connection(self) -> sqlite3.Connection:
         """Create a new database connection with proper settings."""
@@ -185,18 +153,14 @@ class PooledConnection:
     def close(self):
         if self._released:
             return
-        if isinstance(self._conn, sqlite3.Connection):
-            with suppress(Exception):
-                self._conn.close()
         self._pool.release(self)
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, *_):
         self.close()
 
     def __del__(self):
-        # Ensure connections are never leaked if callers forget to close.
         with suppress(Exception):
             self.close()

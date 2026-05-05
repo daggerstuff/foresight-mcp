@@ -47,14 +47,16 @@ def test_acquire_returns_connection(pool):
 
 
 # ---------------------------------------------------------------------------
-# 2. released connections are reused
+# 2. released connections reuse the underlying raw connection
 # ---------------------------------------------------------------------------
 def test_acquire_release_reuse(pool):
     conn = pool.acquire()
+    raw = conn._conn
     pool.release(conn)
     conn2 = pool.acquire()
     try:
-        assert conn is conn2
+        # Fresh wrapper but same underlying sqlite3 connection
+        assert conn2._conn is raw
     finally:
         pool.release(conn2)
 
@@ -77,8 +79,8 @@ def test_pool_exhausted_raises(pool):
 # ---------------------------------------------------------------------------
 def test_close_all_clears_pool(pool):
     conn = pool.acquire()
-    pool.release(conn)          # one idle
-    _conn2 = pool.acquire()      # one in-use
+    pool.release(conn)  # one idle
+    _conn2 = pool.acquire()  # one in-use
     pool.close_all()
     assert pool.stats == {"idle": 0, "in_use": 0, "max_size": pool.max_size}
 
@@ -89,16 +91,13 @@ def test_close_all_clears_pool(pool):
 def test_stale_connection_evicted(db_path):
     p = ConnectionPool(db_path, max_size=3, max_idle_seconds=0)
     conn = p.acquire()
+    raw = conn._conn
     p.release(conn)
-    # The connection was just released so it may be right on the boundary.
-    # Sleep briefly to ensure time.time() advances past max_idle_seconds=0.
     time.sleep(0.05)
     conn2 = p.acquire()
     try:
-        # The stale connection should have been discarded, so a new one is
-        # created -- it will not be the same object.
-        assert conn is not conn2
-        # Stale one was closed, so idle pool should be empty after acquire.
+        # The stale raw connection should have been discarded, new one created
+        assert conn2._conn is not raw
         assert p.stats["idle"] == 0
     finally:
         p.release(conn2)
@@ -109,16 +108,15 @@ def test_stale_connection_evicted(db_path):
 # 6. PooledConnection delegates execute/fetchone/commit
 # ---------------------------------------------------------------------------
 def test_pooled_connection_delegates(pool):
-    raw = pool.acquire()
-    wrapped = PooledConnection(raw, pool)
+    conn = pool.acquire()
     try:
-        wrapped.execute("CREATE TABLE d (v TEXT)")
-        wrapped.execute("INSERT INTO d VALUES ('hello')")
-        wrapped.commit()
-        row = wrapped.execute("SELECT v FROM d").fetchone()
+        conn.execute("CREATE TABLE d (v TEXT)")
+        conn.execute("INSERT INTO d VALUES ('hello')")
+        conn.commit()
+        row = conn.execute("SELECT v FROM d").fetchone()
         assert row[0] == "hello"
     finally:
-        pool.release(raw)
+        pool.release(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -126,17 +124,15 @@ def test_pooled_connection_delegates(pool):
 # ---------------------------------------------------------------------------
 def test_pooled_connection_close_returns_to_pool(pool):
     conn = pool.acquire()
-    wrapped = PooledConnection(conn, pool)
     assert pool.stats["in_use"] == 1
 
-    wrapped.close()  # should release, not truly close
+    conn.close()  # should release, not truly close
     assert pool.stats["in_use"] == 0
     assert pool.stats["idle"] == 1
 
-    # The connection should be reusable
+    # The raw connection should be reusable
     conn2 = pool.acquire()
     try:
-        assert conn is conn2
         conn2.execute("SELECT 1")
     finally:
         pool.release(conn2)
@@ -148,7 +144,7 @@ def test_pooled_connection_close_returns_to_pool(pool):
 def test_dead_connection_discarded(pool):
     conn = pool.acquire()
     # Force-close the underlying sqlite3 connection to simulate a dead conn.
-    conn.close()
+    conn._conn.close()
     pool.release(conn)
     # The dead connection should be dropped during release (it fails SELECT 1).
     assert pool.stats["idle"] == 0
