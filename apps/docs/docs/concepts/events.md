@@ -5,33 +5,34 @@ title: Event Sourcing
 
 # Event Sourcing
 
-Foresight uses event sourcing to maintain a complete audit trail of all memory operations.
+Foresight uses event sourcing to maintain a complete audit trail of all memory
+operations.
 
 ## Event Types
 
-| Event | Description |
-|-------|-------------|
-| `memory.stored` | New memory created |
-| `memory.retrieved` | Memory accessed |
-| `memory.updated` | Memory modified |
-| `memory.deleted` | Memory removed |
-| `block.created` | Block schema registered |
-| `block.updated` | Block content changed |
-| `block.deleted` | Block removed |
-| `anomaly.detected` | Anomaly flagged |
-| `system.error` | System error occurred |
+| Event              | Description             |
+| ------------------ | ----------------------- |
+| `memory.stored`    | New memory created      |
+| `memory.retrieved` | Memory accessed         |
+| `memory.updated`   | Memory modified         |
+| `memory.deleted`   | Memory removed          |
+| `block.created`    | Block schema registered |
+| `block.updated`    | Block content changed   |
+| `block.deleted`    | Block removed           |
+| `anomaly.detected` | Anomaly flagged         |
+| `system.error`     | System error occurred   |
 
 ## Event Structure
 
 ```typescript
 interface Event {
-  id: string;          // Unique event ID
-  eventType: EventType;
-  timestamp: string;   // ISO timestamp
-  actor: string;       // User/system ID
-  entityId: string;    // Related memory/block ID
-  payload: Record<string, unknown>;
-  metadata: Record<string, unknown>;
+  id: string // Unique event ID
+  eventType: EventType
+  timestamp: string // ISO timestamp
+  actor: string // User/system ID
+  entityId: string // Related memory/block ID
+  payload: Record<string, unknown>
+  metadata: Record<string, unknown>
 }
 ```
 
@@ -69,25 +70,25 @@ event_bus.subscribe(EventType.MEMORY_STORED, on_memory_stored)
 ### WebSocket
 
 ```typescript
-import { ForesightWebSocketClient, EventType } from '@foresight/core';
+import { ForesightWebSocketClient, EventType } from '@foresight/core'
 
 const client = new ForesightWebSocketClient({
-  url: 'ws://localhost:8765'
-});
+  url: 'ws://localhost:8765',
+})
 
-await client.connect();
+await client.connect()
 
 // Subscribe to events
 await client.subscribe({
-  eventTypes: [EventType.MemoryStored, EventType.MemoryUpdated]
-});
+  eventTypes: [EventType.MemoryStored, EventType.MemoryUpdated],
+})
 
 // Handle events
 client.onMessage((message) => {
   if (message.type === 'event') {
-    console.log('Event received:', message.payload);
+    console.log('Event received:', message.payload)
   }
-});
+})
 ```
 
 ## Querying Events

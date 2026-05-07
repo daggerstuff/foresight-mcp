@@ -5,11 +5,13 @@ title: Memory Blocks
 
 # Memory Blocks
 
-Memory Blocks provide structured, composable context containers with configurable retention and merge strategies.
+Memory Blocks provide structured, composable context containers with
+configurable retention and merge strategies.
 
 ## What are Blocks?
 
 Blocks are named containers that hold contextual information with:
+
 - Defined schema (label, description, retention policy)
 - Merge strategies (append, replace, synthesize)
 - Injection points (pre-prompt, post-prompt, whisper-only)
@@ -19,15 +21,15 @@ Blocks are named containers that hold contextual information with:
 
 Foresight ships with these default blocks:
 
-| Block | Purpose | Retention | Injection |
-|-------|---------|-----------|-----------|
-| `guidance` | Active guidance | Short-term | Pre-prompt |
-| `pending_items` | Unfinished work | Short-term | Pre-prompt |
-| `project_context` | Codebase decisions | Long-term | Pre-prompt |
-| `session_patterns` | Observed patterns | Long-term | Pre-prompt |
-| `user_preferences` | Coding style | Long-term | Pre-prompt |
-| `self_improvement` | Architecture evolution | Permanent | Whisper |
-| `tool_guidelines` | Tool usage patterns | Permanent | Whisper |
+| Block              | Purpose                | Retention  | Injection  |
+| ------------------ | ---------------------- | ---------- | ---------- |
+| `guidance`         | Active guidance        | Short-term | Pre-prompt |
+| `pending_items`    | Unfinished work        | Short-term | Pre-prompt |
+| `project_context`  | Codebase decisions     | Long-term  | Pre-prompt |
+| `session_patterns` | Observed patterns      | Long-term  | Pre-prompt |
+| `user_preferences` | Coding style           | Long-term  | Pre-prompt |
+| `self_improvement` | Architecture evolution | Permanent  | Whisper    |
+| `tool_guidelines`  | Tool usage patterns    | Permanent  | Whisper    |
 
 ## Creating Custom Blocks
 
@@ -53,11 +55,11 @@ registry.register(schema)
 
 ## Merge Strategies
 
-| Strategy | Behavior | Use Case |
-|----------|----------|----------|
-| `append` | Add to existing | Session patterns |
-| `replace` | Replace entirely | Configuration |
-| `synthesize` | LLM merge | Complex evolution |
+| Strategy     | Behavior         | Use Case          |
+| ------------ | ---------------- | ----------------- |
+| `append`     | Add to existing  | Session patterns  |
+| `replace`    | Replace entirely | Configuration     |
+| `synthesize` | LLM merge        | Complex evolution |
 
 ## Block Operations
 
@@ -87,7 +89,7 @@ whisper = get_subconscious_whisper()
 Blocks inject at specific points:
 
 - **Pre-prompt**: Beginning of prompt
-- **Post-prompt**: End of prompt  
+- **Post-prompt**: End of prompt
 - **Whisper-only**: System messages only
 
 ## Related

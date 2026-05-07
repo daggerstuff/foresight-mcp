@@ -9,11 +9,11 @@ Hooks enable extensibility by triggering external actions when events occur.
 
 ## Hook Types
 
-| Type | Description |
-|------|-------------|
-| `callable` | Python function |
-| `http` | HTTP webhook |
-| `async` | Async Python function |
+| Type       | Description           |
+| ---------- | --------------------- |
+| `callable` | Python function       |
+| `http`     | HTTP webhook          |
+| `async`    | Async Python function |
 
 ## Registering HTTP Hooks
 

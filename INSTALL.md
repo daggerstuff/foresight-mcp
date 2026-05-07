@@ -42,7 +42,8 @@ uv run foresight-mcp
 
 ## Add to Claude Code
 
-After installation, add to your `~/.claude/settings.json` or project's `.mcp.json`:
+After installation, add to your `~/.claude/settings.json` or project's
+`.mcp.json`:
 
 ```json
 {

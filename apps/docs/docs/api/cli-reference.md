@@ -71,24 +71,24 @@ foresight subconscious clear <label> [options]
 
 ### Global Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--help` | Show help | - |
-| `--json`, `-j` | Output as JSON | false |
-| `--user`, `-u` | User ID | auto-detected |
+| Option         | Description    | Default       |
+| -------------- | -------------- | ------------- |
+| `--help`       | Show help      | -             |
+| `--json`, `-j` | Output as JSON | false         |
+| `--user`, `-u` | User ID        | auto-detected |
 
 ### Store Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--category`, `-c` | Memory category | fact |
-| `--scope`, `-s` | session, arc, trait, fact | session |
-| `--retention`, `-r` | short_term, long_term | short_term |
+| Option              | Description               | Default    |
+| ------------------- | ------------------------- | ---------- |
+| `--category`, `-c`  | Memory category           | fact       |
+| `--scope`, `-s`     | session, arc, trait, fact | session    |
+| `--retention`, `-r` | short_term, long_term     | short_term |
 
 ### Query/List Options
 
-| Option | Description | Default |
-|--------|-------------|---------|
+| Option          | Description | Default               |
+| --------------- | ----------- | --------------------- |
 | `--limit`, `-n` | Max results | 10 (query), 20 (list) |
 
 ## Examples
@@ -124,7 +124,9 @@ foresight subconscious list
 
 ## Output Format
 
-The CLI uses rich terminal output by default with colored panels, tables, and syntax highlighting. Use `--json` for machine-readable output suitable for scripting.
+The CLI uses rich terminal output by default with colored panels, tables, and
+syntax highlighting. Use `--json` for machine-readable output suitable for
+scripting.
 
 ## Related
 

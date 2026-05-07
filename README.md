@@ -1,8 +1,10 @@
 # Foresight MCP Server
 
-**Persistent memory for AI agents with psychological safety features and subconscious memory blocks.**
+**Persistent memory for AI agents with psychological safety features and
+subconscious memory blocks.**
 
-Restored from `src/lib/ai/memory/` and `ai/memory/foresight_subconscious.py` - the heart and soul of Foresight.
+Restored from `src/lib/ai/memory/` and `ai/memory/foresight_subconscious.py` -
+the heart and soul of Foresight.
 
 Compatible with Claude Code, Goose, Cursor, and any MCP-compatible AI agent.
 
@@ -13,10 +15,12 @@ Foresight implements a sophisticated memory system with:
 ### Core Memory System
 
 - **Socratic Gate** - Psychological safety gating for memory ingestion
-- **Crisis Detection** - Automatic detection of crisis signals with risk assessment
+- **Crisis Detection** - Automatic detection of crisis signals with risk
+  assessment
 - **Memory Synthesizer** - Reconciliation and stance shift detection
 - **Memory Linker** - Vector store linking and ghost node archival
-- **Rich Memory Types** - Emotional metadata, empathy metrics, retention policies
+- **Rich Memory Types** - Emotional metadata, empathy metrics, retention
+  policies
 
 ### Subconscious Memory Blocks
 
@@ -37,11 +41,13 @@ uv run foresight-mcp
 ## Beginner Friendly Setup
 
 1. Install **uv** (fast Python package manager) if you don't have it:
+
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
 2. Clone the repository and change into it:
+
    ```bash
    git clone https://github.com/yourorg/foresight-mcp.git
    cd foresight-mcp
@@ -51,6 +57,7 @@ uv run foresight-mcp
    - Install Python dependencies
    - Create the memory database directory with secure permissions
    - Run an initial health check
+
    ```bash
    ./scripts/setup.sh
    ```
@@ -93,7 +100,7 @@ Add to your Goose configuration (`~/.config/goose/config.yaml`):
 ```yaml
 extensions:
   foresight:
-    args: ["run", "-m", "foresight_mcp"]
+    args: ['run', '-m', 'foresight_mcp']
     cwd: /path/to/foresight-mcp
     env:
       FORESIGHT_DB_PATH: /home/user/.foresight/memory.db
@@ -103,7 +110,8 @@ extensions:
 
 ### Cursor / Other MCP Clients
 
-Use the same configuration pattern as Claude Code, adjusting for your client's specific config format.
+Use the same configuration pattern as Claude Code, adjusting for your client's
+specific config format.
 
 ## Tools
 
@@ -119,13 +127,15 @@ Use the same configuration pattern as Claude Code, adjusting for your client's s
 
 ### Advanced Memory Features
 
-- `synthesize_memories` - Run synthesis to detect stance shifts and merge candidates
+- `synthesize_memories` - Run synthesis to detect stance shifts and merge
+  candidates
 - `archive_memory` - Archive memory to ghost node (requires vector_id)
 
 ### Subconscious Memory Blocks
 
 - `get_subconscious_blocks` - Get all subconscious memory blocks
-- `get_subconscious_block` - Get a specific block (guidance, pending_items, etc.)
+- `get_subconscious_block` - Get a specific block (guidance, pending_items,
+  etc.)
 - `update_subconscious_block` - Update a block's content
 - `add_subconscious_guidance` - Add a line to the guidance block
 - `get_subconscious_whisper` - Get the current whisper injection (XML format)

@@ -1,6 +1,6 @@
-import { themes as prismThemes } from 'prism-react-renderer';
-import type { Config } from '@docusaurus/types';
-import type * as Preset from '@docusaurus/preset-classic';
+import type * as Preset from '@docusaurus/preset-classic'
+import type { Config } from '@docusaurus/types'
+import { themes as prismThemes } from 'prism-react-renderer'
 
 const config: Config = {
   title: 'Foresight Memory Architecture',
@@ -26,7 +26,8 @@ const config: Config = {
       {
         docs: {
           sidebarPath: './sidebars.ts',
-          editUrl: 'https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/',
+          editUrl:
+            'https://github.com/daggerstuff/foresight-mcp/tree/main/apps/docs/',
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -94,6 +95,6 @@ const config: Config = {
       additionalLanguages: ['python', 'typescript', 'bash', 'json'],
     },
   } satisfies Preset.ThemeConfig,
-};
+}
 
-export default config;
+export default config

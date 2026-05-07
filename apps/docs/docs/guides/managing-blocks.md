@@ -71,18 +71,18 @@ foresight block create my-block --content "Initial content"
 ## TypeScript SDK
 
 ```typescript
-import { BlockManager } from '@foresight/core';
+import { BlockManager } from '@foresight/core'
 
-const blockManager = new BlockManager();
+const blockManager = new BlockManager()
 
 // Get block
-const block = blockManager.get('guidance');
+const block = blockManager.get('guidance')
 
 // Update content
-blockManager.updateContent('guidance', 'New guidance');
+blockManager.updateContent('guidance', 'New guidance')
 
 // List all
-const blocks = blockManager.list();
+const blocks = blockManager.list()
 ```
 
 ## Related

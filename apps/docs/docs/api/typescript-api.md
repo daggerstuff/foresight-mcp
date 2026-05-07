@@ -16,12 +16,13 @@ constructor(options?: ForesightClientOptions)
 ```
 
 **Options:**
+
 ```typescript
 interface ForesightClientOptions {
-  serverUrl?: string;
-  userId?: string;
-  bankId?: string;
-  timeout?: number;
+  serverUrl?: string
+  userId?: string
+  bankId?: string
+  timeout?: number
 }
 ```
 
@@ -89,12 +90,12 @@ async deleteMemory(memoryId: string): Promise<void>
 
 ```typescript
 class BlockManager {
-  register(schema: MemoryBlockSchema): void;
-  get(label: string): MemoryBlock | undefined;
-  list(): MemoryBlock[];
-  createBlock(label: string, content: string): MemoryBlock;
-  updateContent(label: string, content: string): void;
-  delete(label: string): boolean;
+  register(schema: MemoryBlockSchema): void
+  get(label: string): MemoryBlock | undefined
+  list(): MemoryBlock[]
+  createBlock(label: string, content: string): MemoryBlock
+  updateContent(label: string, content: string): void
+  delete(label: string): boolean
 }
 ```
 
@@ -102,9 +103,9 @@ class BlockManager {
 
 ```typescript
 class HookManager {
-  registerHook(options: RegisterHookOptions): Promise<HookRegistration>;
-  listHooks(): Promise<HookRegistration[]>;
-  unregisterHook(hookId: string): Promise<void>;
+  registerHook(options: RegisterHookOptions): Promise<HookRegistration>
+  listHooks(): Promise<HookRegistration[]>
+  unregisterHook(hookId: string): Promise<void>
 }
 ```
 
@@ -117,7 +118,7 @@ enum MemoryScope {
   Session = 'session',
   Arc = 'arc',
   Trait = 'trait',
-  Fact = 'fact'
+  Fact = 'fact',
 }
 ```
 
@@ -128,7 +129,7 @@ enum RetentionPolicy {
   Ephemeral = 'ephemeral',
   ShortTerm = 'short_term',
   LongTerm = 'long_term',
-  Permanent = 'permanent'
+  Permanent = 'permanent',
 }
 ```
 
@@ -144,7 +145,7 @@ enum EventType {
   BlockUpdated = 'block.updated',
   BlockDeleted = 'block.deleted',
   AnomalyDetected = 'anomaly.detected',
-  SystemError = 'system.error'
+  SystemError = 'system.error',
 }
 ```
 

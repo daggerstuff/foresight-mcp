@@ -49,19 +49,19 @@ result = store_memory(
 ## TypeScript Example
 
 ```typescript
-import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core';
+import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core'
 
-const client = new ForesightClient();
+const client = new ForesightClient()
 
 // Store
-const result = await client.storeMemory(
-  "User prefers dark mode",
-  { scope: MemoryScope.Fact, retention: RetentionPolicy.LongTerm }
-);
+const result = await client.storeMemory('User prefers dark mode', {
+  scope: MemoryScope.Fact,
+  retention: RetentionPolicy.LongTerm,
+})
 
 // Query
-const memories = await client.queryMemories("dark mode");
-console.log(memories);
+const memories = await client.queryMemories('dark mode')
+console.log(memories)
 ```
 
 ## CLI Usage

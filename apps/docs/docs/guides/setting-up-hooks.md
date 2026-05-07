@@ -102,10 +102,10 @@ register_hook(
 Failed hooks retry with exponential backoff:
 
 | Attempt | Delay |
-|---------|-------|
-| 1 | 0s |
-| 2 | 2s |
-| 3 | 4s |
+| ------- | ----- |
+| 1       | 0s    |
+| 2       | 2s    |
+| 3       | 4s    |
 
 ## Related
 

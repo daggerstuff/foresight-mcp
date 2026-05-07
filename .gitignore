@@ -1,16 +1,30 @@
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Distribution / packaging
+.build/
+build/
+dist/
+
+# Environments
 .env
 .venv/
+env/
+.venv/
+
+# Database
+*.db
 memory.db
-*.egg-info/
-dist/
-build/
-node_modules/
 
 # Beads / Dolt files (added by bd init)
-.dolt/
-*.db
 .beads-credential-key
+.dolt/
+
+# Miscellaneous
+*.egg-info/
 AGENTS.md
 CLAUDE.md
+node_modules/

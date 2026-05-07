@@ -5,45 +5,46 @@ title: Memory Architecture
 
 # Memory Architecture
 
-Foresight's core unit is the **Memory** - a persistent, contextual record with emotional metadata and configurable retention.
+Foresight's core unit is the **Memory** - a persistent, contextual record with
+emotional metadata and configurable retention.
 
 ## Memory Structure
 
 ```typescript
 interface Memory {
-  id: string;              // Unique identifier
-  content: string;         // The memory content
-  scope: MemoryScope;      // session | arc | trait | fact
-  retention: RetentionPolicy; // ephemeral | short_term | long_term | permanent
-  category: string;        // User-defined category
-  userId: string;          // Owner
-  bankId: string;          // Memory bank
-  createdAt: string;       // ISO timestamp
-  updatedAt?: string;      // Last modified
-  tags: string[];          // Auto-generated tags
-  emotionalContext?: EmotionalMetadata;
-  metrics?: EmpathyMetrics;
-  isGhost: boolean;        // Archived content
+  id: string // Unique identifier
+  content: string // The memory content
+  scope: MemoryScope // session | arc | trait | fact
+  retention: RetentionPolicy // ephemeral | short_term | long_term | permanent
+  category: string // User-defined category
+  userId: string // Owner
+  bankId: string // Memory bank
+  createdAt: string // ISO timestamp
+  updatedAt?: string // Last modified
+  tags: string[] // Auto-generated tags
+  emotionalContext?: EmotionalMetadata
+  metrics?: EmpathyMetrics
+  isGhost: boolean // Archived content
 }
 ```
 
 ## Scopes
 
-| Scope | Description | Use Case |
-|-------|-------------|----------|
-| `session` | Current conversation | Temporary context |
-| `arc` | Story arc / project phase | Multi-session work |
-| `trait` | Persistent characteristic | User preferences |
-| `fact` | Standalone fact | Reference data |
+| Scope     | Description               | Use Case           |
+| --------- | ------------------------- | ------------------ |
+| `session` | Current conversation      | Temporary context  |
+| `arc`     | Story arc / project phase | Multi-session work |
+| `trait`   | Persistent characteristic | User preferences   |
+| `fact`    | Standalone fact           | Reference data     |
 
 ## Retention Policies
 
-| Policy | Duration | Auto-delete |
-|--------|----------|-------------|
-| `ephemeral` | Session end | Yes |
-| `short_term` | Arc completion | Yes |
-| `long_term` | Candidate for archive | No |
-| `permanent` | Never | No |
+| Policy       | Duration              | Auto-delete |
+| ------------ | --------------------- | ----------- |
+| `ephemeral`  | Session end           | Yes         |
+| `short_term` | Arc completion        | Yes         |
+| `long_term`  | Candidate for archive | No          |
+| `permanent`  | Never                 | No          |
 
 ## Emotional Context
 
@@ -85,7 +86,8 @@ update_memory(result.id, tags=["ide", "preference"])
 
 ## Psychological Safety
 
-Foresight includes a **Socratic Gate** that evaluates memories for psychological safety:
+Foresight includes a **Socratic Gate** that evaluates memories for psychological
+safety:
 
 - **Crisis Detection**: Identifies potential mental health crises
 - **Anomaly Detection**: Domain-agnostic anomaly flagging

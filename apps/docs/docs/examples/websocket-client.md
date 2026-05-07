@@ -10,16 +10,16 @@ Real-time event streaming example.
 ## Basic Connection
 
 ```typescript
-import { ForesightWebSocketClient, EventType } from '@foresight/core';
+import { ForesightWebSocketClient, EventType } from '@foresight/core'
 
 const client = new ForesightWebSocketClient({
   url: 'ws://localhost:8765',
-  userId: 'my-user-id'
-});
+  userId: 'my-user-id',
+})
 
 // Connect
-await client.connect();
-console.log('Connected!');
+await client.connect()
+console.log('Connected!')
 ```
 
 ## Subscribe to Events
@@ -30,11 +30,11 @@ const subId = await client.subscribe({
   eventTypes: [
     EventType.MemoryStored,
     EventType.MemoryUpdated,
-    EventType.MemoryDeleted
-  ]
-});
+    EventType.MemoryDeleted,
+  ],
+})
 
-console.log(`Subscribed: ${subId}`);
+console.log(`Subscribed: ${subId}`)
 ```
 
 ## Handle Events
@@ -46,83 +46,83 @@ client.onMessage((message) => {
       console.log('Event received:', {
         type: message.event_type,
         payload: message.payload,
-        timestamp: message.timestamp
-      });
-      break;
-    
+        timestamp: message.timestamp,
+      })
+      break
+
     case 'subscribed':
-      console.log('Subscription confirmed:', message.subscription_id);
-      break;
-    
+      console.log('Subscription confirmed:', message.subscription_id)
+      break
+
     case 'unsubscribed':
-      console.log('Subscription removed:', message.subscription_id);
-      break;
-    
+      console.log('Subscription removed:', message.subscription_id)
+      break
+
     case 'pong':
       // Keepalive response
-      break;
+      break
   }
-});
+})
 ```
 
 ## Full Example: Live Dashboard
 
 ```typescript
-import { ForesightWebSocketClient, EventType } from '@foresight/core';
+import { ForesightWebSocketClient, EventType } from '@foresight/core'
 
 class MemoryDashboard {
-  private client: ForesightWebSocketClient;
-  private memories: Map<string, any> = new Map();
+  private client: ForesightWebSocketClient
+  private memories: Map<string, any> = new Map()
 
   constructor() {
     this.client = new ForesightWebSocketClient({
       url: 'ws://localhost:8765',
-      userId: 'dashboard-user'
-    });
+      userId: 'dashboard-user',
+    })
   }
 
   async start() {
-    await this.client.connect();
-    
+    await this.client.connect()
+
     await this.client.subscribe({
       eventTypes: [
         EventType.MemoryStored,
         EventType.MemoryUpdated,
-        EventType.MemoryDeleted
+        EventType.MemoryDeleted,
       ],
-      entityFilter: 'memory:*'
-    });
+      entityFilter: 'memory:*',
+    })
 
-    this.client.onMessage(this.handleMessage.bind(this));
-    
+    this.client.onMessage(this.handleMessage.bind(this))
+
     // Keepalive
-    setInterval(() => this.client.ping(), 30000);
+    setInterval(() => this.client.ping(), 30000)
   }
 
   private handleMessage(message: any) {
     if (message.type === 'event') {
-      this.updateDashboard(message);
+      this.updateDashboard(message)
     }
   }
 
   private updateDashboard(event: any) {
-    const { event_type, payload, timestamp } = event;
-    
-    console.log(`[${timestamp}] ${event_type}:`, payload);
-    
+    const { event_type, payload, timestamp } = event
+
+    console.log(`[${timestamp}] ${event_type}:`, payload)
+
     // Update UI
-    this.render();
+    this.render()
   }
 
   private render() {
     // Render dashboard with current state
-    console.log('Dashboard updated');
+    console.log('Dashboard updated')
   }
 }
 
 // Start dashboard
-const dashboard = new MemoryDashboard();
-dashboard.start();
+const dashboard = new MemoryDashboard()
+dashboard.start()
 ```
 
 ## Reconnection Handling
@@ -131,19 +131,19 @@ dashboard.start();
 const client = new ForesightWebSocketClient({
   url: 'ws://localhost:8765',
   reconnectInterval: 5000,
-  maxReconnectAttempts: 5
-});
+  maxReconnectAttempts: 5,
+})
 
 client.onMessage((msg) => {
   if (msg.type === 'connection_accepted') {
-    console.log('Connection established');
+    console.log('Connection established')
   }
-});
+})
 
 // Check state
-const state = client.getState();
+const state = client.getState()
 if (state === 'reconnecting') {
-  console.log('Attempting to reconnect...');
+  console.log('Attempting to reconnect...')
 }
 ```
 

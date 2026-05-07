@@ -10,14 +10,14 @@ Subscribe to memory events in real-time.
 ## Connect
 
 ```typescript
-import { ForesightWebSocketClient } from '@foresight/core';
+import { ForesightWebSocketClient } from '@foresight/core'
 
 const client = new ForesightWebSocketClient({
   url: 'ws://localhost:8765',
-  userId: 'my-user-id'
-});
+  userId: 'my-user-id',
+})
 
-await client.connect();
+await client.connect()
 ```
 
 ## Subscribe to Events
@@ -25,20 +25,20 @@ await client.connect();
 ```typescript
 // Subscribe to all memory events
 const subId = await client.subscribe({
-  eventTypes: ['memory.stored', 'memory.updated', 'memory.deleted']
-});
+  eventTypes: ['memory.stored', 'memory.updated', 'memory.deleted'],
+})
 
 // With entity filter
 await client.subscribe({
   eventTypes: ['memory.stored'],
-  entityFilter: 'memory:abc123'  // Only this memory
-});
+  entityFilter: 'memory:abc123', // Only this memory
+})
 
 // Wildcard filter
 await client.subscribe({
   eventTypes: ['memory.stored'],
-  entityFilter: 'memory:*'  // All memories
-});
+  entityFilter: 'memory:*', // All memories
+})
 ```
 
 ## Handle Events
@@ -50,23 +50,23 @@ client.onMessage((message) => {
       console.log('Event received:', {
         type: message.event_type,
         payload: message.payload,
-        timestamp: message.timestamp
-      });
-      break;
+        timestamp: message.timestamp,
+      })
+      break
     case 'subscribed':
-      console.log('Subscribed:', message.subscription_id);
-      break;
+      console.log('Subscribed:', message.subscription_id)
+      break
     case 'unsubscribed':
-      console.log('Unsubscribed:', message.subscription_id);
-      break;
+      console.log('Unsubscribed:', message.subscription_id)
+      break
   }
-});
+})
 ```
 
 ## Unsubscribe
 
 ```typescript
-await client.unsubscribe(subId);
+await client.unsubscribe(subId)
 ```
 
 ## Reconnection
@@ -75,12 +75,12 @@ await client.unsubscribe(subId);
 // Auto-reconnects with configurable attempts
 const client = new ForesightWebSocketClient({
   url: 'ws://localhost:8765',
-  reconnectInterval: 5000,  // 5 seconds
-  maxReconnectAttempts: 5
-});
+  reconnectInterval: 5000, // 5 seconds
+  maxReconnectAttempts: 5,
+})
 
 // Check connection state
-const state = client.getState();
+const state = client.getState()
 // 'disconnected' | 'connecting' | 'connected' | 'reconnecting'
 ```
 
@@ -110,10 +110,10 @@ client.onMessage((msg) => {
     updateDashboard({
       type: msg.event_type,
       content: msg.payload?.content,
-      time: msg.timestamp
-    });
+      time: msg.timestamp,
+    })
   }
-});
+})
 ```
 
 ## Related

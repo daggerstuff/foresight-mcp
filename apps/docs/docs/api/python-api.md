@@ -25,6 +25,7 @@ def store_memory(
 ```
 
 **Parameters:**
+
 - `content` - Memory content to store
 - `category` - Category label (default: "fact")
 - `scope` - session | arc | trait | fact

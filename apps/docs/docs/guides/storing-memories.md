@@ -62,18 +62,15 @@ foresight store "Uses dark mode" --category preference
 ## TypeScript SDK
 
 ```typescript
-import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core';
+import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core'
 
-const client = new ForesightClient();
+const client = new ForesightClient()
 
-const result = await client.storeMemory(
-  "User prefers TypeScript",
-  {
-    scope: MemoryScope.Fact,
-    retention: RetentionPolicy.LongTerm,
-    category: "preference"
-  }
-);
+const result = await client.storeMemory('User prefers TypeScript', {
+  scope: MemoryScope.Fact,
+  retention: RetentionPolicy.LongTerm,
+  category: 'preference',
+})
 ```
 
 ## Best Practices

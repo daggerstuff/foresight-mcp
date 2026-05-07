@@ -56,16 +56,16 @@ foresight get abc123
 ## TypeScript SDK
 
 ```typescript
-const client = new ForesightClient();
+const client = new ForesightClient()
 
 // Query
-const results = await client.queryMemories("TypeScript", { limit: 5 });
+const results = await client.queryMemories('TypeScript', { limit: 5 })
 
 // List
-const memories = await client.listMemories({ limit: 10, offset: 0 });
+const memories = await client.listMemories({ limit: 10, offset: 0 })
 
 // Get specific
-const memory = await client.getMemory("abc123");
+const memory = await client.getMemory('abc123')
 ```
 
 ## Filtering

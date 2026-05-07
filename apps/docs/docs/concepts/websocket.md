@@ -10,16 +10,16 @@ Real-time event streaming via WebSocket connections.
 ## Connection
 
 ```typescript
-import { ForesightWebSocketClient } from '@foresight/core';
+import { ForesightWebSocketClient } from '@foresight/core'
 
 const client = new ForesightWebSocketClient({
   url: 'ws://localhost:8765',
   userId: 'my-user-id',
   reconnectInterval: 5000,
-  maxReconnectAttempts: 5
-});
+  maxReconnectAttempts: 5,
+})
 
-await client.connect();
+await client.connect()
 ```
 
 ## Subscribing to Events
@@ -28,20 +28,20 @@ await client.connect();
 // Subscribe to specific event types
 const subscriptionId = await client.subscribe({
   eventTypes: ['memory.stored', 'memory.updated'],
-  entityFilter: 'memory:*'  // Optional wildcard filter
-});
+  entityFilter: 'memory:*', // Optional wildcard filter
+})
 
 // Unsubscribe
-await client.unsubscribe(subscriptionId);
+await client.unsubscribe(subscriptionId)
 ```
 
 ## Event Filters
 
-| Filter | Description |
-|--------|-------------|
-| `*` | All entities |
-| `memory:*` | All memory events |
-| `memory:123` | Specific memory |
+| Filter       | Description       |
+| ------------ | ----------------- |
+| `*`          | All entities      |
+| `memory:*`   | All memory events |
+| `memory:123` | Specific memory   |
 
 ## Message Format
 
@@ -52,37 +52,37 @@ client.onMessage((message) => {
       subscriptionId: message.subscription_id,
       eventType: message.event_type,
       timestamp: message.timestamp,
-      payload: message.payload
-    });
+      payload: message.payload,
+    })
   }
-});
+})
 ```
 
 ## Connection States
 
 ```typescript
-type ConnectionState = 
+type ConnectionState =
   | 'disconnected'
   | 'connecting'
   | 'connected'
-  | 'reconnecting';
+  | 'reconnecting'
 
 // Check state
-const state = client.getState();
+const state = client.getState()
 
 // Handle reconnection
 client.onMessage((msg) => {
   if (msg.type === 'connection_accepted') {
-    console.log('Connected!');
+    console.log('Connected!')
   }
-});
+})
 ```
 
 ## Keepalive
 
 ```typescript
 // Ping to keep connection alive
-setInterval(() => client.ping(), 30000);
+setInterval(() => client.ping(), 30000)
 ```
 
 ## Python MCP Tools

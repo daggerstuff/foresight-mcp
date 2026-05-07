@@ -7,13 +7,17 @@ title: Foresight Memory Architecture
 
 **Domain-agnostic, composable memory for AI agents.**
 
-Foresight is a persistent memory architecture that provides AI agents with long-term context, emotional intelligence, and psychological safety features. Built on the Model Context Protocol (MCP), it enables seamless integration with any AI system.
+Foresight is a persistent memory architecture that provides AI agents with
+long-term context, emotional intelligence, and psychological safety features.
+Built on the Model Context Protocol (MCP), it enables seamless integration with
+any AI system.
 
 ## What is Foresight?
 
 Foresight provides:
 
-- **Persistent Memory**: Store and retrieve memories with configurable retention policies
+- **Persistent Memory**: Store and retrieve memories with configurable retention
+  policies
 - **Emotional Context**: Track emotional metadata and empathy metrics
 - **Event Sourcing**: Full audit trail of all memory operations
 - **Composable Blocks**: Dynamic memory block schemas for structured context
@@ -44,18 +48,18 @@ for memory in memories:
 ## TypeScript Example
 
 ```typescript
-import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core';
+import { ForesightClient, MemoryScope, RetentionPolicy } from '@foresight/core'
 
-const client = new ForesightClient();
+const client = new ForesightClient()
 
 // Store a memory
-const result = await client.storeMemory(
-  "User prefers dark mode",
-  { scope: MemoryScope.Fact, retention: RetentionPolicy.LongTerm }
-);
+const result = await client.storeMemory('User prefers dark mode', {
+  scope: MemoryScope.Fact,
+  retention: RetentionPolicy.LongTerm,
+})
 
 // Subscribe to real-time updates
-client.subscribeToEvents(['memory.stored', 'memory.updated']);
+client.subscribeToEvents(['memory.stored', 'memory.updated'])
 ```
 
 ## Architecture Overview
@@ -75,13 +79,13 @@ client.subscribeToEvents(['memory.stored', 'memory.updated']);
 
 ## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **Event Sourcing** | Every operation is an event, stored in SQLite with full audit trail |
-| **Domain-Agnostic** | Anomaly detection works for mental health, security, finance, or any domain |
-| **Composable Schemas** | Define custom memory block types with validation |
-| **Real-time Sync** | WebSocket subscriptions for live updates |
-| **Multi-tenant Ready** | User isolation built into the architecture |
+| Feature                | Description                                                                 |
+| ---------------------- | --------------------------------------------------------------------------- |
+| **Event Sourcing**     | Every operation is an event, stored in SQLite with full audit trail         |
+| **Domain-Agnostic**    | Anomaly detection works for mental health, security, finance, or any domain |
+| **Composable Schemas** | Define custom memory block types with validation                            |
+| **Real-time Sync**     | WebSocket subscriptions for live updates                                    |
+| **Multi-tenant Ready** | User isolation built into the architecture                                  |
 
 ## Next Steps
 
@@ -91,4 +95,5 @@ client.subscribeToEvents(['memory.stored', 'memory.updated']);
 
 ## License
 
-MIT License - see [LICENSE](https://github.com/daggerstuff/foresight-mcp/blob/main/LICENSE)
+MIT License - see
+[LICENSE](https://github.com/daggerstuff/foresight-mcp/blob/main/LICENSE)
