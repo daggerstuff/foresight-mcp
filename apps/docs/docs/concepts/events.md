@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Events
 title: Event Sourcing
 ---

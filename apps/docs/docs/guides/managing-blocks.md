@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Managing Blocks
 title: Guide - Managing Memory Blocks
 ---

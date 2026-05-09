@@ -1,4 +1,4 @@
-# Foresight MCP Server
+ # Foresight MCP Server
 
 **Persistent memory for AI agents with psychological safety features and
 subconscious memory blocks.**

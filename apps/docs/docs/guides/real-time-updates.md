@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Real-time Updates
 title: Guide - Real-time Updates via WebSocket
 ---

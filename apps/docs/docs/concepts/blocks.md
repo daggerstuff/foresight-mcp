@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Blocks
 title: Memory Blocks
 ---

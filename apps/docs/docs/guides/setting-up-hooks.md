@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Setting Up Hooks
 title: Guide - Setting Up Hooks
 ---

@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Python API
 title: Python API Reference
 ---

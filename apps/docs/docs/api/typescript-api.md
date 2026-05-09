@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: TypeScript API
 title: TypeScript API Reference
 ---

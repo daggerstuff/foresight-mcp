@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: Event Hooks
 title: Event Hooks Examples
 ---

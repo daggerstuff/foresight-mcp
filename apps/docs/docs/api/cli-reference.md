@@ -1,4 +1,4 @@
----
+ ---
 sidebar_label: CLI Reference
 title: CLI Reference
 ---
