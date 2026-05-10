@@ -60,8 +60,8 @@ workflows.
 - `manage_context_blocks` and `manage_curation_runs` return `{ok, action, ...}`
   JSON envelopes for both success and failure cases
 - `output_mode="in_place"` always stages output in an auto-generated bank, then
-  archives original source rows and promotes staged rows only after a
-  successful run
+  archives original source rows and promotes staged rows only after a successful
+  run
 
 ### Hooks and real-time updates
 

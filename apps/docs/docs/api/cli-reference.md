@@ -20,11 +20,11 @@ uv run python scripts/foresight-cli.py --help
 
 ## Global options
 
-| Option            | Description                               | Default |
-| ----------------- | ----------------------------------------- | ------- |
-| `--help`          | Show help                                 | -       |
+| Option            | Description                                                    | Default |
+| ----------------- | -------------------------------------------------------------- | ------- |
+| `--help`          | Show help                                                      | -       |
 | `--json`          | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
-| `--user-id`, `-u` | Override the active user ID               | auto    |
+| `--user-id`, `-u` | Override the active user ID                                    | auto    |
 
 ## Memory commands
 
@@ -56,8 +56,8 @@ Common labels include `guidance`, `pending_items`, `project_context`,
 `session_patterns`, and `user_preferences`.
 
 `foresight blocks list` only shows non-empty blocks. A cleared block can still
-be read with `foresight blocks get <label>`, which returns an empty string
-until the block is reset or updated again.
+be read with `foresight blocks get <label>`, which returns an empty string until
+the block is reset or updated again.
 
 ## Curation commands
 
@@ -71,23 +71,23 @@ foresight curate archive <run_id>
 
 ### `foresight curate create` options
 
-| Option                     | Description                                           | Default             |
-| -------------------------- | ----------------------------------------------------- | ------------------- |
-| `--source-bank-id`         | Source bank to curate                                 | required            |
-| `--output-bank-id`         | Optional destination bank override for reviewable runs | auto               |
-| `--policy-mode`            | `preserve`, `rebalance`, or `rebuild`                 | `rebalance`         |
-| `--tool-access`            | `disabled`, `observe`, or `operate`                   | `observe`           |
-| `--output-mode`            | `reviewable_output` or `in_place`                     | `reviewable_output` |
-| `--instructions`           | Curator guidance for this run                         | none                |
-| `--transcript-bundle-file` | JSON transcript bundle to fold into curation          | none                |
-| `--session-id`             | Optional session identifier for the transcript bundle | none                |
-| `--project-path`           | Optional project path for the transcript bundle       | none                |
+| Option                     | Description                                            | Default             |
+| -------------------------- | ------------------------------------------------------ | ------------------- |
+| `--source-bank-id`         | Source bank to curate                                  | required            |
+| `--output-bank-id`         | Optional destination bank override for reviewable runs | auto                |
+| `--policy-mode`            | `preserve`, `rebalance`, or `rebuild`                  | `rebalance`         |
+| `--tool-access`            | `disabled`, `observe`, or `operate`                    | `observe`           |
+| `--output-mode`            | `reviewable_output` or `in_place`                      | `reviewable_output` |
+| `--instructions`           | Curator guidance for this run                          | none                |
+| `--transcript-bundle-file` | JSON transcript bundle to fold into curation           | none                |
+| `--session-id`             | Optional session identifier for the transcript bundle  | none                |
+| `--project-path`           | Optional project path for the transcript bundle        | none                |
 
-`reviewable_output` writes curated memories to a separate bank. `in_place`
-first writes to a staging bank, and only after a successful run archives the
-original source rows and promotes the staged rows into the source bank.
-`in_place` does not allow `--output-bank-id`; the staging bank is always
-generated automatically.
+`reviewable_output` writes curated memories to a separate bank. `in_place` first
+writes to a staging bank, and only after a successful run archives the original
+source rows and promotes the staged rows into the source bank. `in_place` does
+not allow `--output-bank-id`; the staging bank is always generated
+automatically.
 
 ## Examples
 
