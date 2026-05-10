@@ -22,7 +22,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, Mapping, Protocol, cast
 
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware as _Middleware
@@ -268,7 +268,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 _SCHEMA_MIGRATIONS = {
     1: [
@@ -373,6 +373,22 @@ _SCHEMA_MIGRATIONS = {
         "CREATE INDEX IF NOT EXISTS idx_curation_runs_tenant_user ON curation_runs(tenant_id, user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_curation_runs_status ON curation_runs(tenant_id, user_id, status, created_at DESC)",
     ],
+    4: [
+        """CREATE TABLE IF NOT EXISTS context_blocks (
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            content TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, user_id, label)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_context_blocks_lookup ON context_blocks(tenant_id, user_id, updated_at DESC)",
+    ],
+    5: [
+        "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
+        "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
+        "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
+    ],
 }
 
 
@@ -435,6 +451,11 @@ _SERVER_STATE: dict[str, Any] = {
 
 _CURATION_WORKERS: dict[str, threading.Thread] = {}
 _CURATION_WORKERS_LOCK = threading.Lock()
+_CURATION_CANCEL_SIGNALS: dict[str, threading.Event] = {}
+
+
+class CurationCanceled(RuntimeError):
+    """Raised when a curation run is canceled before publication completes."""
 
 
 # =============================================================================
@@ -1247,29 +1268,41 @@ def manage_memory_versions(options: VersionAction, user_id: str | None = None) -
 # =============================================================================
 
 
+def _tool_response(*, ok: bool, action: str, **payload: Any) -> str:
+    """Return a stable JSON envelope for tool responses."""
+    body: dict[str, Any] = {"ok": ok, "action": action}
+    body.update(payload)
+    return json.dumps(body, indent=2)
+
+
+def _tool_error(action: str, message: str, **payload: Any) -> str:
+    """Return a stable JSON envelope for tool failures."""
+    return _tool_response(ok=False, action=action, error={"message": message}, **payload)
+
+
 def _handle_context_block_list(agent) -> str:
     """Helper for context block list action."""
     blocks = agent.get_all_blocks()
-    return json.dumps(blocks, indent=2)
+    return _tool_response(ok=True, action="list", blocks=blocks)
 
 
 def _handle_context_block_get(agent, label: str) -> str:
     """Helper for context block get action."""
     content = agent.get_block(label)
-    if content:
-        return f"[{label}]\n{content}"
-    return f"Block '{label}' not found."
+    if content is not None:
+        return _tool_response(ok=True, action="get", label=label, content=content)
+    return _tool_error("get", f"Block '{label}' not found.", label=label)
 
 
 def _handle_context_block_update(agent, label: str, content: str | None) -> str:
     """Helper for context block update action."""
     if content is None:
-        return "Error: 'content' is required for update."
-    if label == "guidance":
-        agent.update_guidance(content)
-    else:
-        agent.state.update_block(label, content)
-    return f"Updated block '{label}'"
+        return _tool_error("update", "'content' is required for update.", label=label)
+    try:
+        agent.update_block(label, content)
+    except ValueError as exc:
+        return _tool_error("update", str(exc), label=label)
+    return _tool_response(ok=True, action="update", label=label, message=f"Updated block '{label}'")
 
 
 @mcp.tool()
@@ -1282,13 +1315,14 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
-    agent = get_context_block_agent(uid)
+    tenant_id = get_current_tenant_id()
+    agent = get_context_block_agent(uid, tenant_id)
 
     if options.action == "list":
         return _handle_context_block_list(agent)
 
     if not options.label:
-        return "Error: 'label' is required for this action."
+        return _tool_error(options.action, "'label' is required for this action.")
 
     if options.action == "get":
         return _handle_context_block_get(agent, options.label)
@@ -1297,14 +1331,26 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
         return _handle_context_block_update(agent, options.label, options.content)
 
     if options.action in ("reset", "clear"):
-        if options.action == "reset":
-            agent.reset_block(options.label)
-        else:
-            agent.clear_block(options.label)
-        suffix = " to default" if options.action == "reset" else ""
-        return f"{options.action.capitalize()}ed block '{options.label}'{suffix}"
+        try:
+            if options.action == "reset":
+                agent.reset_block(options.label)
+            else:
+                agent.clear_block(options.label)
+        except ValueError as exc:
+            return _tool_error(options.action, str(exc), label=options.label)
+        message = (
+            f"Reset block '{options.label}' to default"
+            if options.action == "reset"
+            else f"Cleared block '{options.label}'"
+        )
+        return _tool_response(
+            ok=True,
+            action=options.action,
+            label=options.label,
+            message=message,
+        )
 
-    return f"Unsupported action: {options.action}"
+    return _tool_error(options.action, f"Unsupported action: {options.action}")
 
 
 @mcp.tool()
@@ -1420,7 +1466,8 @@ def process_session_transcript(
         Confirmation message
     """
     uid = user_id or USER_ID
-    agent = get_context_block_agent(uid)
+    tenant_id = get_current_tenant_id()
+    agent = get_context_block_agent(uid, tenant_id)
 
     _run_async(agent.process_transcript(session_id=session_id, messages=messages, project_path=project_path))
 
@@ -1464,8 +1511,13 @@ def _row_to_curation_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
 def _curation_run_output_bank(run_id: str, source_bank_id: str, output_mode: str, requested_output_bank: str | None) -> str:
     """Resolve the effective output bank for a curation run."""
     if output_mode == "in_place":
-        return source_bank_id
+        return requested_output_bank or f"curation:stage:{run_id}"
     return requested_output_bank or f"curation:{run_id}"
+
+
+def _curation_archive_bank(run_id: str, source_bank_id: str) -> str:
+    """Return the archive bank used when an in-place run replaces source rows."""
+    return f"{source_bank_id}:archived:{run_id}"
 
 
 def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> sqlite3.Row | None:
@@ -1477,6 +1529,24 @@ def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> sqlite3.Row | 
     ).fetchone()
     conn.close()
     return row
+
+
+def _curation_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    """Rebuild a worker payload from a curation run row."""
+    transcript_bundle_json = row["transcript_bundle_json"] if "transcript_bundle_json" in row.keys() else None
+    return {
+        "tenant_id": row["tenant_id"],
+        "user_id": row["user_id"],
+        "source_bank_id": row["source_bank_id"],
+        "output_bank_id": row["output_bank_id"],
+        "policy_mode": row["policy_mode"],
+        "tool_access": row["tool_access"],
+        "output_mode": row["output_mode"],
+        "instructions": row["instructions"],
+        "transcript_bundle": json.loads(transcript_bundle_json) if transcript_bundle_json else None,
+        "session_id": row["session_id"] if "session_id" in row.keys() else None,
+        "project_path": row["project_path"] if "project_path" in row.keys() else None,
+    }
 
 
 def _update_curation_run(
@@ -1529,7 +1599,130 @@ def _publish_curation_status(
     **payload: Any,
 ) -> None:
     """Publish a curation lifecycle event."""
-    get_event_bus().publish(curation_status_changed(run_id, status, payload=payload, actor=actor))
+    get_event_bus_with_stream().publish(curation_status_changed(run_id, status, payload=payload, actor=actor))
+
+
+def _get_curation_cancel_event(run_id: str) -> threading.Event:
+    """Get or create the cancellation event for a curation run."""
+    with _CURATION_WORKERS_LOCK:
+        event = _CURATION_CANCEL_SIGNALS.get(run_id)
+        if event is None:
+            event = threading.Event()
+            _CURATION_CANCEL_SIGNALS[run_id] = event
+        return event
+
+
+def _is_run_canceled(uid: str, tenant_id: str, run_id: str) -> bool:
+    """Check whether a run has been canceled while background work is in progress."""
+    if _get_curation_cancel_event(run_id).is_set():
+        return True
+    row = _fetch_curation_run(uid, tenant_id, run_id)
+    return bool(row and row["status"] == "canceled")
+
+
+def _raise_if_run_canceled(uid: str, tenant_id: str, run_id: str) -> None:
+    """Abort background work when the run has been canceled."""
+    if _is_run_canceled(uid, tenant_id, run_id):
+        raise CurationCanceled(f"Curation run {run_id} was canceled")
+
+
+def _delete_existing_curation_outputs(uid: str, tenant_id: str, bank_id: str, run_id: str) -> None:
+    """Remove stale outputs for a rerun or resumed run before writing fresh results."""
+    conn = get_db_connection()
+    try:
+        conn.execute(
+            "DELETE FROM memories WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND tags LIKE ?",
+            (uid, tenant_id, bank_id, f'%\"curation_run:{run_id}\"%'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _promote_in_place_curation(
+    uid: str,
+    tenant_id: str,
+    run_id: str,
+    source_bank_id: str,
+    staging_bank_id: str,
+    source_rows: list[sqlite3.Row],
+    staged_ids: list[str],
+    *,
+    cancel_event: threading.Event | None = None,
+) -> dict[str, Any]:
+    """Atomically archive original source rows and promote staged rows into the source bank."""
+    archive_bank_id = _curation_archive_bank(run_id, source_bank_id)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    try:
+        if cancel_event and cancel_event.is_set():
+            raise CurationCanceled("Curation canceled before promotion started")
+        if _is_run_canceled(uid, tenant_id, run_id):
+            raise CurationCanceled("Curation canceled before promotion started")
+        conn.execute("BEGIN")
+        if cancel_event and cancel_event.is_set():
+            raise CurationCanceled("Curation canceled before promotion committed")
+        if source_rows:
+            placeholders = ",".join("?" for _ in source_rows)
+            conn.execute(
+                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
+                (archive_bank_id, now, uid, tenant_id, *(row["id"] for row in source_rows)),
+            )
+        if staged_ids:
+            placeholders = ",".join("?" for _ in staged_ids)
+            conn.execute(
+                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
+                (source_bank_id, now, uid, tenant_id, *staged_ids),
+            )
+        if cancel_event and cancel_event.is_set():
+            raise CurationCanceled("Curation canceled before promotion committed")
+        if _is_run_canceled(uid, tenant_id, run_id):
+            raise CurationCanceled("Curation canceled before promotion committed")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return {
+        "archive_bank_id": archive_bank_id,
+        "promoted_memory_count": len(staged_ids),
+        "archived_memory_count": len(source_rows),
+        "staging_bank_id": staging_bank_id,
+    }
+
+
+def _restore_in_place_curation(
+    uid: str,
+    tenant_id: str,
+    source_bank_id: str,
+    staging_bank_id: str,
+    source_rows: list[sqlite3.Row],
+    staged_ids: list[str],
+) -> None:
+    """Restore source/staging banks if cancellation lands after promotion."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    try:
+        conn.execute("BEGIN")
+        if source_rows:
+            placeholders = ",".join("?" for _ in source_rows)
+            conn.execute(
+                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
+                (source_bank_id, now, uid, tenant_id, *(row["id"] for row in source_rows)),
+            )
+        if staged_ids:
+            placeholders = ",".join("?" for _ in staged_ids)
+            conn.execute(
+                f"UPDATE memories SET bank_id = ?, updated_at = ? WHERE user_id = ? AND tenant_id = ? AND id IN ({placeholders})",
+                (staging_bank_id, now, uid, tenant_id, *staged_ids),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 100) -> list[sqlite3.Row]:
@@ -1559,8 +1752,8 @@ def _build_synthesis_snapshot(rows: list[sqlite3.Row], uid: str) -> dict[str, An
             MemoryObject(
                 id=row["id"],
                 timestamp=row["created_at"],
-                scope=row["scope"] or MemoryScope.ARC.value,
-                retention=row["retention"] or RetentionPolicy.LONG_TERM.value,
+                scope=row["scope"] or "arc",
+                retention=row["retention"] or "long_term",
                 content=row["content"],
                 tags=json.loads(row["tags"]) if row["tags"] else [],
                 emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5)) if emo else None,
@@ -1589,9 +1782,9 @@ def _build_reflection_snapshot(rows: list[sqlite3.Row], uid: str, tenant_id: str
         conn.close()
 
 
-def _context_block_snapshot(uid: str) -> list[dict[str, Any]]:
+def _context_block_snapshot(uid: str, tenant_id: str) -> list[dict[str, Any]]:
     """Return non-empty context blocks for summary generation."""
-    return cast(list[dict[str, Any]], get_context_block_agent(uid).get_all_blocks())
+    return cast(list[dict[str, Any]], get_context_block_agent(uid, tenant_id).get_all_blocks())
 
 
 def _make_curated_entries(
@@ -1609,11 +1802,7 @@ def _make_curated_entries(
     ]
     entries: list[dict[str, Any]] = []
 
-    context_lines = []
-    for block in block_snapshot:
-        content = (block.get("content") or "").strip()
-        if content:
-            context_lines.append(f"[{block['label']}] {content}")
+    context_labels = [block["label"] for block in block_snapshot if block.get("content")]
 
     summary_lines = [
         f"Foresight Curator run {run['id']} completed in {run['output_mode']} mode.",
@@ -1625,9 +1814,8 @@ def _make_curated_entries(
     ]
     if run.get("instructions"):
         summary_lines.append(f"Instructions: {run['instructions']}")
-    if context_lines:
-        summary_lines.append("Context highlights:")
-        summary_lines.extend(context_lines[:5])
+    if context_labels:
+        summary_lines.append(f"Context blocks considered: {', '.join(context_labels[:5])}")
     if synthesis:
         summary_lines.append(f"Synthesis contradictions: {len(synthesis.get('contradictions', []))}")
         summary_lines.append(f"Synthesis insights: {len(synthesis.get('insights', []))}")
@@ -1705,13 +1893,18 @@ def _insert_curation_entries(
     tenant_id: str,
     bank_id: str,
     entries: list[dict[str, Any]],
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> list[str]:
     """Persist curated output entries into the chosen bank."""
     now = datetime.now(timezone.utc).isoformat()
     conn = get_db_connection()
     created_ids: list[str] = []
     try:
+        conn.execute("BEGIN")
         for entry in entries:
+            if cancel_event and cancel_event.is_set():
+                raise CurationCanceled("Curation canceled before staged output committed")
             memory_id = hashlib.sha256(f"{bank_id}:{entry['content']}:{uuid.uuid4().hex}".encode()).hexdigest()[:16]
             conn.execute(
                 "INSERT INTO memories "
@@ -1734,22 +1927,21 @@ def _insert_curation_entries(
                 ),
             )
             created_ids.append(memory_id)
+        if cancel_event and cancel_event.is_set():
+            raise CurationCanceled("Curation canceled before staged output committed")
         conn.commit()
         return created_ids
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-
-
-def _is_run_canceled(uid: str, tenant_id: str, run_id: str) -> bool:
-    """Check whether a run has been canceled while background work is in progress."""
-    row = _fetch_curation_run(uid, tenant_id, run_id)
-    return bool(row and row["status"] == "canceled")
-
 
 def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     """Execute a queued curation run."""
     tenant_id = payload["tenant_id"]
     uid = payload["user_id"]
+    cancel_event = _get_curation_cancel_event(run_id)
     set_current_tenant_id(tenant_id)
     queue = OperationQueue(DB_PATH)
     now = datetime.now(timezone.utc).isoformat()
@@ -1757,8 +1949,9 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     _publish_curation_status(run_id, "running", actor=uid, source_bank_id=payload["source_bank_id"])
 
     try:
+        _raise_if_run_canceled(uid, tenant_id, run_id)
         if payload.get("transcript_bundle"):
-            agent = get_context_block_agent(uid)
+            agent = get_context_block_agent(uid, tenant_id)
             session_id = payload.get("session_id") or f"curation-{run_id}"
             _run_async(
                 agent.process_transcript(
@@ -1770,12 +1963,9 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             _bridge_context_blocks_to_memories(agent, uid)
             _bridge_transcript_entities(payload["transcript_bundle"], uid)
 
-        if _is_run_canceled(uid, tenant_id, run_id):
-            _update_curation_run(run_id, tenant_id, ended_at=datetime.now(timezone.utc).isoformat())
-            return
-
+        _raise_if_run_canceled(uid, tenant_id, run_id)
         source_rows = _load_source_bank_rows(uid, tenant_id, payload["source_bank_id"])
-        block_snapshot = _context_block_snapshot(uid)
+        block_snapshot = _context_block_snapshot(uid, tenant_id)
         synthesis = None if payload["tool_access"] == "disabled" else _build_synthesis_snapshot(source_rows, uid)
         reflection = None if payload["tool_access"] == "disabled" else _build_reflection_snapshot(source_rows, uid, tenant_id)
         run = {
@@ -1788,10 +1978,38 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "instructions": payload.get("instructions"),
         }
         entries = _make_curated_entries(run, source_rows, block_snapshot, synthesis, reflection)
-        created_ids = _insert_curation_entries(uid, tenant_id, payload["output_bank_id"], entries)
-        if _is_run_canceled(uid, tenant_id, run_id):
-            _update_curation_run(run_id, tenant_id, ended_at=datetime.now(timezone.utc).isoformat())
-            return
+        _delete_existing_curation_outputs(uid, tenant_id, payload["output_bank_id"], run_id)
+        created_ids = _insert_curation_entries(
+            uid,
+            tenant_id,
+            payload["output_bank_id"],
+            entries,
+            cancel_event=cancel_event,
+        )
+        _raise_if_run_canceled(uid, tenant_id, run_id)
+
+        promotion_summary: dict[str, Any] = {}
+        if payload["output_mode"] == "in_place":
+            promotion_summary = _promote_in_place_curation(
+                uid,
+                tenant_id,
+                run_id,
+                payload["source_bank_id"],
+                payload["output_bank_id"],
+                source_rows,
+                created_ids,
+                cancel_event=cancel_event,
+            )
+            if cancel_event.is_set() or _is_run_canceled(uid, tenant_id, run_id):
+                _restore_in_place_curation(
+                    uid,
+                    tenant_id,
+                    payload["source_bank_id"],
+                    payload["output_bank_id"],
+                    source_rows,
+                    created_ids,
+                )
+                raise CurationCanceled("Curation canceled after promotion; restored source bank")
 
         summary = {
             "source_memory_count": len(source_rows),
@@ -1802,10 +2020,28 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "reflection": reflection,
             "transcript_processed": bool(payload.get("transcript_bundle")),
         }
+        summary.update(promotion_summary)
+        _raise_if_run_canceled(uid, tenant_id, run_id)
         completed_at = datetime.now(timezone.utc).isoformat()
         _update_curation_run(run_id, tenant_id, status="completed", summary=summary, ended_at=completed_at, error={})
         queue.remove(run_id, tenant_id=tenant_id)
-        _publish_curation_status(run_id, "completed", actor=uid, output_bank_id=payload["output_bank_id"])
+        _publish_curation_status(
+            run_id,
+            "completed",
+            actor=uid,
+            output_bank_id=payload["output_bank_id"],
+            source_bank_id=payload["source_bank_id"],
+            output_mode=payload["output_mode"],
+        )
+    except CurationCanceled:
+        ended_at = datetime.now(timezone.utc).isoformat()
+        row = _fetch_curation_run(uid, tenant_id, run_id)
+        if row is None or row["status"] != "canceled":
+            _update_curation_run(run_id, tenant_id, status="canceled", ended_at=ended_at)
+            _publish_curation_status(run_id, "canceled", actor=uid)
+        else:
+            _update_curation_run(run_id, tenant_id, ended_at=ended_at)
+        queue.remove(run_id, tenant_id=tenant_id)
     except Exception as exc:
         failed_at = datetime.now(timezone.utc).isoformat()
         error = {
@@ -1818,6 +2054,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
     finally:
         with _CURATION_WORKERS_LOCK:
             _CURATION_WORKERS.pop(run_id, None)
+            _CURATION_CANCEL_SIGNALS.pop(run_id, None)
 
 
 def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
@@ -1829,6 +2066,9 @@ def _start_curation_worker(run_id: str, payload: dict[str, Any]) -> None:
         name=f"foresight-curation-{run_id[:8]}",
     )
     with _CURATION_WORKERS_LOCK:
+        existing = _CURATION_WORKERS.get(run_id)
+        if existing and existing.is_alive():
+            return
         _CURATION_WORKERS[run_id] = worker
     worker.start()
 
@@ -1845,15 +2085,22 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
     - cancel: cancel a pending/running run
     - archive: archive a terminal run
     """
+    init_db()
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
 
     if options.action == "create":
         source_bank_id = options.source_bank_id or BANK_ID
         if options.output_mode == "in_place" and options.tool_access != "operate":
-            return "output_mode=in_place requires tool_access=operate"
+            return _tool_error("create", "output_mode=in_place requires tool_access=operate")
+        if (
+            options.output_mode == "in_place"
+            and options.output_bank_id is not None
+            and options.output_bank_id == source_bank_id
+        ):
+            return _tool_error("create", "output_mode=in_place requires output_bank_id to differ from source_bank_id")
         if options.transcript_bundle and options.tool_access != "operate":
-            return "transcript_bundle requires tool_access=operate"
+            return _tool_error("create", "transcript_bundle requires tool_access=operate")
 
         run_id = f"cur_{uuid.uuid4().hex[:12]}"
         output_bank_id = _curation_run_output_bank(run_id, source_bank_id, options.output_mode, options.output_bank_id)
@@ -1862,8 +2109,9 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
         conn.execute(
             """INSERT INTO curation_runs
             (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
-             output_mode, status, instructions, summary_json, error_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, '{}', '{}', ?)""",
+             output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
+             summary_json, error_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
             (
                 run_id,
                 tenant_id,
@@ -1874,6 +2122,9 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
                 options.tool_access,
                 options.output_mode,
                 options.instructions,
+                json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
+                options.session_id,
+                options.project_path,
                 created_at,
             ),
         )
@@ -1907,7 +2158,7 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
         _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
         _start_curation_worker(run_id, payload)
         run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
-        return json.dumps(run, indent=2)
+        return _tool_response(ok=True, action="create", run=run)
 
     if options.action == "list":
         conn = get_db_connection()
@@ -1916,35 +2167,52 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
             (uid, tenant_id, options.limit),
         ).fetchall()
         conn.close()
-        return json.dumps([_row_to_curation_run(row) for row in rows], indent=2)
+        return _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
 
     if not options.run_id:
-        return "run_id is required for this action"
+        return _tool_error(options.action, "run_id is required for this action")
 
     row = _fetch_curation_run(uid, tenant_id, options.run_id)
     if row is None:
-        return f"Curation run {options.run_id} not found."
+        return _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
 
     if options.action == "get":
-        return json.dumps(_row_to_curation_run(row), indent=2)
+        return _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
 
     if options.action == "cancel":
         if row["status"] not in {"pending", "running"}:
-            return f"Run {options.run_id} is already {row['status']} and cannot be canceled."
+            return _tool_error(
+                "cancel",
+                f"Run {options.run_id} is already {row['status']} and cannot be canceled.",
+                run=_row_to_curation_run(row),
+            )
         ended_at = datetime.now(timezone.utc).isoformat()
+        _get_curation_cancel_event(options.run_id).set()
         _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
         OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
         _publish_curation_status(options.run_id, "canceled", actor=uid)
-        return json.dumps(_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)), indent=2)
+        return _tool_response(
+            ok=True,
+            action="cancel",
+            run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
+        )
 
     if options.action == "archive":
         if row["status"] not in {"completed", "failed", "canceled"}:
-            return f"Run {options.run_id} must be terminal before it can be archived."
+            return _tool_error(
+                "archive",
+                f"Run {options.run_id} must be terminal before it can be archived.",
+                run=_row_to_curation_run(row),
+            )
         archived_at = datetime.now(timezone.utc).isoformat()
         _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
-        return json.dumps(_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)), indent=2)
+        return _tool_response(
+            ok=True,
+            action="archive",
+            run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
+        )
 
-    return f"Unsupported action: {options.action}"
+    return _tool_error(options.action, f"Unsupported action: {options.action}")
 
 
 # =============================================================================
@@ -2078,8 +2346,15 @@ def _extract_terms(text: str) -> list[str]:
     return [w for w in words if len(w) > 3 and w not in _STOP_WORDS]
 
 
+class _MemoryLike(Protocol):
+    """Minimal row protocol for relevance scoring."""
+
+    def __getitem__(self, key: str, /) -> Any:
+        ...
+
+
 def _score_memory_relevance(
-    memory: sqlite3.Row,
+    memory: _MemoryLike | Mapping[str, Any],
     terms: list[str],
     now: datetime,
 ) -> float:
@@ -2216,7 +2491,7 @@ def _context_block_notes_for_terms(
 
     Returns a list of formatted lines with matching block content.
     """
-    agent = get_context_block_agent(uid)
+    agent = get_context_block_agent(uid, get_current_tenant_id())
     relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
     lines: list[str] = []
 
@@ -2245,9 +2520,37 @@ def _subconscious_context_for_terms(uid: str, terms: list[str]) -> list[str]:
     return _context_block_notes_for_terms(uid, terms)
 
 
+def _resume_pending_curation_runs() -> None:
+    """Resume pending or interrupted curation runs on server startup."""
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM curation_runs WHERE status IN ('pending', 'running') ORDER BY created_at ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    for row in rows:
+        payload = _curation_payload_from_row(row)
+        if row["status"] == "running":
+            _update_curation_run(row["id"], row["tenant_id"], status="pending")
+        OperationQueue(DB_PATH).enqueue(
+            Operation(
+                id=row["id"],
+                type=OperationType.CREATE,
+                entity_type="curation_run",
+                entity_id=row["id"],
+                payload=payload,
+            ),
+            tenant_id=row["tenant_id"],
+        )
+        _start_curation_worker(row["id"], payload)
+
+
 def main():
     init_db()
     initialize_stream_producer()
+    _resume_pending_curation_runs()
     mcp.run(show_banner=False)
 
 

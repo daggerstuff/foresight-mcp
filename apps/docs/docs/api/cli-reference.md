@@ -23,7 +23,7 @@ uv run python scripts/foresight-cli.py --help
 | Option            | Description                               | Default |
 | ----------------- | ----------------------------------------- | ------- |
 | `--help`          | Show help                                 | -       |
-| `--json`          | Emit machine-readable JSON when supported | `false` |
+| `--json`          | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
 | `--user-id`, `-u` | Override the active user ID               | auto    |
 
 ## Memory commands
@@ -55,6 +55,10 @@ foresight blocks clear <label>
 Common labels include `guidance`, `pending_items`, `project_context`,
 `session_patterns`, and `user_preferences`.
 
+`foresight blocks list` only shows non-empty blocks. A cleared block can still
+be read with `foresight blocks get <label>`, which returns an empty string
+until the block is reset or updated again.
+
 ## Curation commands
 
 ```bash
@@ -78,6 +82,10 @@ foresight curate archive <run_id>
 | `--transcript-bundle-file` | JSON transcript bundle to fold into curation          | none                |
 | `--session-id`             | Optional session identifier for the transcript bundle | none                |
 | `--project-path`           | Optional project path for the transcript bundle       | none                |
+
+`reviewable_output` writes curated memories to a separate bank. `in_place`
+first writes to a staging bank, and only after a successful run archives the
+original source rows and promotes the staged rows into the source bank.
 
 ## Examples
 
@@ -105,5 +113,6 @@ foresight curate cancel cur_abc123def456
 ## Migration note
 
 Older documentation may mention `foresight subconscious ...` commands. Those
-names have been replaced on the public CLI by `foresight blocks ...`, with a
-hidden compatibility alias only for legacy automation.
+names have been replaced on the public CLI by `foresight blocks ...`. Update
+automation to the new command names; the CLI does not expose a public
+`subconscious` command group anymore.

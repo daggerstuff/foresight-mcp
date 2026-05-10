@@ -20,7 +20,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
-from .connection_pool import get_pool
+from .connection_pool import PooledConnection, get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
 
@@ -92,7 +92,7 @@ class ReflectionEngine:
     def __init__(self, db_path: str):
         self.db_path = db_path
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> sqlite3.Connection | PooledConnection:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
@@ -210,7 +210,7 @@ class ReflectionEngine:
         }
 
     def _build_entity_summary(
-        self, conn: sqlite3.Connection, user_id: str, tenant_id: str = "default"
+        self, conn: sqlite3.Connection | PooledConnection, user_id: str, tenant_id: str = "default"
     ) -> Dict[str, Any]:
         """Build summary of entity patterns from graph, scoped to tenant."""
         # Top entity types
@@ -660,7 +660,7 @@ class ReflectionEngine:
 
     def _store_reflection(
         self,
-        conn: sqlite3.Connection,
+        conn: sqlite3.Connection | PooledConnection,
         report: ReflectionReport,
         user_id: str,
         tenant_id: str,

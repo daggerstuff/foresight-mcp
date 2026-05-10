@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+from typing import Any, Literal, cast
 
 import click
 import typer
@@ -23,6 +24,7 @@ from foresight_mcp import (
     manage_memory_versions,
     search_memories,
 )
+from foresight_mcp.server import init_db
 from rich.console import Console
 from rich.json import JSON
 from rich.text import Text
@@ -39,10 +41,79 @@ console = Console()
 app.add_typer(blocks_app, name="blocks")
 app.add_typer(curate_app, name="curate")
 
+PolicyMode = Literal["preserve", "rebalance", "rebuild"]
+ToolAccessMode = Literal["disabled", "observe", "operate"]
+OutputMode = Literal["reviewable_output", "in_place"]
+
 
 def output_json(data: dict) -> None:
     """Output data as formatted JSON."""
     console.print(JSON(json.dumps(data)))
+
+
+def _decode_tool_result(result: str) -> dict[str, Any]:
+    """Decode a tool JSON envelope, or wrap plain-text failures safely."""
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return {"ok": False, "error": {"message": result}}
+    if isinstance(payload, dict):
+        return payload
+    return {"ok": True, "result": payload}
+
+
+def _emit_tool_result(result: str, *, style: str | None = None) -> None:
+    """Render a tool JSON envelope in human mode."""
+    payload = _decode_tool_result(result)
+    if not payload.get("ok", False):
+        message = payload.get("error", {}).get("message", result)
+        console.print(Text(message, style="red"))
+        raise typer.Exit(code=1)
+
+    if "message" in payload:
+        console.print(Text(payload["message"], style=style or "green"))
+        return
+    if "label" in payload and "content" in payload:
+        console.print(f"[{payload['label']}]\n{payload['content']}")
+        return
+    if "run" in payload:
+        output_json(payload["run"])
+        return
+    if "runs" in payload:
+        output_json({"runs": payload["runs"]})
+        return
+    if "blocks" in payload:
+        output_json({"blocks": payload["blocks"]})
+        return
+    output_json(payload)
+
+
+def _emit_tool_json(result: str) -> None:
+    """Render a tool envelope in machine-readable mode."""
+    output_json(_decode_tool_result(result))
+
+
+def _coerce_choice(value: str, *, allowed: set[str], label: str) -> str:
+    """Validate a CLI option against a literal set."""
+    if value not in allowed:
+        choices = ", ".join(sorted(allowed))
+        raise typer.BadParameter(f"{label} must be one of: {choices}")
+    return value
+
+
+def _coerce_policy_mode(value: str) -> PolicyMode:
+    return cast(PolicyMode, _coerce_choice(value, allowed={"preserve", "rebalance", "rebuild"}, label="policy-mode"))
+
+
+def _coerce_tool_access(value: str) -> ToolAccessMode:
+    return cast(ToolAccessMode, _coerce_choice(value, allowed={"disabled", "observe", "operate"}, label="tool-access"))
+
+
+def _coerce_output_mode(value: str) -> OutputMode:
+    return cast(
+        OutputMode,
+        _coerce_choice(value, allowed={"reviewable_output", "in_place"}, label="output-mode"),
+    )
 
 
 def _ctx() -> click.Context:
@@ -71,6 +142,12 @@ def callback(
     _json: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Foresight Memory Management CLI."""
+    try:
+        init_db()
+    except Exception as exc:
+        console.print(Text(f"Failed to initialize Foresight database: {exc}", style="red"))
+        raise typer.Exit(code=1)
+
     ctx.obj = {"user_id": user_id, "json": _json}
 
 
@@ -304,9 +381,9 @@ def cmd_blocks_list():
     _json = _ctx_json()
     result = manage_context_blocks(options=ContextBlockAction(action="list"), user_id=user_id)
     if _json:
-        output_json({"blocks": json.loads(result)})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @blocks_app.command("get")
@@ -322,9 +399,9 @@ def cmd_blocks_get(
     )
 
     if _json:
-        output_json({"label": label, "result": result})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @blocks_app.command("update")
@@ -340,9 +417,9 @@ def cmd_blocks_update(
         user_id=user_id,
     )
     if _json:
-        output_json({"label": label, "result": result})
+        _emit_tool_json(result)
     else:
-        console.print(Text(result, style="yellow"))
+        _emit_tool_result(result, style="yellow")
 
 
 @blocks_app.command("reset")
@@ -357,9 +434,9 @@ def cmd_blocks_reset(
         user_id=user_id,
     )
     if _json:
-        output_json({"label": label, "result": result})
+        _emit_tool_json(result)
     else:
-        console.print(Text(result, style="green"))
+        _emit_tool_result(result, style="green")
 
 
 @blocks_app.command("clear")
@@ -374,9 +451,9 @@ def cmd_blocks_clear(
         user_id=user_id,
     )
     if _json:
-        output_json({"label": label, "result": result})
+        _emit_tool_json(result)
     else:
-        console.print(Text(result, style="red"))
+        _emit_tool_result(result, style="red")
 
 
 @curate_app.command("create")
@@ -401,14 +478,17 @@ def cmd_curate_create(
     """Create a new curation run."""
     user_id = _ctx_user_id()
     _json = _ctx_json()
+    policy = _coerce_policy_mode(policy_mode)
+    access = _coerce_tool_access(tool_access)
+    mode = _coerce_output_mode(output_mode)
     result = manage_curation_runs(
         options=CurationRunAction(
             action="create",
             source_bank_id=source_bank_id,
             output_bank_id=output_bank_id,
-            policy_mode=policy_mode,
-            tool_access=tool_access,
-            output_mode=output_mode,
+            policy_mode=policy,
+            tool_access=access,
+            output_mode=mode,
             instructions=instructions,
             transcript_bundle=_load_transcript_bundle(transcript_bundle_file),
             session_id=session_id,
@@ -417,9 +497,9 @@ def cmd_curate_create(
         user_id=user_id,
     )
     if _json:
-        output_json({"run": json.loads(result)})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @curate_app.command("get")
@@ -431,9 +511,9 @@ def cmd_curate_get(
     _json = _ctx_json()
     result = manage_curation_runs(options=CurationRunAction(action="get", run_id=run_id), user_id=user_id)
     if _json:
-        output_json({"run": json.loads(result)})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @curate_app.command("list")
@@ -445,9 +525,9 @@ def cmd_curate_list(
     _json = _ctx_json()
     result = manage_curation_runs(options=CurationRunAction(action="list", limit=limit), user_id=user_id)
     if _json:
-        output_json({"runs": json.loads(result)})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @curate_app.command("cancel")
@@ -459,9 +539,9 @@ def cmd_curate_cancel(
     _json = _ctx_json()
     result = manage_curation_runs(options=CurationRunAction(action="cancel", run_id=run_id), user_id=user_id)
     if _json:
-        output_json({"run": json.loads(result)})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @curate_app.command("archive")
@@ -473,9 +553,9 @@ def cmd_curate_archive(
     _json = _ctx_json()
     result = manage_curation_runs(options=CurationRunAction(action="archive", run_id=run_id), user_id=user_id)
     if _json:
-        output_json({"run": json.loads(result)})
+        _emit_tool_json(result)
     else:
-        console.print(result)
+        _emit_tool_result(result)
 
 
 @app.command("block-get", hidden=True)

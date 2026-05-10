@@ -31,7 +31,7 @@ workflows.
 ### Context block operations
 
 - `list_context_blocks(user_id, tenant_id="default")` - List non-empty context
-  blocks
+  blocks from the caller's tenant-scoped persisted state
 - `get_context_block(label, user_id, tenant_id="default")` - Read a block
 - `update_context_block(label, content, user_id, tenant_id="default")` - Replace
   a block
@@ -45,14 +45,22 @@ workflows.
 - `get_context_snapshot(user_id, tenant_id="default")` - Get the full XML
   snapshot
 - `manage_context_blocks(ContextBlockAction(...), user_id=...)` - MCP-style
-  block management
+  block management with JSON response envelopes
 
 ### Curation workflow
 
 - `manage_curation_runs(CurationRunAction(...), user_id=...)` - Create, inspect,
-  cancel, and archive curation runs
+  cancel, and archive curation runs via JSON response envelopes
 - `CurationRunAction(action="create", source_bank_id=..., ...)` - Define async
   curation jobs
+
+## Contract notes
+
+- Context blocks persist in SQLite and are isolated by `(user_id, tenant_id)`
+- `manage_context_blocks` and `manage_curation_runs` return `{ok, action, ...}`
+  JSON envelopes for both success and failure cases
+- `output_mode="in_place"` stages output in a separate bank, then archives
+  original source rows and promotes staged rows only after a successful run
 
 ### Hooks and real-time updates
 

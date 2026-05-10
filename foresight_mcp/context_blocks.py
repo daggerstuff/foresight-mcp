@@ -45,10 +45,7 @@ def get_context_block(label: str, user_id: str, tenant_id: str = "default") -> s
 def update_context_block(label: str, content: str, user_id: str, tenant_id: str = "default") -> None:
     """Update a context block."""
     agent = get_context_block_agent(user_id, tenant_id)
-    if label == GUIDANCE:
-        agent.update_guidance(content)
-    else:
-        agent.state.update_block(label, content)
+    agent.update_block(label, content)
 
 
 def add_context_guidance(line: str, user_id: str, tenant_id: str = "default") -> None:
@@ -74,3 +71,38 @@ def get_context_whisper(user_id: str, tenant_id: str = "default") -> str:
 def get_context_snapshot(user_id: str, tenant_id: str = "default") -> str:
     """Return the full XML snapshot of non-empty context blocks."""
     return get_context_block_agent(user_id, tenant_id).get_full_context()
+
+
+def get_subconscious_block(label: str, user_id: str, tenant_id: str = "default") -> str | None:
+    """Compatibility alias for older subconscious-named integrations."""
+    return get_context_block(label, user_id, tenant_id)
+
+
+def update_subconscious_block(label: str, content: str, user_id: str, tenant_id: str = "default") -> None:
+    """Compatibility alias for older subconscious-named integrations."""
+    update_context_block(label, content, user_id, tenant_id)
+
+
+def add_subconscious_guidance(line: str, user_id: str, tenant_id: str = "default") -> None:
+    """Compatibility alias for older subconscious-named integrations."""
+    add_context_guidance(line, user_id, tenant_id)
+
+
+def get_subconscious_whisper(user_id: str, tenant_id: str = "default") -> str:
+    """Compatibility alias for older subconscious-named integrations."""
+    return get_context_whisper(user_id, tenant_id)
+
+
+def get_subconscious_context(user_id: str, tenant_id: str = "default") -> str:
+    """Compatibility alias for older subconscious-named integrations."""
+    return get_context_snapshot(user_id, tenant_id)
+
+
+def reset_subconscious_block(label: str, user_id: str, tenant_id: str = "default") -> None:
+    """Compatibility alias for older subconscious-named integrations."""
+    reset_context_block(label, user_id, tenant_id)
+
+
+def clear_subconscious_block(label: str, user_id: str, tenant_id: str = "default") -> None:
+    """Compatibility alias for older subconscious-named integrations."""
+    clear_context_block(label, user_id, tenant_id)

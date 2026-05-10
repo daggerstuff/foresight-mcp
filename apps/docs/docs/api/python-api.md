@@ -110,7 +110,7 @@ Returns system status and optional trend data.
 def list_context_blocks(user_id: str, tenant_id: str = "default") -> list[dict]
 ```
 
-Lists non-empty context blocks.
+Lists non-empty persisted context blocks for a `(user_id, tenant_id)` pair.
 
 ### get_context_block
 
@@ -218,6 +218,16 @@ def manage_context_blocks(
 Manages context blocks through the same action-oriented contract exposed by the
 MCP server.
 
+Returns a JSON envelope string such as:
+
+```json
+{
+  "ok": true,
+  "action": "list",
+  "blocks": [{ "label": "project_context", "content": "..." }]
+}
+```
+
 ### CurationRunAction
 
 ```python
@@ -252,8 +262,24 @@ Creates and manages asynchronous curation runs.
 - `create` defaults to a separate reviewable output bank
 - `output_mode="in_place"` requires `tool_access="operate"`
 - transcript bundles require `tool_access="operate"`
-- `failed` and `canceled` runs preserve partial output for inspection
+- `in_place` runs stage into `output_bank_id`, archive source rows on success,
+  and then promote staged rows into the source bank
+- `failed` and `canceled` runs leave any already-written staged output
+  untouched for inspection
 - `archive` only works after a run reaches a terminal state
+
+Tool responses are JSON envelope strings:
+
+```json
+{
+  "ok": true,
+  "action": "get",
+  "run": {
+    "id": "cur_abc123def456",
+    "status": "completed"
+  }
+}
+```
 
 ## Migration note
 

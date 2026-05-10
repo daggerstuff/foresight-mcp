@@ -25,7 +25,9 @@ Foresight combines three layers:
 ### Context blocks
 
 Context blocks are the Foresight-native continuity surface for active guidance
-and project state.
+and project state. They are persisted in SQLite and isolated by
+`(user_id, tenant_id)`, so the same user can carry different continuity state
+across tenants without leakage.
 
 Default blocks:
 
@@ -41,15 +43,18 @@ Default blocks:
 ### Curation runs
 
 Curation runs are asynchronous jobs that reorganize an existing memory bank into
-a new reviewable output bank.
+either a separate reviewable output bank or, when explicitly allowed, back into
+the source bank through a staging-and-promotion flow.
 
-- **Source bank preserved** by default
+- **Source bank preserved** by default in `reviewable_output` mode
 - **Reviewable output bank** created automatically unless `output_mode=in_place`
 - **Curator controls** for policy mode, tool access, and freeform instructions
 - **Transcript-aware curation** when transcript bundles are provided with
   `tool_access=operate`
-- **Terminal-state reviewability** so failed or canceled runs keep partial
-  output for inspection
+- **Safe in-place promotion**: `in_place` runs stage into a separate bank first,
+  then archive originals and promote staged rows only after a successful commit
+- **Terminal-state reviewability** so failed or canceled runs leave any staged
+  output untouched for inspection and do not overwrite the source bank
 
 ## Quick start
 
@@ -163,6 +168,22 @@ Use the same stdio pattern with `uv run -m foresight_mcp`.
 - `ContextBlockAction`
 - `CurationRunAction`
 - CLI group: `foresight curate ...`
+
+### Tool response contract
+
+`manage_context_blocks` and `manage_curation_runs` return stable JSON envelopes:
+
+```json
+{
+  "ok": true,
+  "action": "get",
+  "label": "guidance",
+  "content": "Keep updates short and concrete."
+}
+```
+
+Errors use the same envelope shape with `ok: false` and an `error.message`
+field. The CLI `--json` mode prints these envelopes directly.
 
 ## Example usage
 

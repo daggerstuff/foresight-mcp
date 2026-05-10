@@ -7,6 +7,10 @@ title: Guide - Managing Context Blocks
 
 Create, inspect, update, and reset Foresight context blocks.
 
+Context blocks are persisted per `(user_id, tenant_id)`. `foresight blocks list`
+shows only non-empty blocks, while `get` can still return an empty string for a
+recently cleared block.
+
 ## Read a block
 
 ```python
@@ -74,6 +78,21 @@ foresight blocks reset guidance
 # Clear content entirely
 foresight blocks clear guidance
 ```
+
+## MCP / JSON contract
+
+The MCP-facing `manage_context_blocks` tool returns stable JSON envelopes:
+
+```json
+{
+  "ok": true,
+  "action": "clear",
+  "label": "guidance",
+  "message": "Cleared block 'guidance'"
+}
+```
+
+Failures return the same shape with `ok: false` and an `error.message` field.
 
 ## Migration note
 

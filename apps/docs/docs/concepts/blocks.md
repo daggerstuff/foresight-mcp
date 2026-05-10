@@ -14,6 +14,8 @@ Context blocks are named containers that hold high-signal context with:
 
 - stable labels for retrieval and updates
 - explicit default content
+- SQLite-backed persistence
+- tenant isolation by `(user_id, tenant_id)`
 - XML snapshot and whisper views for prompt injection
 - clear separation between active continuity and long-term memory banks
 
@@ -65,7 +67,8 @@ Context blocks are not the same as curation outputs:
 - **Context blocks** hold active continuity state
 - **Memory banks** hold stored memories
 - **Curation runs** reorganize a memory bank into a new reviewable output bank
-  or, with stronger permissions, back into the source bank
+  or, with stronger permissions, back into the source bank through a staging
+  bank and promotion step
 
 This separation keeps continuity lightweight while letting long-lived memory
 maintenance remain asynchronous and inspectable.

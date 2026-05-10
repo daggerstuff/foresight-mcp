@@ -12,10 +12,13 @@ This module provides:
 from __future__ import annotations
 
 import logging
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .config import DB_PATH
+from .connection_pool import get_pool
 from .memory_components import MemoryCrisisTagger, SocraticGate
 
 logger = logging.getLogger("foresight_context_blocks")
@@ -171,6 +174,7 @@ class ContextBlockState:
     last_sync: datetime | None = None
     session_count: int = 0
     user_id: str = "default"
+    tenant_id: str = "default"
 
     def initialize_defaults(self) -> None:
         """Initialize context blocks with default content."""
@@ -256,17 +260,99 @@ class ContextBlockAgent:
     - Provides whisper injections for Claude Code prompts
     """
 
-    def __init__(self, user_id: str = "default"):
+    def __init__(self, user_id: str = "default", tenant_id: str = "default"):
         """Initialize the context block agent.
 
         Args:
             user_id: User identifier for memory storage
+            tenant_id: Tenant identifier for memory isolation
         """
         self.user_id = user_id
-        self.state = ContextBlockState(user_id=user_id)
+        self.tenant_id = tenant_id
+        self.state = ContextBlockState(user_id=user_id, tenant_id=tenant_id)
         self.state.initialize_defaults()
+        self._load_persisted_blocks()
         self._tagger = MemoryCrisisTagger()
         self._gate = SocraticGate(self._tagger)
+
+    def _connect(self):
+        return get_pool(DB_PATH).acquire()
+
+    def _ensure_storage(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS context_blocks (
+                    tenant_id TEXT NOT NULL DEFAULT 'default',
+                    user_id TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, user_id, label)
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_context_blocks_lookup "
+                "ON context_blocks(tenant_id, user_id, updated_at DESC)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _load_persisted_blocks(self) -> None:
+        """Overlay persisted blocks onto the default in-memory state."""
+        self._ensure_storage()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT label, content, updated_at FROM context_blocks WHERE tenant_id = ? AND user_id = ?",
+                (self.tenant_id, self.user_id),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        for row in rows:
+            label = row["label"]
+            block = self.state.get_block(label)
+            updated_at = datetime.fromisoformat(row["updated_at"])
+            if updated_at.tzinfo is None:
+                updated_at = updated_at.replace(tzinfo=timezone.utc)
+            if block:
+                block.content = row["content"]
+                block.chars_current = len(row["content"])
+                block.updated_at = updated_at
+            else:
+                self.state.blocks[label] = MemoryBlock(
+                    label=label,
+                    content=row["content"],
+                    description=f"Memory block for {label}",
+                    updated_at=updated_at,
+                )
+
+    def _persist_block(self, label: str) -> None:
+        """Persist one block for the current user and tenant."""
+        self._ensure_storage()
+        block = self.state.get_block(label)
+        if block is None:
+            return
+        updated_at = (block.updated_at or datetime.now(timezone.utc)).isoformat()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """INSERT INTO context_blocks (tenant_id, user_id, label, content, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(tenant_id, user_id, label)
+                DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at""",
+                (self.tenant_id, self.user_id, label, block.content, updated_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _persist_all_blocks(self) -> None:
+        """Persist the full block state for the current user and tenant."""
+        for label in self.state.blocks:
+            self._persist_block(label)
 
     async def process_transcript(
         self,
@@ -308,6 +394,7 @@ class ContextBlockAgent:
 
         self.state.session_count += 1
         self.state.last_sync = datetime.now(timezone.utc)
+        self._persist_all_blocks()
         logger.info("Processed transcript for session %s", session_id)
 
     def _process_user_message(self, content: str, session_id: str) -> None:
@@ -343,7 +430,17 @@ class ContextBlockAgent:
     def update_guidance(self, new_guidance: str) -> None:
         """Update the guidance block directly."""
         self.state.update_block(GUIDANCE, new_guidance)
+        self._persist_block(GUIDANCE)
         logger.info("Updated guidance block")
+
+    def update_block(self, label: str, content: str) -> None:
+        """Update any context block and persist the change."""
+        if label == GUIDANCE:
+            self.update_guidance(content)
+            return
+        self.state.update_block(label, content)
+        self._persist_block(label)
+        logger.info("Updated block %s", label)
 
     def add_guidance_line(self, line: str) -> None:
         """Add a line to the guidance block."""
@@ -352,6 +449,7 @@ class ContextBlockAgent:
             self.state.update_block(GUIDANCE, f"{block.content}\n{line}")
         else:
             self.state.update_block(GUIDANCE, line)
+        self._persist_block(GUIDANCE)
 
     def get_block(self, label: str) -> str | None:
         """Get a specific block's content."""
@@ -366,11 +464,15 @@ class ContextBlockAgent:
         """Reset a block to its default content."""
         if label in DEFAULT_MEMORY_BLOCKS:
             self.state.update_block(label, DEFAULT_MEMORY_BLOCKS[label])
+            self._persist_block(label)
             logger.info(f"Reset block {label} to default")
+            return
+        raise ValueError(f"Unknown block label {label!r}. Must be one of: {sorted(DEFAULT_MEMORY_BLOCKS)}")
 
     def clear_block(self, label: str) -> None:
         """Clear a block's content."""
-        self.state.update_block(label, "(Cleared)")
+        self.state.update_block(label, "")
+        self._persist_block(label)
         logger.info(f"Cleared block {label}")
 
 
@@ -378,17 +480,24 @@ SubconsciousState = ContextBlockState
 SubconsciousAgent = ContextBlockAgent
 
 
-# Global instance for convenience
-_context_block_agent: ContextBlockAgent | None = None
+# Global instances keyed by user and tenant for isolation
+_context_block_agents: dict[tuple[str, str], ContextBlockAgent] = {}
+
+
+def _normalize_tenant_id(tenant_id: str | None) -> str:
+    """Normalize optional tenant IDs into a stable cache key."""
+    normalized = (tenant_id or "").strip()
+    return normalized or "default"
 
 
 def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
-    """Get or create the global context block agent instance."""
-    del tenant_id  # Compatibility parameter; current implementation is user-scoped.
-    global _context_block_agent
-    if _context_block_agent is None or _context_block_agent.user_id != user_id:
-        _context_block_agent = ContextBlockAgent(user_id=user_id)
-    return _context_block_agent
+    """Get or create the context block agent instance for one user+tenant."""
+    key = (user_id, _normalize_tenant_id(tenant_id))
+    agent = _context_block_agents.get(key)
+    if agent is None:
+        agent = ContextBlockAgent(user_id=user_id, tenant_id=key[1])
+        _context_block_agents[key] = agent
+    return agent
 
 
 def get_subconscious_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:
