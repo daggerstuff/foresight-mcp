@@ -81,7 +81,7 @@ export class LWWRegister<T> {
   private value: T | null
   private timestamp: number
   private nodeId: string
-  private vectorClock: VectorClock
+  private readonly vectorClock: VectorClock
 
   constructor(
     value: T | null = null,
@@ -143,8 +143,8 @@ export class LWWRegister<T> {
   static fromDict<T>(data: any): LWWRegister<T> {
     return new LWWRegister<T>(
       data.value,
-      data.timestamp || 0,
-      data.nodeId || '',
+      data.timestamp ?? 0,
+      data.nodeId ?? '',
       data.vectorClock
         ? VectorClock.fromDict(data.vectorClock)
         : new VectorClock(),
@@ -157,8 +157,8 @@ export class LWWRegister<T> {
 // =============================================================================
 
 export class ORSet<T> {
-  private adds: Map<string, Set<string>> // hash -> Set of "timestamp:nodeId"
-  private removes: Map<string, Set<string>> // hash -> Set of "timestamp:nodeId"
+  private readonly adds: Map<string, Set<string>> // hash -> Set of "timestamp:nodeId"
+  private readonly removes: Map<string, Set<string>> // hash -> Set of "timestamp:nodeId"
   private nodeId: string = 'default'
   private vc: VectorClock = new VectorClock()
 
@@ -250,7 +250,7 @@ export class ORSet<T> {
     }
 
     const adds = this.adds.get(elementHash)!
-    const removes = this.removes.get(elementHash) || new Set()
+    const removes = this.removes.get(elementHash) ?? new Set()
 
     // Element is in set if there's at least one add not matched by remove
     for (const tag of adds) {
@@ -323,7 +323,7 @@ export class ORSet<T> {
 
   static fromDict<T>(data: any): ORSet<T> {
     const orset = new ORSet<T>()
-    orset.nodeId = data.nodeId || 'default'
+    orset.nodeId = data.nodeId ?? 'default'
     if (data.vectorClock) {
       orset.vc = VectorClock.fromDict(data.vectorClock)
     }
@@ -349,7 +349,7 @@ export class ORSet<T> {
 // =============================================================================
 
 export class LWWMap<T> {
-  private entries: Map<string, LWWRegister<T | null>>
+  private readonly entries: Map<string, LWWRegister<T | null>>
   private nodeId: string = 'default'
   private vc: VectorClock = new VectorClock()
 
@@ -434,7 +434,7 @@ export class LWWMap<T> {
 
   static fromDict<T>(data: any): LWWMap<T> {
     const lwwMap = new LWWMap<T>()
-    lwwMap.nodeId = data.nodeId || 'default'
+    lwwMap.nodeId = data.nodeId ?? 'default'
     if (data.vectorClock) {
       lwwMap.vc = VectorClock.fromDict(data.vectorClock)
     }

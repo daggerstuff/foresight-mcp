@@ -726,33 +726,31 @@ def test_manage_curation_runs_reviewable_output_and_failure_status():
     def _run_inline(run_id, payload):
         server_module._execute_curation_run(run_id, payload)
 
-    with _patched_context_block_storage(db_path):
-        with (
-            patch("foresight_mcp.server.DB_PATH", db_path),
-            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-            patch("foresight_mcp.server.get_event_bus_with_stream", return_value=_FakeBus()),
-            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-            patch(
-                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
-            ),
-            patch(
-                "foresight_mcp.server._build_reflection_snapshot",
-                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
-            ),
-            patch("foresight_mcp.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")),
-        ):
-            created = json.loads(
-                manage_curation_runs(
-                    CurationRunAction(action="create", source_bank_id="source_bank"),
-                    user_id=user_id,
-                )
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.get_event_bus_with_stream", return_value=_FakeBus()),
+        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch(
+            "foresight_mcp.server._build_reflection_snapshot",
+            return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+        ),
+        patch("foresight_mcp.server._insert_curation_entries", side_effect=RuntimeError("curation exploded")),
+    ):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(action="create", source_bank_id="source_bank"),
+                user_id=user_id,
             )
-            fetched = json.loads(
-                manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
-            )
-            assert fetched["run"]["status"] == "failed"
-            assert fetched["run"]["output_bank_id"].startswith("curation:")
-            assert fetched["run"]["error"]["message"] == "curation exploded"
+        )
+        fetched = json.loads(
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+        )
+        assert fetched["run"]["status"] == "failed"
+        assert fetched["run"]["output_bank_id"].startswith("curation:")
+        assert fetched["run"]["error"]["message"] == "curation exploded"
 
     assert "curation.created" in events
     assert "curation.failed" in events
@@ -770,36 +768,34 @@ def test_manage_curation_runs_in_place_archives_originals_and_promotes_staged_ou
     def _run_inline(run_id, payload):
         server_module._execute_curation_run(run_id, payload)
 
-    with _patched_context_block_storage(db_path):
-        with (
-            patch("foresight_mcp.server.DB_PATH", db_path),
-            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-            patch("foresight_mcp.server.get_event_bus_with_stream"),
-            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-            patch(
-                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
-            ),
-            patch(
-                "foresight_mcp.server._build_reflection_snapshot",
-                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
-            ),
-        ):
-            created = json.loads(
-                manage_curation_runs(
-                    CurationRunAction(
-                        action="create",
-                        source_bank_id="source_bank",
-                        output_mode="in_place",
-                        tool_access="operate",
-                        policy_mode="preserve",
-                    ),
-                    user_id=user_id,
-                )
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.get_event_bus_with_stream"),
+        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch(
+            "foresight_mcp.server._build_reflection_snapshot",
+            return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+        ),
+    ):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(
+                    action="create",
+                    source_bank_id="source_bank",
+                    output_mode="in_place",
+                    tool_access="operate",
+                    policy_mode="preserve",
+                ),
+                user_id=user_id,
             )
-            run = created["run"]
-            fetched = json.loads(
-                manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id)
-            )["run"]
+        )
+        run = created["run"]
+        fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
+            "run"
+        ]
 
     assert fetched["status"] == "completed"
     assert fetched["output_mode"] == "in_place"
@@ -854,35 +850,33 @@ def test_manage_curation_runs_canceled_in_place_run_leaves_source_bank_untouched
             }
         ]
 
-    with _patched_context_block_storage(db_path):
-        with (
-            patch("foresight_mcp.server.DB_PATH", db_path),
-            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-            patch("foresight_mcp.server.get_event_bus_with_stream"),
-            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-            patch(
-                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
-            ),
-            patch(
-                "foresight_mcp.server._build_reflection_snapshot",
-                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
-            ),
-            patch("foresight_mcp.server._make_curated_entries", side_effect=_cancel_before_insert),
-        ):
-            created = json.loads(
-                manage_curation_runs(
-                    CurationRunAction(
-                        action="create",
-                        source_bank_id="source_bank",
-                        output_mode="in_place",
-                        tool_access="operate",
-                    ),
-                    user_id=user_id,
-                )
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.get_event_bus_with_stream"),
+        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch(
+            "foresight_mcp.server._build_reflection_snapshot",
+            return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+        ),
+        patch("foresight_mcp.server._make_curated_entries", side_effect=_cancel_before_insert),
+    ):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(
+                    action="create",
+                    source_bank_id="source_bank",
+                    output_mode="in_place",
+                    tool_access="operate",
+                ),
+                user_id=user_id,
             )
-            fetched = json.loads(
-                manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
-            )["run"]
+        )
+        fetched = json.loads(
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+        )["run"]
 
     assert fetched["status"] == "canceled"
 
@@ -936,35 +930,33 @@ def test_manage_curation_runs_cancel_during_promotion_restores_source_bank():
         server_module._update_curation_run(run_id, tenant_id, status="canceled")
         return summary
 
-    with _patched_context_block_storage(db_path):
-        with (
-            patch("foresight_mcp.server.DB_PATH", db_path),
-            patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
-            patch("foresight_mcp.server.get_event_bus_with_stream"),
-            patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
-            patch(
-                "foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}
-            ),
-            patch(
-                "foresight_mcp.server._build_reflection_snapshot",
-                return_value={"trend_summary": {"overall": "stable"}, "insights": []},
-            ),
-            patch("foresight_mcp.server._promote_in_place_curation", side_effect=_cancel_after_promote),
-        ):
-            created = json.loads(
-                manage_curation_runs(
-                    CurationRunAction(
-                        action="create",
-                        source_bank_id="source_bank",
-                        output_mode="in_place",
-                        tool_access="operate",
-                    ),
-                    user_id=user_id,
-                )
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_with_rows(db_path)),
+        patch("foresight_mcp.server.get_event_bus_with_stream"),
+        patch("foresight_mcp.server._start_curation_worker", side_effect=_run_inline),
+        patch("foresight_mcp.server._build_synthesis_snapshot", return_value={"insights": [], "contradictions": []}),
+        patch(
+            "foresight_mcp.server._build_reflection_snapshot",
+            return_value={"trend_summary": {"overall": "stable"}, "insights": []},
+        ),
+        patch("foresight_mcp.server._promote_in_place_curation", side_effect=_cancel_after_promote),
+    ):
+        created = json.loads(
+            manage_curation_runs(
+                CurationRunAction(
+                    action="create",
+                    source_bank_id="source_bank",
+                    output_mode="in_place",
+                    tool_access="operate",
+                ),
+                user_id=user_id,
             )
-            fetched = json.loads(
-                manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
-            )["run"]
+        )
+        fetched = json.loads(
+            manage_curation_runs(CurationRunAction(action="get", run_id=created["run"]["id"]), user_id=user_id)
+        )["run"]
 
     assert fetched["status"] == "canceled"
 

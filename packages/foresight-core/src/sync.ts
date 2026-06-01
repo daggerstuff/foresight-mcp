@@ -35,7 +35,7 @@ export class InMemoryOperationStorage implements OperationStorage {
   }
 
   async dequeue(): Promise<Operation | null> {
-    return this.queue.shift() || null
+    return this.queue.shift() ?? null
   }
 
   async remove(operationId: string): Promise<void> {
@@ -59,7 +59,7 @@ export class InMemoryOperationStorage implements OperationStorage {
  * LocalStorage implementation of operation storage for browser environments.
  */
 export class LocalStorageOperationStorage implements OperationStorage {
-  private key: string
+  private readonly key: string
 
   constructor(key: string = 'foresight_operations') {
     this.key = key
@@ -90,7 +90,7 @@ export class LocalStorageOperationStorage implements OperationStorage {
 
   async dequeue(): Promise<Operation | null> {
     const queue = await this.getQueue()
-    const op = queue.shift() || null
+    const op = queue.shift() ?? null
     await this.saveQueue(queue)
     return op
   }
@@ -124,15 +124,15 @@ export type SyncCallback = (operation: Operation) => Promise<boolean>
 export type ProgressCallback = (progress: SyncProgress) => void
 
 export class SyncManager {
-  private nodeId: string
-  private maxRetries: number
-  private retryDelay: number
-  private storage: OperationStorage
-  private syncCallback?: SyncCallback
+  private readonly nodeId: string
+  private readonly maxRetries: number
+  private readonly retryDelay: number
+  private readonly storage: OperationStorage
+  private readonly syncCallback?: SyncCallback
   private status: SyncStatus = SyncStatus.Idle
   private errors: string[] = []
   private lastSync?: string
-  private progressCallbacks: ProgressCallback[] = []
+  private readonly progressCallbacks: ProgressCallback[] = []
 
   constructor(
     options: {
@@ -143,10 +143,10 @@ export class SyncManager {
       syncCallback?: SyncCallback
     } = {},
   ) {
-    this.nodeId = options.nodeId || 'default'
-    this.maxRetries = options.maxRetries || 3
-    this.retryDelay = options.retryDelay || 1.0
-    this.storage = options.storage || new InMemoryOperationStorage()
+    this.nodeId = options.nodeId ?? 'default'
+    this.maxRetries = options.maxRetries ?? 3
+    this.retryDelay = options.retryDelay ?? 1.0
+    this.storage = options.storage ?? new InMemoryOperationStorage()
     this.syncCallback = options.syncCallback
   }
 
@@ -156,7 +156,7 @@ export class SyncManager {
     } else if (this.status === SyncStatus.Offline) {
       this.status = SyncStatus.Idle
     }
-    this.notifyProgress()
+    void this.notifyProgress()
   }
 
   async enqueueOperation(params: {
@@ -166,7 +166,7 @@ export class SyncManager {
     payload: Record<string, any>
   }): Promise<string> {
     const id =
-      typeof crypto !== 'undefined' && crypto.randomUUID
+      crypto?.randomUUID
         ? crypto.randomUUID()
         : Math.random().toString(36).substring(2, 15) +
           Math.random().toString(36).substring(2, 15)
@@ -185,7 +185,7 @@ export class SyncManager {
     }
 
     await this.storage.enqueue(operation)
-    this.notifyProgress()
+    void this.notifyProgress()
     return id
   }
 
@@ -199,7 +199,7 @@ export class SyncManager {
     }
 
     this.status = SyncStatus.Syncing
-    this.notifyProgress()
+    void this.notifyProgress()
 
     const pending = await this.storage.peek()
     const errors: string[] = []
@@ -234,7 +234,7 @@ export class SyncManager {
 
     this.status = errors.length === 0 ? SyncStatus.Idle : SyncStatus.Error
     this.errors = errors
-    this.notifyProgress()
+    void this.notifyProgress()
 
     return this.getProgress()
   }
@@ -278,9 +278,7 @@ export class SyncManager {
 let globalSyncManager: SyncManager | null = null
 
 export function getSyncManager(nodeId: string = 'default'): SyncManager {
-  if (!globalSyncManager) {
-    globalSyncManager = new SyncManager({ nodeId })
-  }
+  globalSyncManager ??= new SyncManager({ nodeId });
   return globalSyncManager
 }
 

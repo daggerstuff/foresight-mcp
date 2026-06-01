@@ -42,19 +42,19 @@ export interface WebSocketMessage {
 
 export class ForesightWebSocketClient {
   private ws: WebSocket | null = null
-  private options: Required<WebSocketClientOptions>
+  private readonly options: Required<WebSocketClientOptions>
   private state: ConnectionState = 'disconnected'
   private reconnectAttempts = 0
-  private messageHandlers: MessageHandler[] = []
-  private subscriptions: Map<string, SubscriptionOptions> = new Map()
+  private readonly messageHandlers: MessageHandler[] = []
+  private readonly subscriptions: Map<string, SubscriptionOptions> = new Map()
   private connectionPromise: Promise<void> | null = null
 
   constructor(options: WebSocketClientOptions) {
     this.options = {
       url: options.url,
-      userId: options.userId || 'default',
-      reconnectInterval: options.reconnectInterval || 5000,
-      maxReconnectAttempts: options.maxReconnectAttempts || 5,
+      userId: options.userId ?? 'default',
+      reconnectInterval: options.reconnectInterval ?? 5000,
+      maxReconnectAttempts: options.maxReconnectAttempts ?? 5,
     }
   }
 
@@ -118,7 +118,7 @@ export class ForesightWebSocketClient {
    * Subscribe to events
    */
   async subscribe(options: SubscriptionOptions): Promise<string> {
-    const subscriptionId = options.subscriptionId || this.generateId()
+    const subscriptionId = options.subscriptionId ?? this.generateId()
 
     this.subscriptions.set(subscriptionId, options)
 
