@@ -533,16 +533,19 @@ def create_version_snapshot(memory_id: str, data: dict) -> str:
     emo_json = emo if isinstance(emo, str) else json.dumps(emo)
     met_json = met if isinstance(met, str) else json.dumps(met)
 
+    tenant_id = data.get("tenant_id") or get_current_tenant_id()
+
     conn = get_db_connection()
     conn.execute(
         """
     INSERT INTO memory_versions (
-        id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics, rollback_of
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
         (
             version_id,
             memory_id,
+            tenant_id,
             data["content"],
             version,
             datetime.now(timezone.utc).isoformat(),
@@ -592,6 +595,7 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
             "metrics": current["metrics"],
             "version": current["version"] or 1,
             "rollback_of": None,
+            "tenant_id": current["tenant_id"],
         },
     )
 
@@ -633,13 +637,16 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
 def get_memory_diff(memory_id: str, version1: int, version2: int, _user_id: str | None = None) -> dict[str, Any]:
     """Get diff between two versions of a memory."""
     conn = get_db_connection()
+    tenant_id = get_current_tenant_id()
 
     v1 = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?", (memory_id, version1)
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (memory_id, version1, tenant_id),
     ).fetchone()
 
     v2 = conn.execute(
-        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ?", (memory_id, version2)
+        "SELECT * FROM memory_versions WHERE memory_id = ? AND version = ? AND tenant_id = ?",
+        (memory_id, version2, tenant_id),
     ).fetchone()
 
     conn.close()
@@ -938,6 +945,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
                 "emotional_context": row["emotional_context"],
                 "metrics": row["metrics"],
                 "version": row["version"] or 1,
+                "tenant_id": row["tenant_id"],
             },
         )
         updates_list.extend(["content = ?", "version = ?"])
@@ -1187,10 +1195,11 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
         f"{options.memory_id}{row['version']}{datetime.now(timezone.utc).isoformat()}".encode()
     ).hexdigest()[:16]
     conn.execute(
-        "INSERT INTO memory_versions (id, memory_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO memory_versions (id, memory_id, tenant_id, content, version, created_at, tags, emotional_context, metrics, rollback_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             version_id,
             options.memory_id,
+            tenant_id,
             row["content"],
             row["version"] or 1,
             datetime.now(timezone.utc).isoformat(),
