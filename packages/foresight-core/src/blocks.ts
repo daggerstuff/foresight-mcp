@@ -22,7 +22,7 @@ export interface CreateBlockOptions {
 }
 
 export class BlockManager {
-  private blocks: Map<string, MemoryBlock> = new Map()
+  private readonly blocks: Map<string, MemoryBlock> = new Map()
 
   /**
    * Register a new block schema

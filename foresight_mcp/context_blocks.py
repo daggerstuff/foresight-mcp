@@ -8,17 +8,8 @@ blocks while reusing the existing compatibility-backed implementation.
 from __future__ import annotations
 
 from .subconscious import (
-    CORE_DIRECTIVES,
-    GUIDANCE,
-    PENDING_ITEMS,
-    PROJECT_CONTEXT,
-    SESSION_PATTERNS,
-    USER_PREFERENCES,
-    SELF_IMPROVEMENT,
-    TOOL_GUIDELINES,
     DEFAULT_MEMORY_BLOCKS,
     ContextBlockAgent,
-    ContextBlockState,
     MemoryBlock,
     get_context_block_agent as _get_context_block_agent,
 )
