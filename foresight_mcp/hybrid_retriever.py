@@ -53,6 +53,12 @@ def _validate_input(query: str, user_id: str) -> None:
         raise ValueError(f"query must be <= {MAX_QUERY_LENGTH} chars")
 
 
+def _latest_filter_sql(conn: sqlite3.Connection) -> str:
+    """Return a latest-row SQL predicate when the temporal column exists."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    return " AND is_latest = 1" if "is_latest" in columns else ""
+
+
 @dataclass
 class HybridResult:
     """A single result from hybrid retrieval."""
@@ -321,11 +327,13 @@ class HybridRetriever:
         like_clauses = " OR ".join(["content LIKE ? ESCAPE '!'" for _ in terms])
         params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
+        latest_filter = _latest_filter_sql(conn)
         cursor = conn.execute(
             f"""
             SELECT id, content
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
+            {latest_filter}
             AND ({like_clauses})
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
@@ -369,8 +377,9 @@ class HybridRetriever:
         cache_key = (user_id, tenant_id)
 
         # Check current doc count first (cheap query)
+        latest_filter = _latest_filter_sql(conn)
         count_row = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0" + latest_filter,
             (user_id, tenant_id),
         ).fetchone()
         current_count: int = count_row[0] if count_row else 0
@@ -383,7 +392,7 @@ class HybridRetriever:
         # Cache miss or stale — rebuild outside the lock to avoid blocking
         # other threads during the DB fetch.
         rows = conn.execute(
-            "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0" + latest_filter,
             (user_id, tenant_id),
         ).fetchall()
 
@@ -570,12 +579,14 @@ class HybridRetriever:
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
+        latest_filter = _latest_filter_sql(conn)
         cursor = conn.execute(
             """
             SELECT id, importance, created_at, activation_count,
                    COALESCE(strength_trend, 'stable')
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
+            """ + latest_filter + """
             AND importance >= ?
             ORDER BY importance DESC, created_at DESC
             LIMIT ?

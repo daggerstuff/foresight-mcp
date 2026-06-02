@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp import Client
 from foresight_cli.cli import _decode_tool_result
-from foresight_mcp import memory_status, store_memory
+from foresight_mcp import list_memories, memory_status, query_memories, store_memory, update_memory
 from foresight_mcp.server import (
     ContextBlockAction,
     CurationRunAction,
@@ -80,6 +80,97 @@ def _mock_db_connection(db_path):
 def _decode_json_result(result: str) -> dict:
     """Decode a JSON tool envelope."""
     return json.loads(result)
+
+
+def test_update_memory_creates_temporal_latest_chain():
+    """Updating a memory preserves prior rows and marks only the newest row latest."""
+    from foresight_mcp import server as server_module
+
+    db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+    user_id = "temporal_update_user"
+
+    with (
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.get_hybrid_retriever") as retriever,
+    ):
+        retriever.return_value.invalidate_tfidf_cache.return_value = None
+        server_module.init_db()
+        stored = store_memory("I live in NYC", user_id=user_id, category="preference")
+        memory_id = stored.split("Stored memory ", 1)[1].split(".", 1)[0]
+
+        result = update_memory(memory_id, user_id=user_id, content="I live in SF")
+
+        latest = query_memories("NYC", user_id=user_id, use_hybrid=False)
+        history = list_memories(user_id=user_id, include_history=True)
+
+    assert result.startswith(f"Updated memory {memory_id} (latest: ")
+    assert latest == "No memories found."
+    assert "I live in NYC" in history
+    assert "I live in SF" in history
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute(
+        "SELECT id, content, is_latest, valid_from, valid_until FROM memories "
+        "WHERE user_id = ? ORDER BY valid_from ASC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 2
+    assert rows[0][0] == memory_id
+    assert rows[0][1] == "I live in NYC"
+    assert rows[0][2] == 0
+    assert rows[0][4] == rows[1][3]
+    assert rows[1][0] != memory_id
+    assert rows[1][1] == "I live in SF"
+    assert rows[1][2] == 1
+    assert rows[1][4] is None
+
+
+def test_temporal_migration_marks_existing_memories_latest():
+    """Existing rows migrate with valid_from anchored to created_at."""
+    from foresight_mcp import server as server_module
+
+    db_path = _make_test_db()
+    created_at = datetime.now(timezone.utc).isoformat()
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """CREATE TABLE tenants (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            rate_limit INTEGER DEFAULT 100,
+            burst_limit INTEGER DEFAULT 20,
+            created_at TEXT NOT NULL,
+            config TEXT DEFAULT '{}'
+        )"""
+    )
+    conn.execute("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+    conn.executemany(
+        "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+        [(version, created_at) for version in range(1, 6)],
+    )
+    conn.execute(
+        "INSERT INTO memories (id, content, user_id, tenant_id, created_at) VALUES (?, ?, ?, ?, ?)",
+        ("legacy-memory", "Legacy memory", "legacy-user", "default", created_at),
+    )
+    conn.commit()
+    conn.close()
+
+    with (
+        patch("foresight_mcp.server.DB_PATH", db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+    ):
+        server_module.init_db()
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT content, is_latest, valid_from, valid_until FROM memories WHERE id = ?",
+        ("legacy-memory",),
+    ).fetchone()
+    conn.close()
+
+    assert row == ("Legacy memory", 1, created_at, None)
 
 
 @pytest.mark.asyncio

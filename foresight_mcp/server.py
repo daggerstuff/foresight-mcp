@@ -121,6 +121,7 @@ class SearchOptions(BaseModel):
     offset: int = Field(default=0, description="Result offset")
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
+    include_history: bool = Field(default=False, description="Include superseded non-latest memory versions")
 
 
 class ContextBlockAction(BaseModel):
@@ -270,7 +271,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _seed_default_tenant(conn) -> None:
@@ -402,6 +403,14 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
         "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
         "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
+    ],
+    6: [
+        "ALTER TABLE memories ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE memories ADD COLUMN valid_from TEXT",
+        "ALTER TABLE memories ADD COLUMN valid_until TEXT",
+        "UPDATE memories SET valid_from = COALESCE(valid_from, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_latest ON memories(tenant_id, user_id, is_latest, valid_from DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_memories_validity ON memories(tenant_id, user_id, valid_from, valid_until)",
     ],
 }
 
@@ -856,7 +865,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     conn = get_db_connection()
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
-        "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 "
+        "WHERE user_id = ? AND tenant_id = ? AND content = ? AND is_ghost = 0 AND is_latest = 1 "
         "ORDER BY created_at DESC LIMIT 1",
         (uid, tenant_id, options.content.strip()),
     ).fetchone()
@@ -891,10 +900,12 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         memory.tags.append(opts.category)
 
     # Store
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
         "content, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "created_at, updated_at, tags, is_latest, valid_from, valid_until) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)",
         (
             memory_id,
             uid,
@@ -907,9 +918,10 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             json.dumps(opts.metrics) if opts.metrics else None,
             opts.importance,
             1,
-            datetime.now(timezone.utc).isoformat(),
-            datetime.now(timezone.utc).isoformat(),
+            now,
+            now,
             json.dumps(memory.tags),
+            now,
         ),
     )
     conn.commit()
@@ -927,52 +939,86 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ? AND is_latest = 1",
+        (options.memory_id, uid, tenant_id),
     ).fetchone()
 
     if not row:
         conn.close()
         return f"Memory {options.memory_id} not found."
 
-    updates_list = []
-    values = []
-    if options.updates.content:
-        create_version_snapshot(
-            options.memory_id,
-            {
-                "content": row["content"],
-                "tags": row["tags"],
-                "emotional_context": row["emotional_context"],
-                "metrics": row["metrics"],
-                "version": row["version"] or 1,
-                "tenant_id": row["tenant_id"],
-            },
+    if not any(
+        (
+            options.updates.content,
+            options.updates.category,
+            options.updates.scope,
+            options.updates.retention,
+            options.updates.tags,
         )
-        updates_list.extend(["content = ?", "version = ?"])
-        values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
-
-    if options.updates.category:
-        updates_list.append("category = ?")
-        values.append(options.updates.category)
-    if options.updates.scope:
-        updates_list.append("scope = ?")
-        values.append(options.updates.scope)
-    if options.updates.retention:
-        updates_list.append("retention = ?")
-        values.append(options.updates.retention)
-    if options.updates.tags:
-        updates_list.append("tags = ?")
-        values.append(json.dumps(options.updates.tags))
-
-    if not updates_list:
+    ):
         conn.close()
         return "No updates provided."
 
-    updates_list.append("updated_at = ?")
-    values.append(datetime.now(timezone.utc).isoformat())
-    values.extend([options.memory_id, uid, tenant_id])
+    create_version_snapshot(
+        options.memory_id,
+        {
+            "content": row["content"],
+            "tags": row["tags"],
+            "emotional_context": row["emotional_context"],
+            "metrics": row["metrics"],
+            "version": row["version"] or 1,
+            "tenant_id": row["tenant_id"],
+        },
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+    new_version = (row["version"] or 1) + 1
+    new_memory_id = hashlib.sha256(f"{options.memory_id}:{new_version}:{now}".encode()).hexdigest()[:16]
+
     conn.execute(
-        f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?", values
+        "UPDATE memories SET is_latest = 0, valid_until = ?, updated_at = ? "
+        "WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (now, now, options.memory_id, uid, tenant_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO memories (
+            id, content, tenant_id, scope, retention, category, user_id, bank_id,
+            created_at, updated_at, tags, emotional_context, metrics, vector_id,
+            gist, is_ghost, synthesized_from, version, accessed_at, importance,
+            decay_rate, activation_count, retrieval_count, strength_trend,
+            last_retrieved_at, is_latest, valid_from, valid_until
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
+        """,
+        (
+            new_memory_id,
+            options.updates.content.strip() if options.updates.content else row["content"],
+            row["tenant_id"],
+            options.updates.scope or row["scope"],
+            options.updates.retention or row["retention"],
+            options.updates.category or row["category"],
+            row["user_id"],
+            row["bank_id"],
+            now,
+            now,
+            json.dumps(options.updates.tags) if options.updates.tags else row["tags"],
+            row["emotional_context"],
+            row["metrics"],
+            row["vector_id"],
+            row["gist"],
+            row["is_ghost"],
+            row["synthesized_from"],
+            new_version,
+            now,
+            row["importance"],
+            row["decay_rate"],
+            row["activation_count"],
+            row["retrieval_count"],
+            row["strength_trend"],
+            row["last_retrieved_at"],
+            now,
+        ),
     )
     conn.commit()
     conn.close()
@@ -985,7 +1031,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
     )
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
-    return f"Updated memory {options.memory_id}"
+    return f"Updated memory {options.memory_id} (latest: {new_memory_id})"
 
 
 def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> str:
@@ -1049,6 +1095,23 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
+def _latest_filter(include_history: bool) -> str:
+    return "" if include_history else " AND is_latest = 1"
+
+
+def _format_memory_row(row: sqlite3.Row) -> str:
+    tags = json.loads(row["tags"])
+    valid_until = row["valid_until"] or "present"
+    return (
+        f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
+        f"Content: {row['content']}\n"
+        f"Tags: {', '.join(tags) if tags else 'none'}\n"
+        f"isLatest: {bool(row['is_latest'])}\n"
+        f"valid_from: {row['valid_from']}\n"
+        f"valid_until: {valid_until}\n"
+    )
+
+
 @mcp.tool(output_schema=None)
 def manage_memories(
     options: MemoryAction,
@@ -1061,6 +1124,7 @@ def manage_memories(
         options: Action and parameters
         user_id: Optional user ID override
     """
+    init_db()
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
 
@@ -1094,6 +1158,7 @@ def search_memories(
         options: Search parameters (query_type, query, memory_id, limit, etc.)
         user_id: Optional user ID override
     """
+    init_db()
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
 
@@ -1104,7 +1169,9 @@ def search_memories(
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
         row = conn.execute(
-            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (mid, uid, tenant_id)
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
+            + _latest_filter(options.include_history),
+            (mid, uid, tenant_id),
         ).fetchone()
         conn.close()
 
@@ -1115,16 +1182,13 @@ def search_memories(
         event_bus = get_event_bus_with_stream()
         event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
 
-        tags = json.loads(row["tags"])
-        result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
-        result += f"Content: {row['content']}\n"
-        result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
+        result = _format_memory_row(row)
         if row["is_ghost"]:
             result += "[GHOST NODE - Content archived]"
         return result
 
     # 2. Hybrid search if enabled and query provided
-    if options.use_hybrid and options.query:
+    if options.use_hybrid and options.query and not options.include_history:
         try:
             retriever = get_hybrid_retriever()
             hybrid_result = retriever.search(
@@ -1146,12 +1210,16 @@ def search_memories(
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? "
+            f"{_latest_filter(options.include_history)} "
+            "AND content LIKE ? ESCAPE '!' ORDER BY valid_from ASC LIMIT ? OFFSET ?"
         )
         params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
     else:
         query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? "
+            f"{_latest_filter(options.include_history)} "
+            "ORDER BY valid_from ASC LIMIT ? OFFSET ?"
         )
         params = (uid, tenant_id, options.limit, options.offset)
 
@@ -1161,7 +1229,11 @@ def search_memories(
     if not rows:
         return "No memories found."
 
-    results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    results = [
+        f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}... "
+        f"(isLatest={bool(r['is_latest'])}, valid_from={r['valid_from']}, valid_until={r['valid_until'] or 'present'})"
+        for r in rows
+    ]
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
 
 
@@ -2793,9 +2865,14 @@ def store_memory(
 
 
 @mcp.tool(output_schema=None)
-def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
+def list_memories(
+    limit: int = 10,
+    offset: int = 0,
+    user_id: str | None = None,
+    include_history: bool = False,
+) -> str:
     """Legacy alias for search_memories(query_type="list")."""
-    options = SearchOptions(query_type="list", limit=limit, offset=offset)
+    options = SearchOptions(query_type="list", limit=limit, offset=offset, include_history=include_history)
     return search_memories(options, user_id=user_id)
 
 
@@ -2807,6 +2884,7 @@ def query_memories(
     use_hybrid: bool = True,
     min_importance: float = 0.1,
     offset: int = 0,
+    include_history: bool = False,
 ) -> str:
     """Legacy alias for search_memories(query_type="keyword")."""
     options = SearchOptions(
@@ -2816,6 +2894,7 @@ def query_memories(
         use_hybrid=use_hybrid,
         min_importance=min_importance,
         offset=offset,
+        include_history=include_history,
     )
     return search_memories(options, user_id=user_id)
 

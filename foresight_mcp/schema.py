@@ -190,6 +190,9 @@ class UnifiedMemory(BaseModel):
     version: int = Field(1, ge=1)
     schema_version: str = Field(MEMORY_SCHEMA_VERSION)
     source_service: SourceService = Field(SourceService.FORESIGHT)
+    is_latest: bool = Field(True)
+    valid_from: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
+    valid_until: str | None = Field(None)
 
     # ── Decay & Importance ────────────────────────────────────────────────
     importance: float = Field(0.5, ge=0.0, le=1.0)
@@ -280,6 +283,9 @@ class UnifiedMemory(BaseModel):
             "version": self.version,
             "schema_version": self.schema_version,
             "source_service": self.source_service.value,
+            "is_latest": int(self.is_latest),
+            "valid_from": self.valid_from,
+            "valid_until": self.valid_until,
             "importance": self.importance,
             "decay_rate": self.decay_rate,
             "strength_trend": self.strength_trend.value,
@@ -319,6 +325,9 @@ class UnifiedMemory(BaseModel):
             version=row.get("version", 1),
             schema_version=row.get("schema_version", "0.0.0"),
             source_service=SourceService(row.get("source_service", "unknown")),
+            is_latest=bool(row.get("is_latest", True)),
+            valid_from=row.get("valid_from") or row.get("created_at", datetime.now(UTC).isoformat()),
+            valid_until=row.get("valid_until"),
             importance=row.get("importance", 0.5),
             decay_rate=row.get("decay_rate", 0.01),
             strength_trend=StrengthTrend(row.get("strength_trend", "stable")),
@@ -355,6 +364,9 @@ class UnifiedMemory(BaseModel):
             "version": self.version,
             "schemaVersion": self.schema_version,
             "sourceService": self.source_service.value,
+            "isLatest": self.is_latest,
+            "validFrom": self.valid_from,
+            "validUntil": self.valid_until,
             "importance": self.importance,
             "decayRate": self.decay_rate,
             "strengthTrend": self.strength_trend.value,
@@ -403,6 +415,12 @@ class UnifiedMemory(BaseModel):
             version=doc.get("version", 1) if isinstance(doc.get("version"), int) else 1,
             schema_version=doc.get("schemaVersion", doc.get("schema_version", "0.0.0")),
             source_service=SourceService(doc.get("sourceService", doc.get("source_service", "unknown"))),
+            is_latest=doc.get("isLatest", doc.get("is_latest", True)),
+            valid_from=doc.get(
+                "validFrom",
+                doc.get("valid_from", doc.get("createdAt", doc.get("created_at", datetime.now(UTC).isoformat()))),
+            ),
+            valid_until=doc.get("validUntil", doc.get("valid_until")),
             importance=doc.get("importance", 0.5),
             decay_rate=doc.get("decayRate", doc.get("decay_rate", 0.01)),
             strength_trend=StrengthTrend(doc.get("strengthTrend", doc.get("strength_trend", "stable"))),
