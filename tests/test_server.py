@@ -183,6 +183,7 @@ def test_manage_memories_auto_classification_accuracy_on_known_set():
         ("User is a fan of concise status updates.", "trait", "preference"),
         ("The default dev server port is 5173.", "fact", "fact"),
         ("User currently has the setup script running.", "session", "episode"),
+        ("FastMCP requires Python 3.13.", "fact", "fact"),
     ]
     db_path = _make_test_db()
     correct = 0
@@ -198,7 +199,7 @@ def test_manage_memories_auto_classification_accuracy_on_known_set():
             row = _stored_memory_row(db_path, unique_content)
             correct += row["scope"] == expected_scope and row["category"] == expected_category
 
-    assert correct / len(cases) >= 0.8
+    assert correct / len(cases) > 0.8
 
 
 @pytest.mark.asyncio

@@ -252,7 +252,7 @@ _FACT_PATTERNS = (
     r"\b(?:the\s+)?project\s+(?:uses|is|has|runs|requires)\b",
     r"\b(?:the\s+)?(?:default|current|configured)\s+[^.]+\s+(?:is|are)\b",
     r"\b(?:database|server|service|repo|repository|workspace)\s+(?:is|uses|has|runs|requires)\b",
-    r"\b[A-Z][A-Za-z0-9_-]+\s+(?:is|uses|has|runs|requires)\b",
+    r"\b[a-z][a-z0-9_-]+\s+(?:is|uses|has|runs|requires)\b",
 )
 
 
