@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 from fastmcp import Client
 from foresight_cli.cli import _decode_tool_result
-from foresight_mcp import memory_status, store_memory
+from foresight_mcp import get_memory, list_memories, memory_status, query_memories, store_memory
 from foresight_mcp.server import (
     ContextBlockAction,
     CurationRunAction,
@@ -41,6 +41,131 @@ def test_store_memory_dedup():
     assert "Duplicate detected" in result2
 
 
+def test_store_memory_metadata_round_trip():
+    """store_memory persists custom metadata and get_memory returns it."""
+    db_path = _make_test_db()
+    content = "deploy metadata round trip"
+
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.BANK_ID", "test_bank"),
+    ):
+        result = store_memory(
+            content,
+            user_id="metadata_user",
+            metadata={"category": "engineering", "priority": "high"},
+        )
+
+        assert "Stored" in result
+
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT id, metadata FROM memories WHERE user_id = ? AND content = ?",
+            ("metadata_user", content),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert json.loads(row[1]) == {"category": "engineering", "priority": "high"}
+
+        retrieved = get_memory(row[0], user_id="metadata_user")
+
+    assert '"priority": "high"' in retrieved
+
+
+def test_query_memories_filters_nested_boolean_and_metadata_operators():
+    """query_memories applies nested AND/OR metadata filters with numeric/string/array operators."""
+    db_path = _make_test_db()
+    _insert_memory_row(
+        db_path,
+        memory_id="active-high",
+        content="deploy active service",
+        metadata={"status": "active", "priority": 7, "labels": ["deploy", "backend"]},
+        created_at="2026-06-02T03:00:00+00:00",
+    )
+    _insert_memory_row(
+        db_path,
+        memory_id="archived-high",
+        content="deploy archived service",
+        metadata={"status": "archived", "priority": 9, "labels": ["deploy"]},
+        created_at="2026-06-02T02:00:00+00:00",
+    )
+    _insert_memory_row(
+        db_path,
+        memory_id="active-low",
+        content="deploy active low priority",
+        metadata={"status": "active", "priority": 2, "labels": ["deploy"]},
+        created_at="2026-06-02T01:00:00+00:00",
+    )
+
+    filters = {
+        "AND": [
+            {"key": "status", "value": "active"},
+            {
+                "OR": [
+                    {
+                        "AND": [
+                            {"key": "priority", "filterType": "numeric", "operator": ">=", "value": 5},
+                            {"key": "labels", "filterType": "array_contains", "value": "deploy"},
+                        ]
+                    },
+                    {"key": "notes", "filterType": "string_contains", "value": "release"},
+                ]
+            },
+        ]
+    }
+
+    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)):
+        result = query_memories("deploy", user_id="filter_user", use_hybrid=False, filters=filters)
+
+    assert "active-high" in result
+    assert "archived-high" not in result
+    assert "active-low" not in result
+
+
+def test_list_memories_filters_support_negation():
+    """list_memories supports negated metadata predicates."""
+    db_path = _make_test_db()
+    _insert_memory_row(
+        db_path,
+        memory_id="active-memory",
+        content="active memory",
+        metadata={"status": "active"},
+    )
+    _insert_memory_row(
+        db_path,
+        memory_id="archived-memory",
+        content="archived memory",
+        metadata={"status": "archived"},
+    )
+
+    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)):
+        result = list_memories(
+            user_id="filter_user",
+            filters={"key": "status", "value": "archived", "negate": True},
+        )
+
+    assert "active-memory" in result
+    assert "archived-memory" not in result
+
+
+def test_query_memories_invalid_filters_return_clear_error():
+    """Invalid filter expressions fail clearly instead of silently broadening results."""
+    db_path = _make_test_db()
+    _insert_memory_row(db_path, memory_id="deploy-memory", content="deploy active service")
+
+    with patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)):
+        result = query_memories(
+            "deploy",
+            user_id="filter_user",
+            use_hybrid=False,
+            filters={"AND": {"key": "status", "value": "active"}},
+        )
+
+    assert result.startswith("Error: invalid filters:")
+    assert "AND must be a non-empty list" in result
+
+
 def test_status():
     result = memory_status()
     assert "healthy" in result.lower()
@@ -60,6 +185,7 @@ def _make_test_db():
         bank_id TEXT DEFAULT 'default', created_at TEXT NOT NULL,
         updated_at TEXT, tags TEXT DEFAULT '[]',
         emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
+        metadata TEXT DEFAULT '{}',
         vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
         synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
         importance REAL, activation_count INTEGER DEFAULT 0
@@ -80,6 +206,36 @@ def _mock_db_connection(db_path):
 def _decode_json_result(result: str) -> dict:
     """Decode a JSON tool envelope."""
     return json.loads(result)
+
+
+def _insert_memory_row(
+    db_path: str,
+    *,
+    memory_id: str,
+    content: str,
+    user_id: str = "filter_user",
+    metadata: dict | None = None,
+    created_at: str = "2026-06-02T00:00:00+00:00",
+) -> None:
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO memories (
+            id, content, tenant_id, scope, retention, category, user_id, bank_id,
+            created_at, updated_at, tags, emotional_context, metrics, metadata,
+            is_ghost, synthesized_from, importance, activation_count
+        ) VALUES (?, ?, 'default', 'session', 'short_term', 'fact', ?, 'test_bank',
+            ?, ?, '[]', '{}', '{}', ?, 0, '[]', 0.8, 1)""",
+        (
+            memory_id,
+            content,
+            user_id,
+            created_at,
+            created_at,
+            json.dumps(metadata or {}),
+        ),
+    )
+    conn.commit()
+    conn.close()
 
 
 @pytest.mark.asyncio

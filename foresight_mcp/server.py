@@ -103,6 +103,7 @@ class MemoryOptions(BaseModel):
     metrics: dict[str, Any] | None = Field(
         default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)"
     )
+    metadata: dict[str, Any] | None = Field(default=None, description="Custom metadata key-values")
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -111,6 +112,7 @@ class MemoryUpdateOptions(BaseModel):
     scope: str | None = Field(default=None, description="New memory scope")
     retention: str | None = Field(default=None, description="New retention policy")
     tags: list[str] | None = Field(default=None, description="New list of tags")
+    metadata: dict[str, Any] | None = Field(default=None, description="Metadata key-values to merge")
 
 
 class SearchOptions(BaseModel):
@@ -121,6 +123,7 @@ class SearchOptions(BaseModel):
     offset: int = Field(default=0, description="Result offset")
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
+    filters: dict[str, Any] | None = Field(default=None, description="Metadata filter expression")
 
 
 class ContextBlockAction(BaseModel):
@@ -270,7 +273,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _seed_default_tenant(conn) -> None:
@@ -402,6 +405,10 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
         "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
         "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
+    ],
+    6: [
+        "ALTER TABLE memories ADD COLUMN metadata TEXT DEFAULT '{}'",
+        "CREATE INDEX IF NOT EXISTS idx_memories_metadata ON memories(metadata)",
     ],
 }
 
@@ -844,6 +851,203 @@ def get_event_bus_with_stream():
     return get_event_bus(stream_publisher=_SERVER_STATE["stream_publisher"])
 
 
+_FILTER_TYPES = {"exact", "string_contains", "numeric", "array_contains"}
+_NUMERIC_OPERATORS = {"=", "==", "!=", ">", ">=", "<", "<="}
+_ROW_FILTER_KEYS = {
+    "id",
+    "content",
+    "tenant_id",
+    "scope",
+    "retention",
+    "category",
+    "user_id",
+    "bank_id",
+    "created_at",
+    "updated_at",
+    "tags",
+    "importance",
+    "activation_count",
+}
+
+
+def _json_object(raw: Any) -> dict[str, Any]:
+    """Decode a JSON object from a DB column, returning an empty object for blank values."""
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _json_array(raw: Any) -> list[Any]:
+    """Decode a JSON array from a DB column, returning an empty list for blank values."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return raw
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return decoded if isinstance(decoded, list) else []
+
+
+def _row_metadata(row: sqlite3.Row) -> dict[str, Any]:
+    if "metadata" not in row.keys():
+        return {}
+    return _json_object(row["metadata"])
+
+
+def _format_metadata(metadata: dict[str, Any]) -> str:
+    if not metadata:
+        return ""
+    return f" metadata={json.dumps(metadata, sort_keys=True)}"
+
+
+def _metadata_path_value(metadata: Mapping[str, Any], key: str) -> Any:
+    current: Any = metadata
+    for part in key.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _row_filter_value(row: sqlite3.Row, metadata: Mapping[str, Any], key: str) -> Any:
+    metadata_key = key.removeprefix("metadata.")
+    value = _metadata_path_value(metadata, metadata_key)
+    if value is not None:
+        return value
+
+    if key in _ROW_FILTER_KEYS and key in row.keys():
+        if key == "tags":
+            return _json_array(row[key])
+        return row[key]
+    return None
+
+
+def _validate_memory_filters(filters: Mapping[str, Any] | None) -> None:
+    if filters is None:
+        return
+    if not isinstance(filters, Mapping):
+        raise ValueError("filters must be an object")
+
+    group_keys = [key for key in ("AND", "OR") if key in filters]
+    if len(group_keys) > 1:
+        raise ValueError("filter expression cannot contain both AND and OR")
+
+    if group_keys:
+        group_key = group_keys[0]
+        unknown_keys = set(filters) - {group_key, "negate"}
+        if unknown_keys:
+            raise ValueError(f"unexpected filter keys: {sorted(unknown_keys)}")
+        if "negate" in filters and not isinstance(filters["negate"], bool):
+            raise ValueError("negate must be a boolean")
+        clauses = filters[group_key]
+        if not isinstance(clauses, list) or not clauses:
+            raise ValueError(f"{group_key} must be a non-empty list")
+        for clause in clauses:
+            _validate_memory_filters(clause)
+        return
+
+    unknown_keys = set(filters) - {"key", "value", "filterType", "filter_type", "operator", "comparison", "negate"}
+    if unknown_keys:
+        raise ValueError(f"unexpected filter keys: {sorted(unknown_keys)}")
+
+    key = filters.get("key")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("leaf filter must include a non-empty string key")
+    if "value" not in filters:
+        raise ValueError("leaf filter must include value")
+
+    filter_type = filters.get("filterType", filters.get("filter_type", "exact"))
+    if filter_type not in _FILTER_TYPES:
+        raise ValueError(f"filterType must be one of: {sorted(_FILTER_TYPES)}")
+
+    if "negate" in filters and not isinstance(filters["negate"], bool):
+        raise ValueError("negate must be a boolean")
+
+    if filter_type == "numeric":
+        operator = filters.get("operator", filters.get("comparison", "=="))
+        if operator not in _NUMERIC_OPERATORS:
+            raise ValueError(f"numeric operator must be one of: {sorted(_NUMERIC_OPERATORS)}")
+
+
+def _coerce_number(value: Any, *, field_name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must be numeric")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be numeric") from exc
+
+
+def _evaluate_leaf_filter(row: sqlite3.Row, metadata: Mapping[str, Any], filters: Mapping[str, Any]) -> bool:
+    candidate = _row_filter_value(row, metadata, filters["key"])
+    expected = filters["value"]
+    filter_type = filters.get("filterType", filters.get("filter_type", "exact"))
+
+    if filter_type == "string_contains":
+        if candidate is None:
+            return False
+        return str(expected).lower() in str(candidate).lower()
+
+    if filter_type == "array_contains":
+        if not isinstance(candidate, list):
+            return False
+        return expected in candidate
+
+    if filter_type == "numeric":
+        if candidate is None:
+            return False
+        try:
+            candidate_number = _coerce_number(candidate, field_name=filters["key"])
+        except ValueError:
+            return False
+        expected_number = _coerce_number(expected, field_name="value")
+        operator = filters.get("operator", filters.get("comparison", "=="))
+        if operator in ("=", "=="):
+            return candidate_number == expected_number
+        if operator == "!=":
+            return candidate_number != expected_number
+        if operator == ">":
+            return candidate_number > expected_number
+        if operator == ">=":
+            return candidate_number >= expected_number
+        if operator == "<":
+            return candidate_number < expected_number
+        return candidate_number <= expected_number
+
+    return candidate == expected
+
+
+def _memory_matches_filters(row: sqlite3.Row, filters: Mapping[str, Any] | None) -> bool:
+    if filters is None:
+        return True
+
+    metadata = _row_metadata(row)
+    if "AND" in filters:
+        matched = all(_memory_matches_filters(row, clause) for clause in filters["AND"])
+    elif "OR" in filters:
+        matched = any(_memory_matches_filters(row, clause) for clause in filters["OR"])
+    else:
+        matched = _evaluate_leaf_filter(row, metadata, filters)
+
+    return not matched if filters.get("negate") is True else matched
+
+
+def _apply_memory_filters(rows: list[sqlite3.Row], filters: Mapping[str, Any] | None) -> list[sqlite3.Row] | str:
+    try:
+        _validate_memory_filters(filters)
+        return [row for row in rows if _memory_matches_filters(row, filters)]
+    except ValueError as exc:
+        return f"Error: invalid filters: {exc}"
+
+
 def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str:
     """Helper to handle memory storage."""
     if not options.content:
@@ -894,7 +1098,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
         "content, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "created_at, updated_at, tags, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             memory_id,
             uid,
@@ -910,6 +1114,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             datetime.now(timezone.utc).isoformat(),
             datetime.now(timezone.utc).isoformat(),
             json.dumps(memory.tags),
+            json.dumps(opts.metadata or {}),
         ),
     )
     conn.commit()
@@ -963,6 +1168,11 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     if options.updates.tags:
         updates_list.append("tags = ?")
         values.append(json.dumps(options.updates.tags))
+    if options.updates.metadata:
+        metadata = _row_metadata(row)
+        metadata.update(options.updates.metadata)
+        updates_list.append("metadata = ?")
+        values.append(json.dumps(metadata))
 
     if not updates_list:
         conn.close()
@@ -1116,15 +1326,18 @@ def search_memories(
         event_bus.publish(memory_retrieved(memory_id=mid, query_context="", actor=uid))
 
         tags = json.loads(row["tags"])
+        metadata = _row_metadata(row)
         result = f"[{row['id']}] ({row['scope']}/{row['retention']})\n"
         result += f"Content: {row['content']}\n"
         result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
+        if metadata:
+            result += f"Metadata: {json.dumps(metadata, sort_keys=True)}\n"
         if row["is_ghost"]:
             result += "[GHOST NODE - Content archived]"
         return result
 
     # 2. Hybrid search if enabled and query provided
-    if options.use_hybrid and options.query:
+    if options.use_hybrid and options.query and not options.filters:
         try:
             retriever = get_hybrid_retriever()
             hybrid_result = retriever.search(
@@ -1145,23 +1358,43 @@ def search_memories(
     conn = get_db_connection()
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
-        )
-        params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
+        if options.filters:
+            query_sql = (
+                "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? "
+                "AND content LIKE ? ESCAPE '!' ORDER BY created_at DESC"
+            )
+            params = (uid, tenant_id, f"%{escaped}%")
+        else:
+            query_sql = (
+                "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
+            )
+            params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
     else:
-        query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        )
-        params = (uid, tenant_id, options.limit, options.offset)
+        if options.filters:
+            query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC"
+            params = (uid, tenant_id)
+        else:
+            query_sql = (
+                "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
+            )
+            params = (uid, tenant_id, options.limit, options.offset)
 
-    rows = conn.execute(query_sql, params).fetchall()
+    rows = list(conn.execute(query_sql, params).fetchall())
     conn.close()
+
+    if options.filters:
+        filtered_rows = _apply_memory_filters(rows, options.filters)
+        if isinstance(filtered_rows, str):
+            return filtered_rows
+        rows = filtered_rows[options.offset : options.offset + options.limit]
 
     if not rows:
         return "No memories found."
 
-    results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    results = [
+        f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}...{_format_metadata(_row_metadata(r))}"
+        for r in rows
+    ]
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
 
 
@@ -2775,6 +3008,7 @@ def store_memory(
     importance: float = 0.5,
     emotional_context: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="store") used by callers and tests."""
     options = MemoryAction(
@@ -2787,15 +3021,21 @@ def store_memory(
             importance=importance,
             emotional_context=emotional_context,
             metrics=metrics,
+            metadata=metadata,
         ),
     )
     return manage_memories(options, user_id=user_id)
 
 
 @mcp.tool(output_schema=None)
-def list_memories(limit: int = 10, offset: int = 0, user_id: str | None = None) -> str:
+def list_memories(
+    limit: int = 10,
+    offset: int = 0,
+    user_id: str | None = None,
+    filters: dict[str, Any] | None = None,
+) -> str:
     """Legacy alias for search_memories(query_type="list")."""
-    options = SearchOptions(query_type="list", limit=limit, offset=offset)
+    options = SearchOptions(query_type="list", limit=limit, offset=offset, filters=filters)
     return search_memories(options, user_id=user_id)
 
 
@@ -2807,6 +3047,7 @@ def query_memories(
     use_hybrid: bool = True,
     min_importance: float = 0.1,
     offset: int = 0,
+    filters: dict[str, Any] | None = None,
 ) -> str:
     """Legacy alias for search_memories(query_type="keyword")."""
     options = SearchOptions(
@@ -2816,6 +3057,7 @@ def query_memories(
         use_hybrid=use_hybrid,
         min_importance=min_importance,
         offset=offset,
+        filters=filters,
     )
     return search_memories(options, user_id=user_id)
 
@@ -2836,9 +3078,17 @@ def update_memory(
     scope: str | None = None,
     retention: str | None = None,
     tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="update")."""
-    updates = MemoryUpdateOptions(content=content, category=category, scope=scope, retention=retention, tags=tags)
+    updates = MemoryUpdateOptions(
+        content=content,
+        category=category,
+        scope=scope,
+        retention=retention,
+        tags=tags,
+        metadata=metadata,
+    )
     options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
     return manage_memories(options, user_id=user_id)
 
