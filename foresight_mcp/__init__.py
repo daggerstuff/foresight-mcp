@@ -140,6 +140,7 @@ from .server import (
     query_memories_temporal as query_memories_temporal,
     search_memories as search_memories,
     store_memory as store_memory,
+    synthesize_profile as synthesize_profile,
     switch_tenant as switch_tenant,
     update_memory as update_memory,
 )
@@ -407,6 +408,7 @@ __all__ = [
     "run_temporal_migrations",
     "search_memories",
     "store_memory",
+    "synthesize_profile",
     "switch_tenant",
     "unregister_hook",
     "update_context_block",

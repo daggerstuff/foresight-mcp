@@ -87,6 +87,11 @@ from .temporal_service import get_temporal_service
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 from .websocket.subscriptions import SubscriptionManager
+from .subconscious import (
+    CORE_DIRECTIVES,
+    DEFAULT_MEMORY_BLOCKS,
+    PROJECT_CONTEXT,
+)
 
 
 # Tool argument grouping models
@@ -2428,6 +2433,170 @@ def _score_memory_relevance(
     decay = 0.5 ** (age_hours / half_life_hours)
 
     return overlap_score + importance * 0.5 + decay * 0.5
+
+
+PROFILE_STATIC_BLOCKS = (USER_PREFERENCES, CORE_DIRECTIVES)
+PROFILE_DYNAMIC_BLOCKS = (SESSION_PATTERNS, PENDING_ITEMS, PROJECT_CONTEXT)
+PROFILE_STATIC_SCOPES = ("trait", "fact")
+PROFILE_STATIC_RETENTIONS = ("long_term", "permanent")
+PROFILE_DYNAMIC_SCOPES = ("session", "arc")
+PROFILE_STATIC_LIMIT = 20
+PROFILE_DYNAMIC_LIMIT = 20
+
+
+def _normalize_profile_entry(content: str) -> str:
+    """Normalize one persisted fact into an injectable profile string."""
+    line = re.sub(r"\s+", " ", content.strip())
+    line = re.sub(r"^[-*]\s*", "", line)
+    line = re.sub(r"^\[[^\]]+\]\s*", "", line)
+    line = re.sub(r"\s+\(session:\s*[^)]*\)\s*$", "", line)
+    return line.strip()
+
+
+def _profile_entries_from_block(content: str) -> list[str]:
+    """Split a context block into concise profile entries."""
+    entries = []
+    for line in content.splitlines():
+        entry = _normalize_profile_entry(line)
+        if entry:
+            entries.append(entry)
+    return entries
+
+
+def _is_empty_profile_block(label: str, content: str) -> bool:
+    """Ignore empty/default templates so unknown users return empty profiles."""
+    stripped = content.strip()
+    if not stripped or stripped.startswith("(No"):
+        return True
+    default_content = DEFAULT_MEMORY_BLOCKS.get(label)
+    return default_content is not None and stripped == default_content.strip()
+
+
+def _dedupe_profile_entries(entries: list[str]) -> list[str]:
+    """Deduplicate exact profile facts while preserving first-seen order."""
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for entry in entries:
+        normalized = re.sub(r"\s+", " ", entry).strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(entry)
+    return deduped
+
+
+def _load_profile_context_entries(uid: str, tenant_id: str, labels: tuple[str, ...]) -> list[str]:
+    """Read persisted context blocks directly so synthesized profiles are fresh."""
+    placeholders = ", ".join("?" for _ in labels)
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT label, content FROM context_blocks
+            WHERE tenant_id = ? AND user_id = ? AND label IN ({placeholders})
+            """,
+            (tenant_id, uid, *labels),
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "context_blocks" in str(exc).lower():
+            return []
+        raise
+    finally:
+        conn.close()
+
+    by_label = {row["label"]: row["content"] for row in rows}
+    entries: list[str] = []
+    for label in labels:
+        content = by_label.get(label)
+        if content is None or _is_empty_profile_block(label, content):
+            continue
+        entries.extend(_profile_entries_from_block(content))
+    return entries
+
+
+def _load_profile_memory_entries(
+    uid: str,
+    tenant_id: str,
+    *,
+    scopes: tuple[str, ...],
+    retentions: tuple[str, ...] | None = None,
+    limit: int,
+    newest_first: bool,
+) -> list[str]:
+    """Read current memory rows for profile synthesis."""
+    scope_placeholders = ", ".join("?" for _ in scopes)
+    where = [
+        "user_id = ?",
+        "tenant_id = ?",
+        "is_ghost = 0",
+        f"scope IN ({scope_placeholders})",
+    ]
+    params: list[Any] = [uid, tenant_id, *scopes]
+
+    if retentions is not None:
+        retention_placeholders = ", ".join("?" for _ in retentions)
+        where.append(f"retention IN ({retention_placeholders})")
+        params.extend(retentions)
+
+    order = "DESC" if newest_first else "ASC"
+    params.append(limit)
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT content FROM memories
+            WHERE {' AND '.join(where)}
+            ORDER BY created_at {order}, id ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    entries: list[str] = []
+    for row in rows:
+        entry = _normalize_profile_entry(row["content"])
+        if entry:
+            entries.append(entry)
+    return entries
+
+
+@mcp.tool(output_schema=None)
+def synthesize_profile(user_id: str | None = None, tenant_id: str | None = None) -> str:
+    """Compact a user's persisted Foresight state into static and dynamic profile facts."""
+    uid = user_id or USER_ID
+    target_tenant_id = (tenant_id or get_current_tenant_id()).strip() or DEFAULT_TENANT_ID
+
+    static_entries = _load_profile_context_entries(uid, target_tenant_id, PROFILE_STATIC_BLOCKS)
+    static_entries.extend(
+        _load_profile_memory_entries(
+            uid,
+            target_tenant_id,
+            scopes=PROFILE_STATIC_SCOPES,
+            retentions=PROFILE_STATIC_RETENTIONS,
+            limit=PROFILE_STATIC_LIMIT,
+            newest_first=False,
+        )
+    )
+
+    dynamic_entries = _load_profile_memory_entries(
+        uid,
+        target_tenant_id,
+        scopes=PROFILE_DYNAMIC_SCOPES,
+        limit=PROFILE_DYNAMIC_LIMIT,
+        newest_first=True,
+    )
+    dynamic_entries.extend(_load_profile_context_entries(uid, target_tenant_id, PROFILE_DYNAMIC_BLOCKS))
+
+    return json.dumps(
+        {
+            "static": _dedupe_profile_entries(static_entries),
+            "dynamic": _dedupe_profile_entries(dynamic_entries),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool(output_schema=None)

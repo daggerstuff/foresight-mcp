@@ -22,6 +22,7 @@ from foresight_mcp.server import (
     manage_context_blocks,
     manage_curation_runs,
     mcp,
+    synthesize_profile,
 )
 
 
@@ -80,6 +81,48 @@ def _mock_db_connection(db_path):
 def _decode_json_result(result: str) -> dict:
     """Decode a JSON tool envelope."""
     return json.loads(result)
+
+
+def _insert_profile_memory(
+    db_path: str,
+    *,
+    memory_id: str,
+    content: str,
+    user_id: str,
+    tenant_id: str = "default",
+    scope: str = "session",
+    retention: str = "short_term",
+    created_at: str | None = None,
+    is_ghost: int = 0,
+    importance: float = 1.0,
+) -> None:
+    """Insert a memory row for synthesize_profile tests."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO memories
+            (id, content, tenant_id, scope, retention, category, user_id, bank_id,
+             created_at, updated_at, tags, emotional_context, metrics, is_ghost,
+             synthesized_from, importance)
+            VALUES (?, ?, ?, ?, ?, 'fact', ?, 'default', ?, ?, '[]', '{}', '{}', ?, '[]', ?)
+            """,
+            (
+                memory_id,
+                content,
+                tenant_id,
+                scope,
+                retention,
+                user_id,
+                created_at or datetime.now(timezone.utc).isoformat(),
+                created_at or datetime.now(timezone.utc).isoformat(),
+                is_ghost,
+                importance,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 @pytest.mark.asyncio
@@ -552,6 +595,161 @@ def test_manage_context_blocks_are_tenant_isolated():
                 manage_context_blocks(ContextBlockAction(action="get", label="guidance"), user_id=user_id)
             )
             assert fetched_a["content"] == "Tenant A guidance"
+
+
+def test_synthesize_profile_partitions_context_blocks_and_memories():
+    """Profile synthesis separates stable facts from recent working context."""
+    user_id = f"profile_user_{datetime.now(timezone.utc).timestamp()}"
+    db_path = _make_test_db()
+    older = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    newer = datetime.now(timezone.utc).isoformat()
+
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"),
+    ):
+        manage_context_blocks(
+            ContextBlockAction(action="update", label="user_preferences", content="Prefers concise PR summaries"),
+            user_id=user_id,
+        )
+        manage_context_blocks(
+            ContextBlockAction(action="update", label="project_context", content="Working on auth migration"),
+            user_id=user_id,
+        )
+        manage_context_blocks(
+            ContextBlockAction(action="update", label="session_patterns", content="- [2026-06-02 10:30] Debugging rate limits"),
+            user_id=user_id,
+        )
+
+        _insert_profile_memory(
+            db_path,
+            memory_id="static-fact",
+            content="Senior engineer",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="fact",
+            retention="long_term",
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="static-trait",
+            content="Uses Vim",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="trait",
+            retention="permanent",
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="dynamic-old",
+            content="Debugging rate limits",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="arc",
+            retention="short_term",
+            created_at=older,
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="dynamic-new",
+            content="Investigating latest deploy",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="session",
+            retention="ephemeral",
+            created_at=newer,
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="excluded-short-fact",
+            content="Short-lived fact",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="fact",
+            retention="short_term",
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="excluded-ghost",
+            content="Archived context",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="session",
+            retention="short_term",
+            is_ghost=1,
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="excluded-tenant",
+            content="Other tenant context",
+            user_id=user_id,
+            tenant_id="tenant-b",
+            scope="session",
+            retention="short_term",
+        )
+
+        result = json.loads(synthesize_profile(user_id=user_id, tenant_id="tenant-a"))
+
+    assert result["static"] == [
+        "Prefers concise PR summaries",
+        "Senior engineer",
+        "Uses Vim",
+    ]
+    assert result["dynamic"] == [
+        "Investigating latest deploy",
+        "Debugging rate limits",
+        "Working on auth migration",
+    ]
+
+
+def test_synthesize_profile_empty_user_returns_empty_arrays():
+    """Default context block templates do not create a profile for unknown users."""
+    db_path = _make_test_db()
+
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"),
+    ):
+        result = json.loads(synthesize_profile(user_id="empty-profile-user", tenant_id="tenant-a"))
+
+    assert result == {"static": [], "dynamic": []}
+
+
+def test_synthesize_profile_refreshes_between_calls():
+    """Profile synthesis queries persisted state each time instead of caching stale output."""
+    user_id = f"profile_refresh_user_{datetime.now(timezone.utc).timestamp()}"
+    db_path = _make_test_db()
+
+    with (
+        _patched_context_block_storage(db_path),
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.get_current_tenant_id", return_value="tenant-a"),
+    ):
+        before = json.loads(synthesize_profile(user_id=user_id, tenant_id="tenant-a"))
+
+        manage_context_blocks(
+            ContextBlockAction(action="update", label="user_preferences", content="Uses Vim"),
+            user_id=user_id,
+        )
+        _insert_profile_memory(
+            db_path,
+            memory_id="dynamic-refresh",
+            content="Working on memory profile synthesis",
+            user_id=user_id,
+            tenant_id="tenant-a",
+            scope="arc",
+            retention="short_term",
+        )
+
+        after = json.loads(synthesize_profile(user_id=user_id, tenant_id="tenant-a"))
+
+    assert before == {"static": [], "dynamic": []}
+    assert after == {
+        "static": ["Uses Vim"],
+        "dynamic": ["Working on memory profile synthesis"],
+    }
 
 
 def _make_curation_test_db():
