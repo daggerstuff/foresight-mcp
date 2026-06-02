@@ -354,6 +354,23 @@ class TestGraphSearch:
         ids = [r.memory_id for r in result.results]
         assert len(ids) > 0
 
+    def test_excludes_non_latest_linked_memories(self, test_db):
+        """Graph search should not return superseded memories when temporal fields exist."""
+        conn = sqlite3.connect(test_db)
+        conn.execute("ALTER TABLE memories ADD COLUMN is_latest INTEGER DEFAULT 1")
+        conn.execute("UPDATE memories SET is_latest = 0 WHERE id = 'mem_1'")
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_keyword=False, use_temporal=False, use_semantic=False
+        )
+
+        ids = [r.memory_id for r in result.results]
+        assert "mem_1" not in ids
+        assert "mem_2" in ids
+
     def test_no_graph_results_for_unknown_entity(self, test_db):
         retriever = HybridRetriever(test_db)
         result = retriever.search(

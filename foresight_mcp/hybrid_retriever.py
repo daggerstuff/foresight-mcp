@@ -545,12 +545,14 @@ class HybridRetriever:
         # Find memories linked to these entities
         # Filter by tenant via memories table join
         entity_placeholders = ",".join("?" * len(entity_ids))
+        latest_filter = _latest_filter_sql(conn)
         cursor = conn.execute(
             f"""
             SELECT mel.memory_id, COUNT(DISTINCT mel.entity_id) as entity_hits
             FROM memory_entity_links mel
             INNER JOIN memories m ON m.id = mel.memory_id
             AND m.tenant_id = ? AND m.user_id = ?
+            {latest_filter.replace("is_latest", "m.is_latest")}
             WHERE mel.entity_id IN ({entity_placeholders})
             AND mel.user_id = ?
             GROUP BY mel.memory_id
@@ -681,6 +683,7 @@ class HybridRetriever:
             return {}
 
         placeholders = ",".join("?" * len(memory_ids))
+        latest_filter = _latest_filter_sql(conn)
         cursor = conn.execute(
             f"""
             SELECT id, content, category, importance,
@@ -688,6 +691,7 @@ class HybridRetriever:
             FROM memories
             WHERE id IN ({placeholders})
             AND user_id = ? AND tenant_id = ?
+            {latest_filter}
         """,
             memory_ids + [user_id, tenant_id],
         )

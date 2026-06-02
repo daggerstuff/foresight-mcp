@@ -1095,8 +1095,16 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     return f"Archived memory {memory_id} to ghost node. Gist: {ghost.gist}"
 
 
-def _latest_filter(include_history: bool) -> str:
-    return "" if include_history else " AND is_latest = 1"
+def _latest_filter(conn: sqlite3.Connection, include_history: bool) -> str:
+    if include_history:
+        return ""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    return " AND is_latest = 1" if "is_latest" in columns else ""
+
+
+def _has_temporal_columns(conn: sqlite3.Connection) -> bool:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    return {"is_latest", "valid_from", "valid_until"}.issubset(columns)
 
 
 def _format_memory_row(row: sqlite3.Row) -> str:
@@ -1170,7 +1178,7 @@ def search_memories(
         conn = get_db_connection()
         row = conn.execute(
             "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?"
-            + _latest_filter(options.include_history),
+            + _latest_filter(conn, options.include_history),
             (mid, uid, tenant_id),
         ).fetchone()
         conn.close()
@@ -1207,18 +1215,19 @@ def search_memories(
 
     # 3. Fallback to basic list/keyword search
     conn = get_db_connection()
+    latest_filter = _latest_filter(conn, options.include_history)
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         query_sql = (
             "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? "
-            f"{_latest_filter(options.include_history)} "
+            f"{latest_filter} "
             "AND content LIKE ? ESCAPE '!' ORDER BY valid_from ASC LIMIT ? OFFSET ?"
         )
         params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
     else:
         query_sql = (
             "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? "
-            f"{_latest_filter(options.include_history)} "
+            f"{latest_filter} "
             "ORDER BY valid_from ASC LIMIT ? OFFSET ?"
         )
         params = (uid, tenant_id, options.limit, options.offset)
@@ -1505,14 +1514,24 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                 continue
 
             mid = hashlib.sha256(f"{content}{now}".encode()).hexdigest()[:16]
-            conn.execute(
-                "INSERT OR IGNORE INTO memories "
-                "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
-                "created_at, updated_at, tags, emotional_context, metrics, "
-                "is_ghost, synthesized_from) "
-                "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
-                (mid, content, category, uid, BANK_ID, tenant_id, now, now),
-            )
+            if _has_temporal_columns(conn):
+                conn.execute(
+                    "INSERT OR IGNORE INTO memories "
+                    "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
+                    "created_at, updated_at, tags, emotional_context, metrics, "
+                    "is_ghost, synthesized_from, is_latest, valid_from, valid_until) "
+                    "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, ?, NULL)",
+                    (mid, content, category, uid, BANK_ID, tenant_id, now, now, now),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO memories "
+                    "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
+                    "created_at, updated_at, tags, emotional_context, metrics, "
+                    "is_ghost, synthesized_from) "
+                    "VALUES (?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]')",
+                    (mid, content, category, uid, BANK_ID, tenant_id, now, now),
+                )
             conn.commit()
             conn.close()
             stored += 1
@@ -1845,11 +1864,15 @@ def _restore_in_place_curation(
 def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 100) -> list[sqlite3.Row]:
     """Load source-bank memories for curation."""
     conn = get_db_connection()
+    latest_filter = _latest_filter(conn, include_history=False)
     rows = conn.execute(
         """SELECT id, content, category, importance, strength_trend,
         activation_count, tags, emotional_context, created_at, scope, retention
         FROM memories
         WHERE user_id = ? AND tenant_id = ? AND bank_id = ? AND is_ghost = 0
+        """
+        + latest_filter
+        + """
         ORDER BY importance DESC, created_at DESC
         LIMIT ?""",
         (uid, tenant_id, bank_id, limit),
@@ -2021,26 +2044,37 @@ def _insert_curation_entries(
             if cancel_event and cancel_event.is_set():
                 raise CurationCanceled("Curation canceled before staged output committed")
             memory_id = hashlib.sha256(f"{bank_id}:{entry['content']}:{uuid.uuid4().hex}".encode()).hexdigest()[:16]
-            conn.execute(
-                "INSERT INTO memories "
-                "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
-                "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)",
-                (
-                    memory_id,
-                    entry["content"],
-                    entry.get("scope", "arc"),
-                    entry.get("retention", "long_term"),
-                    entry.get("category", "curation"),
-                    uid,
-                    bank_id,
-                    tenant_id,
-                    now,
-                    now,
-                    json.dumps(entry.get("tags", [])),
-                    entry.get("importance", 0.75),
-                ),
+            params = (
+                memory_id,
+                entry["content"],
+                entry.get("scope", "arc"),
+                entry.get("retention", "long_term"),
+                entry.get("category", "curation"),
+                uid,
+                bank_id,
+                tenant_id,
+                now,
+                now,
+                json.dumps(entry.get("tags", [])),
+                entry.get("importance", 0.75),
             )
+            if _has_temporal_columns(conn):
+                conn.execute(
+                    "INSERT INTO memories "
+                    "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
+                    "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance, "
+                    "is_latest, valid_from, valid_until) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?, 1, ?, NULL)",
+                    (*params, now),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO memories "
+                    "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
+                    "created_at, updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, importance) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', 0, '[]', ?)",
+                    params,
+                )
             created_ids.append(memory_id)
         if cancel_event and cancel_event.is_set():
             raise CurationCanceled("Curation canceled before staged output committed")
@@ -2529,6 +2563,7 @@ def inject_context(
 
     conn = get_db_connection()
     candidates: list[sqlite3.Row] = []
+    latest_filter = _latest_filter(conn, include_history=False)
 
     if terms:
         conditions = []
@@ -2541,7 +2576,7 @@ def inject_context(
         where_clause = " OR ".join(conditions)
         query = (
             f"SELECT * FROM memories "
-            f"WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+            f"WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 {latest_filter} "
             f"AND ({where_clause}) "
             f"ORDER BY importance DESC, created_at DESC LIMIT 50"
         )
@@ -2552,7 +2587,7 @@ def inject_context(
 
     fallback = conn.execute(
         "SELECT * FROM memories "
-        "WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+        f"WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 {latest_filter} "
         "AND importance >= ? "
         "ORDER BY importance DESC, created_at DESC LIMIT 20",
         (uid, get_current_tenant_id(), min_relevance),
@@ -3045,8 +3080,11 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
     """Helper for analyze synthesize action."""
     synthesizer = get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
     conn = get_db_connection()
+    latest_filter = _latest_filter(conn, include_history=False)
     rows = conn.execute(
-        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
+        "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 "
+        + latest_filter
+        + " ORDER BY created_at DESC LIMIT ?",
         (uid, tenant_id, options.limit),
     ).fetchall()
     conn.close()

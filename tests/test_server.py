@@ -93,8 +93,10 @@ def test_update_memory_creates_temporal_latest_chain():
         patch("foresight_mcp.server.DB_PATH", db_path),
         patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
         patch("foresight_mcp.server.get_hybrid_retriever") as retriever,
+        patch("foresight_mcp.server.get_context_block_agent") as block_agent,
     ):
         retriever.return_value.invalidate_tfidf_cache.return_value = None
+        block_agent.return_value.state.get_block.return_value = None
         server_module.init_db()
         stored = store_memory("I live in NYC", user_id=user_id, category="preference")
         memory_id = stored.split("Stored memory ", 1)[1].split(".", 1)[0]
@@ -103,11 +105,14 @@ def test_update_memory_creates_temporal_latest_chain():
 
         latest = query_memories("NYC", user_id=user_id, use_hybrid=False)
         history = list_memories(user_id=user_id, include_history=True)
+        context = inject_context("The user lives in NYC", user_id=user_id)
 
     assert result.startswith(f"Updated memory {memory_id} (latest: ")
     assert latest == "No memories found."
     assert "I live in NYC" in history
     assert "I live in SF" in history
+    assert "I live in NYC" not in context
+    assert "I live in SF" in context
 
     conn = sqlite3.connect(db_path)
     rows = conn.execute(
