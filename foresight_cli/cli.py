@@ -154,9 +154,9 @@ def callback(
 @app.command("store")
 def cmd_store(
     content: str = typer.Argument(..., help="Memory content to store"),
-    scope: str = typer.Option("session", "--scope", "-s", help="Memory scope"),
+    scope: str | None = typer.Option(None, "--scope", "-s", help="Memory scope"),
     retention: str = typer.Option("short_term", "--retention", "-r", help="Retention"),
-    category: str = typer.Option("fact", "--category", "-c", help="Category label"),
+    category: str | None = typer.Option(None, "--category", "-c", help="Category label"),
 ):
     """Store a new memory."""
     user_id = _ctx_user_id()

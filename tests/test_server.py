@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import sqlite3
 import tempfile
 from collections.abc import Iterator
@@ -16,11 +17,14 @@ from foresight_mcp import memory_status, store_memory
 from foresight_mcp.server import (
     ContextBlockAction,
     CurationRunAction,
+    MemoryAction,
+    MemoryOptions,
     _extract_terms,
     _score_memory_relevance,
     inject_context,
     manage_context_blocks,
     manage_curation_runs,
+    manage_memories,
     mcp,
 )
 
@@ -80,6 +84,121 @@ def _mock_db_connection(db_path):
 def _decode_json_result(result: str) -> dict:
     """Decode a JSON tool envelope."""
     return json.loads(result)
+
+
+class _FakeGateResult:
+    decision = "auto"
+    reason = "test gate"
+    suggested_tags: list[str] = []
+
+
+class _FakeBus:
+    def publish(self, *_args, **_kwargs):
+        return None
+
+
+class _FakeRetriever:
+    def invalidate_tfidf_cache(self, *_args, **_kwargs):
+        return None
+
+
+@contextmanager
+def _patched_memory_store(db_path: str) -> Iterator[None]:
+    def _run_gate(coro):
+        if hasattr(coro, "close"):
+            coro.close()
+        return _FakeGateResult()
+
+    with (
+        patch("foresight_mcp.server.get_db_connection", lambda: _mock_db_connection(db_path)),
+        patch("foresight_mcp.server.get_event_bus_with_stream", return_value=_FakeBus()),
+        patch("foresight_mcp.server.get_hybrid_retriever", return_value=_FakeRetriever()),
+        patch("foresight_mcp.server._run_async", side_effect=_run_gate),
+    ):
+        yield
+
+
+def _stored_memory_row(db_path: str, content: str) -> sqlite3.Row:
+    conn = _mock_db_connection(db_path)
+    row = conn.execute(
+        "SELECT category, scope, tags FROM memories WHERE content = ? ORDER BY created_at DESC LIMIT 1",
+        (content,),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    return row
+
+
+def test_store_memory_auto_classifies_preference_when_scope_omitted(caplog):
+    db_path = _make_test_db()
+    content = "User prefers concise implementation notes."
+
+    caplog.set_level(logging.INFO, logger="foresight_server")
+    with _patched_memory_store(db_path):
+        result = store_memory(content, user_id="classification_user")
+
+    row = _stored_memory_row(db_path, content)
+    assert "Stored memory" in result
+    assert row["scope"] == "trait"
+    assert row["category"] == "preference"
+    assert "Memory auto-classification" in caplog.text
+    assert "confidence=0.90" in caplog.text
+
+
+def test_store_memory_respects_explicit_scope_override():
+    db_path = _make_test_db()
+    content = "User prefers verbose logs during debugging."
+
+    with _patched_memory_store(db_path):
+        result = store_memory(content, user_id="classification_user", scope="session")
+
+    row = _stored_memory_row(db_path, content)
+    assert "Stored memory" in result
+    assert row["scope"] == "session"
+    assert row["category"] == "preference"
+
+
+def test_store_memory_falls_back_to_fact_when_classification_confidence_is_low():
+    db_path = _make_test_db()
+    content = "maybe notes around stuff"
+
+    with _patched_memory_store(db_path):
+        result = store_memory(content, user_id="classification_user")
+
+    row = _stored_memory_row(db_path, content)
+    assert "Stored memory" in result
+    assert row["scope"] == "fact"
+    assert row["category"] == "fact"
+
+
+def test_manage_memories_auto_classification_accuracy_on_known_set():
+    cases = [
+        ("User likes using pnpm for frontend tasks.", "trait", "preference"),
+        ("The project uses Astro 6 and React 19.", "fact", "fact"),
+        ("User is currently triaging PIX-3731.", "session", "episode"),
+        ("User just initialized the foresight submodule.", "session", "episode"),
+        ("User prefers test-first implementation.", "trait", "preference"),
+        ("The Foresight database is SQLite-backed.", "fact", "fact"),
+        ("User is working on memory classification.", "session", "episode"),
+        ("User is a fan of concise status updates.", "trait", "preference"),
+        ("The default dev server port is 5173.", "fact", "fact"),
+        ("User currently has the setup script running.", "session", "episode"),
+    ]
+    db_path = _make_test_db()
+    correct = 0
+
+    with _patched_memory_store(db_path):
+        for index, (content, expected_scope, expected_category) in enumerate(cases):
+            unique_content = f"{content} case {index}"
+            result = manage_memories(
+                MemoryAction(action="store", content=unique_content, options=MemoryOptions()),
+                user_id="classification_user",
+            )
+            assert "Stored memory" in result
+            row = _stored_memory_row(db_path, unique_content)
+            correct += row["scope"] == expected_scope and row["category"] == expected_category
+
+    assert correct / len(cases) >= 0.8
 
 
 @pytest.mark.asyncio

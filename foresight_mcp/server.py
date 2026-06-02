@@ -91,8 +91,8 @@ from .websocket.subscriptions import SubscriptionManager
 
 # Tool argument grouping models
 class MemoryOptions(BaseModel):
-    category: str = Field(default="fact", description="Category label")
-    scope: str = Field(default="session", description="Memory scope: session, arc, trait, or fact")
+    category: str | None = Field(default=None, description="Category label")
+    scope: str | None = Field(default=None, description="Memory scope: session, arc, trait, or fact")
     retention: str = Field(
         default="short_term", description="Retention policy: ephemeral, short_term, long_term, or permanent"
     )
@@ -218,6 +218,75 @@ class AnalysisAction(BaseModel):
     period: str = Field(default="weekly", description="Period for reflection")
     limit: int = Field(default=50, description="Limit for synthesis")
     enhanced: bool = Field(default=False, description="Whether to use enhanced synthesis")
+
+
+MemoryClassificationType = Literal["fact", "preference", "episode"]
+
+
+@dataclass(frozen=True)
+class MemoryClassification:
+    memory_type: MemoryClassificationType
+    scope: str
+    category: str
+    confidence: float
+
+
+_CLASSIFICATION_CONFIDENCE_THRESHOLD = 0.6
+_PREFERENCE_PATTERNS = (
+    r"\buser\s+(?:strongly\s+)?prefers?\b",
+    r"\buser\s+(?:really\s+)?(?:likes?|loves?|enjoys?|favors?)\b",
+    r"\buser\s+is\s+a\s+fan\s+of\b",
+    r"\buser\s+would\s+rather\b",
+    r"\buser\s+(?:dislikes?|does\s+not\s+like|doesn't\s+like)\b",
+    r"\b(?:i|we)\s+(?:strongly\s+)?prefer\b",
+)
+_EPISODE_PATTERNS = (
+    r"\buser\s+is\s+(?:currently\s+)?working\s+on\b",
+    r"\buser\s+is\s+currently\b",
+    r"\buser\s+currently\b",
+    r"\buser\s+just\b",
+    r"\buser\s+(?:started|initialized|ran|debugged|triaged|triaging)\b",
+    r"\b(?:currently|right now|today|this session|in this conversation)\b",
+)
+_FACT_PATTERNS = (
+    r"\b(?:the\s+)?project\s+(?:uses|is|has|runs|requires)\b",
+    r"\b(?:the\s+)?(?:default|current|configured)\s+[^.]+\s+(?:is|are)\b",
+    r"\b(?:database|server|service|repo|repository|workspace)\s+(?:is|uses|has|runs|requires)\b",
+    r"\b[A-Z][A-Za-z0-9_-]+\s+(?:is|uses|has|runs|requires)\b",
+)
+
+
+def _classify_memory(content: str) -> MemoryClassification:
+    """Classify memory lifecycle from content using deterministic ingestion heuristics."""
+    normalized = re.sub(r"\s+", " ", content.strip().lower())
+
+    if any(re.search(pattern, normalized) for pattern in _PREFERENCE_PATTERNS):
+        return MemoryClassification("preference", "trait", "preference", 0.9)
+
+    if any(re.search(pattern, normalized) for pattern in _EPISODE_PATTERNS):
+        return MemoryClassification("episode", "session", "episode", 0.85)
+
+    if any(re.search(pattern, normalized) for pattern in _FACT_PATTERNS):
+        return MemoryClassification("fact", "fact", "fact", 0.8)
+
+    return MemoryClassification("fact", "fact", "fact", 0.35)
+
+
+def _resolve_memory_classification(content: str, options: MemoryOptions) -> tuple[str, str, MemoryClassification]:
+    classification = _classify_memory(content)
+    if classification.confidence < _CLASSIFICATION_CONFIDENCE_THRESHOLD:
+        classification = MemoryClassification("fact", "fact", "fact", classification.confidence)
+
+    scope = options.scope if options.scope is not None else classification.scope
+    category = options.category if options.category is not None else classification.category
+    logger.info(
+        "Memory auto-classification: type=%s scope=%s category=%s confidence=%.2f",
+        classification.memory_type,
+        scope,
+        category,
+        classification.confidence,
+    )
+    return scope, category, classification
 
 
 def _run_async(coro):
@@ -850,6 +919,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         return "Error: Content is required for 'store' action"
 
     opts = options.options or MemoryOptions()
+    resolved_scope, resolved_category, _classification = _resolve_memory_classification(options.content, opts)
     memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
 
     # Deduplication
@@ -876,7 +946,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
 
     memory = MemoryObject.create(
         content=options.content,
-        scope=cast(MemoryScope, opts.scope),
+        scope=cast(MemoryScope, resolved_scope),
         retention=cast(RetentionPolicy, opts.retention),
         emotional_context=emo_ctx,
         metrics=met,
@@ -887,8 +957,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     ms = get_memory_system()
     gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, uid))
     memory.tags = gate_result.suggested_tags
-    if opts.category and opts.category not in memory.tags:
-        memory.tags.append(opts.category)
+    if resolved_category not in memory.tags:
+        memory.tags.append(resolved_category)
 
     # Store
     conn.execute(
@@ -899,7 +969,7 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             memory_id,
             uid,
             tenant_id,
-            opts.category,
+            resolved_category,
             memory.scope,
             memory.retention,
             options.content.strip(),
@@ -2769,25 +2839,29 @@ def memory_status(
 def store_memory(
     content: str,
     user_id: str | None = None,
-    category: str = "fact",
-    scope: str = "session",
+    category: str | None = None,
+    scope: str | None = None,
     retention: str = "short_term",
     importance: float = 0.5,
     emotional_context: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="store") used by callers and tests."""
+    option_values: dict[str, Any] = {
+        "retention": retention,
+        "importance": importance,
+        "emotional_context": emotional_context,
+        "metrics": metrics,
+    }
+    if category is not None:
+        option_values["category"] = category
+    if scope is not None:
+        option_values["scope"] = scope
+
     options = MemoryAction(
         action="store",
         content=content,
-        options=MemoryOptions(
-            category=category,
-            scope=scope,
-            retention=retention,
-            importance=importance,
-            emotional_context=emotional_context,
-            metrics=metrics,
-        ),
+        options=MemoryOptions(**option_values),
     )
     return manage_memories(options, user_id=user_id)
 
