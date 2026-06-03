@@ -73,6 +73,7 @@ from .memory_types import (
     MemoryScope,
     RetentionPolicy,
 )
+from .profile_synthesizer import ProfileConfig, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
 from .stream_producer import (
@@ -2855,6 +2856,53 @@ def archive_memory(memory_id: str, user_id: str | None = None) -> str:
     """Legacy alias for manage_memories(action="archive")."""
     options = MemoryAction(action="archive", memory_id=memory_id)
     return manage_memories(options, user_id=user_id)
+
+
+# =============================================================================
+# Profile Synthesis Tool
+# =============================================================================
+
+
+@mcp.tool(output_schema=None)
+def synthesize_profile(
+    user_id: str | None = None,
+    max_static_memories: int = 20,
+    max_dynamic_memories: int = 10,
+    include_synthesis: bool = True,
+    format_prompt: bool = False,
+) -> str:
+    """
+    Build a user profile with static (stable facts) and dynamic (recent context) layers.
+
+    Profile = compact summary of who the user is (static) and what they are
+    currently working on (dynamic). Directly injectable into system prompts.
+
+    Args:
+        user_id: Optional user ID override.
+        max_static_memories: Max trait/fact memories to consider.
+        max_dynamic_memories: Max session/arc memories to consider.
+        include_synthesis: Run enhanced synthesis for contradiction detection.
+        format_prompt: Return as a formatted prompt block instead of JSON.
+
+    Returns:
+        JSON:  ``{"static": [...], "dynamic": [...]}``
+        Prompt block when ``format_prompt=True``.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+    cfg = ProfileConfig(
+        max_static_memories=max_static_memories,
+        max_dynamic_memories=max_dynamic_memories,
+        include_synthesis=include_synthesis,
+    )
+    profile = _synthesize_profile(uid, tenant_id, cfg)
+
+    if format_prompt:
+        from .profile_synthesizer import profile_to_prompt
+
+        return profile_to_prompt(profile)
+
+    return json.dumps(profile, indent=2, ensure_ascii=False)
 
 
 # =============================================================================

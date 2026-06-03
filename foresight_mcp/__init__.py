@@ -75,6 +75,11 @@ from .event_bus import (
     EventType as EventType,
     get_event_bus as get_event_bus,
 )
+from .profile_synthesizer import (
+    ProfileConfig as ProfileConfig,
+    profile_to_prompt as profile_to_prompt,
+    synthesize_profile as synthesize_profile,
+)
 from .graph_store import (
     GraphStore as GraphStore,
     GraphTraversalResult as GraphTraversalResult,
@@ -390,6 +395,7 @@ __all__ = [
     "mcp",
     "memory_status",
     "process_session_transcript",
+    "profile_to_prompt",
     "query_entities",
     "query_memories",
     "query_memories_temporal",
@@ -408,6 +414,7 @@ __all__ = [
     "search_memories",
     "store_memory",
     "switch_tenant",
+    "synthesize_profile",
     "unregister_hook",
     "update_context_block",
     "update_memory",

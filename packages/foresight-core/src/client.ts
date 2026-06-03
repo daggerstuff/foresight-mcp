@@ -35,8 +35,8 @@ export class ForesightClient {
 
   constructor(options: ForesightClientOptions = {}) {
     this.serverUrl = options.serverUrl
-    this.userId = (options.userId ?? process.env.FORESIGHT_USER_ID) || 'default'
-    this.bankId = (options.bankId ?? process.env.FORESIGHT_BANK_ID) || 'default'
+    this.userId = (options.userId ?? process.env.FORESIGHT_USER_ID) ?? 'default'
+    this.bankId = (options.bankId ?? process.env.FORESIGHT_BANK_ID) ?? 'default'
     this.timeout = options.timeout ?? 30000
     this.sync = options.syncManager
   }

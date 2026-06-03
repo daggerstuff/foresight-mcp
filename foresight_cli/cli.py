@@ -14,6 +14,7 @@ from foresight_mcp import (
     MemoryAction,
     MemoryOptions,
     MemoryUpdateOptions,
+    ProfileConfig,
     SearchOptions,
     VersionAction,
     analyze_memories,
@@ -22,7 +23,9 @@ from foresight_mcp import (
     manage_curation_runs,
     manage_memories,
     manage_memory_versions,
+    profile_to_prompt,
     search_memories,
+    synthesize_profile,
 )
 from foresight_mcp.server import init_db
 from rich.console import Console
@@ -320,6 +323,50 @@ def cmd_reflect(
         output_json({"result": result})
     else:
         console.print(result)
+
+
+@app.command("profile")
+def cmd_profile(
+    max_static: int = typer.Option(20, "--max-static", help="Max static memories"),
+    max_dynamic: int = typer.Option(10, "--max-dynamic", help="Max dynamic memories"),
+    no_synthesis: bool = typer.Option(False, "--no-synthesis", help="Disable contradiction detection"),
+    prompt: bool = typer.Option(False, "--prompt", "-p", help="Output as formatted prompt block"),
+):
+    """Build a user profile (static facts + dynamic context)."""
+    user_id = _ctx_user_id()
+    _json = _ctx_json() or prompt
+    result = synthesize_profile(
+        user_id,
+        config=ProfileConfig(
+            max_static_memories=max_static,
+            max_dynamic_memories=max_dynamic,
+            include_synthesis=not no_synthesis,
+        ),
+    )
+
+    if prompt:
+        result = profile_to_prompt(result)
+
+    if _json:
+        console.print(result)
+    else:
+        try:
+            import json as _json_mod
+
+            parsed = _json_mod.loads(result)
+            static_count = len(parsed.get("static", []))
+            dynamic_count = len(parsed.get("dynamic", []))
+            console.print(f"[bold]User Profile[/bold] ({static_count} static, {dynamic_count} dynamic items)")
+            if parsed.get("static"):
+                console.print("\n[underline]Static (stable facts):[/underline]")
+                for s in parsed["static"]:
+                    console.print(f"  • {s}")
+            if parsed.get("dynamic"):
+                console.print("\n[underline]Dynamic (recent context):[/underline]")
+                for d in parsed["dynamic"]:
+                    console.print(f"  • {d}")
+        except Exception:
+            console.print(result)
 
 
 @app.command("diff")
