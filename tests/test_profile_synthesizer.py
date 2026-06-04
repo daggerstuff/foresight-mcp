@@ -288,7 +288,7 @@ class TestSynthesizeProfile:
         db_path = _make_test_db()
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        mid = _seed_memory(conn, "Old fact", scope="fact", retention="permanent")
+        mid = _seed_memory(conn, MemorySeed("Old fact", scope="fact", retention="permanent"))
         conn.execute("UPDATE memories SET is_ghost = 1 WHERE id = ?", (mid,))
         conn.commit()
         conn.close()

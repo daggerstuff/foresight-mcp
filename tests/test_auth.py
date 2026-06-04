@@ -16,8 +16,13 @@ def temp_db_path(tmp_path):
     # Create a temporary SQLite DB file
     db_file = tmp_path / "test_memory.db"
     # Ensure the env variable points to this file
+    old_db_path = os.environ.get("FORESIGHT_DB_PATH")
     os.environ["FORESIGHT_DB_PATH"] = str(db_file)
-    return str(db_file)
+    yield str(db_file)
+    if old_db_path is not None:
+        os.environ["FORESIGHT_DB_PATH"] = old_db_path
+    else:
+        os.environ.pop("FORESIGHT_DB_PATH", None)
 
 
 def test_user_creation_and_authentication(temp_db_path):
