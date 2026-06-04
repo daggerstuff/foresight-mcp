@@ -7,6 +7,7 @@ blocks while reusing the existing compatibility-backed implementation.
 
 from __future__ import annotations
 
+from .block_registry import MemoryBlockSchema, get_registry, initialize_default_blocks
 from .subconscious import (
     DEFAULT_MEMORY_BLOCKS,
     PENDING_ITEMS,
@@ -21,6 +22,47 @@ from .subconscious import (
 
 DEFAULT_CONTEXT_BLOCKS = DEFAULT_MEMORY_BLOCKS
 ContextBlock = MemoryBlock
+
+__all__ = [
+    "DEFAULT_CONTEXT_BLOCKS",
+    "PENDING_ITEMS",
+    "PROJECT_CONTEXT",
+    "SESSION_PATTERNS",
+    "USER_PREFERENCES",
+    "ContextBlock",
+    "ContextBlockAgent",
+    "ContextBlockState",
+    "MemoryBlockSchema",
+    "add_context_guidance",
+    "add_subconscious_guidance",
+    "clear_context_block",
+    "clear_subconscious_block",
+    "get_context_block",
+    "get_context_block_agent",
+    "get_context_snapshot",
+    "get_context_whisper",
+    "get_subconscious_block",
+    "get_subconscious_context",
+    "get_subconscious_whisper",
+    "list_context_block_schemas",
+    "list_context_blocks",
+    "register_context_block_schema",
+    "reset_context_block",
+    "reset_subconscious_block",
+    "update_context_block",
+    "update_subconscious_block",
+]
+
+
+def register_context_block_schema(schema: MemoryBlockSchema) -> None:
+    """Register a custom context block schema for subsequent block updates."""
+    get_registry().register(schema)
+
+
+def list_context_block_schemas() -> list[dict]:
+    """List registered context block schemas as API-safe dictionaries."""
+    registry = initialize_default_blocks()
+    return [schema.to_dict() for schema in registry.list_schemas()]
 
 
 def get_context_block_agent(user_id: str, tenant_id: str = "default") -> ContextBlockAgent:

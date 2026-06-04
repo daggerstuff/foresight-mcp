@@ -13,6 +13,8 @@ import pytest
 from fastmcp import Client
 from foresight_cli.cli import _decode_tool_result
 from foresight_mcp import memory_status, store_memory
+from foresight_mcp.block_registry import MemoryBlockSchema
+from foresight_mcp.context_blocks import register_context_block_schema
 from foresight_mcp.server import (
     ContextBlockAction,
     CurationRunAction,
@@ -523,6 +525,64 @@ def test_manage_context_blocks_update_reset_clear_cycle():
             manage_context_blocks(ContextBlockAction(action="reset", label="guidance"), user_id=user_id)
         )
         assert reset["message"] == "Reset block 'guidance' to default"
+
+
+def test_registered_context_block_schema_allows_validated_custom_block():
+    """Custom schemas can create validated non-default context blocks."""
+    label = f"custom_notes_{datetime.now(timezone.utc).timestamp()}".replace(".", "_")
+    user_id = f"custom_block_user_{datetime.now(timezone.utc).timestamp()}"
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    register_context_block_schema(
+        MemoryBlockSchema(
+            label=label,
+            description="Short custom notes",
+            char_limit=12,
+        )
+    )
+
+    with _patched_context_block_storage(db_path):
+        updated = _decode_json_result(
+            manage_context_blocks(
+                ContextBlockAction(action="update", label=label, content="short note"), user_id=user_id
+            )
+        )
+        assert updated["ok"] is True
+
+        fetched = _decode_json_result(
+            manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
+        )
+        assert fetched["content"] == "short note"
+
+        listed = _decode_json_result(manage_context_blocks(ContextBlockAction(action="list"), user_id=user_id))
+        custom_block = next(block for block in listed["blocks"] if block["label"] == label)
+        assert custom_block["description"] == "Short custom notes"
+        assert custom_block["char_limit"] == 12
+
+        invalid = _decode_json_result(
+            manage_context_blocks(
+                ContextBlockAction(action="update", label=label, content="this note is too long"), user_id=user_id
+            )
+        )
+        assert invalid["ok"] is False
+        assert "Content exceeds char limit" in invalid["error"]
+
+        reloaded = _decode_json_result(
+            manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
+        )
+        assert reloaded["content"] == "short note"
+
+        reset = _decode_json_result(
+            manage_context_blocks(ContextBlockAction(action="reset", label=label), user_id=user_id)
+        )
+        assert reset["ok"] is True
+        assert reset["message"] == f"Reset block '{label}' to default"
+
+        after_reset = _decode_json_result(
+            manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
+        )
+        assert after_reset["content"] == ""
 
 
 def test_manage_context_blocks_are_tenant_isolated():

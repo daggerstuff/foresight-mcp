@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from .block_registry import MemoryBlockSchema as RegisteredMemoryBlockSchema, get_registry, initialize_default_blocks
 from .config import DB_PATH
 from .connection_pool import get_pool
 from .memory_components import MemoryCrisisTagger, SocraticGate
@@ -177,13 +178,39 @@ class ContextBlockState:
     tenant_id: str = "default"
 
     def initialize_defaults(self) -> None:
-        """Initialize context blocks with default content."""
+        """Initialize context blocks with registered default schemas and content."""
+        registry = initialize_default_blocks()
         for label, content in DEFAULT_MEMORY_BLOCKS.items():
+            schema = registry.get_schema(label)
             self.blocks[label] = MemoryBlock(
                 label=label,
                 content=content,
-                description=f"Memory block for {label}",
+                description=schema.description if schema else f"Memory block for {label}",
+                char_limit=schema.char_limit or 5000 if schema else 5000,
             )
+
+    def register_schema(self, schema: RegisteredMemoryBlockSchema) -> None:
+        """Register a custom context block schema for this process."""
+        get_registry().register(schema)
+
+    def _schema_for(self, label: str) -> RegisteredMemoryBlockSchema | None:
+        """Return the registered schema for a label, including defaults."""
+        return initialize_default_blocks().get_schema(label)
+
+    def _known_labels(self) -> list[str]:
+        """Return sorted labels that may be addressed by update/reset operations."""
+        labels = set(DEFAULT_MEMORY_BLOCKS) | set(self.blocks)
+        labels.update(schema.label for schema in initialize_default_blocks().list_schemas())
+        return sorted(labels)
+
+    def _validate_block_content(self, label: str, content: str) -> None:
+        """Validate content against a registered schema when one exists."""
+        schema = self._schema_for(label)
+        if schema is None:
+            return
+        is_valid, message = schema.validate_content(content)
+        if not is_valid:
+            raise ValueError(f"Invalid content for block {label!r}: {message}")
 
     def get_block(self, label: str) -> MemoryBlock | None:
         """Get a context block by label."""
@@ -196,26 +223,28 @@ class ContextBlockState:
         custom block already in ``self.blocks``.  Arbitrary labels are
         rejected to prevent typos silently creating orphan blocks.
         """
-        if label not in DEFAULT_MEMORY_BLOCKS and label not in self.blocks:
-            raise ValueError(f"Unknown block label {label!r}. Must be one of: {sorted(DEFAULT_MEMORY_BLOCKS)}")
+        schema = self._schema_for(label)
+        if label not in DEFAULT_MEMORY_BLOCKS and label not in self.blocks and schema is None:
+            raise ValueError(f"Unknown block label {label!r}. Must be one of: {self._known_labels()}")
+        self._validate_block_content(label, content)
         if label in self.blocks:
             self.blocks[label].update(content)
         else:
             self.blocks[label] = MemoryBlock(
                 label=label,
                 content=content,
-                description=f"Memory block for {label}",
+                description=schema.description if schema else f"Memory block for {label}",
+                char_limit=schema.char_limit or 5000 if schema else 5000,
             )
 
     def append_to_block(self, label: str, content: str, max_items: int = 10) -> None:
         """Append content to a block (for pending items, preferences, etc.)."""
         block = self.get_block(label)
         if block:
-            # Don't append if block is empty/default
-            if block.is_empty():
-                new_content = content.strip()
-            else:
-                new_content = f"{block.content}\n{content.strip()}"
+            # Don't append if block is empty/default.
+            if max_items != 10:
+                logger.debug("append_to_block max_items is reserved for future trimming: %s", max_items)
+            new_content = content.strip() if block.is_empty() else f"{block.content}\n{content.strip()}"
             self.update_block(label, new_content)
 
     def to_whisper_xml(self) -> str:
@@ -323,10 +352,12 @@ class ContextBlockAgent:
                 block.chars_current = len(row["content"])
                 block.updated_at = updated_at
             else:
+                schema = self.state._schema_for(label)
                 self.state.blocks[label] = MemoryBlock(
                     label=label,
                     content=row["content"],
-                    description=f"Memory block for {label}",
+                    description=schema.description if schema else f"Memory block for {label}",
+                    char_limit=schema.char_limit or 5000 if schema else 5000,
                     updated_at=updated_at,
                 )
 
@@ -370,6 +401,9 @@ class ContextBlockAgent:
         if not messages:
             logger.warning("No messages to process")
             return
+
+        if project_path:
+            logger.debug("Processing transcript with project path: %s", project_path)
 
         valid_roles = {"user", "assistant", "system", "tool"}
         for i, msg in enumerate(messages):
@@ -437,6 +471,11 @@ class ContextBlockAgent:
             self._persist_block(GUIDANCE)
         logger.info("Updated guidance block")
 
+    def register_schema(self, schema: RegisteredMemoryBlockSchema) -> None:
+        """Register a custom context block schema for this process."""
+        with self._lock:
+            self.state.register_schema(schema)
+
     def update_block(self, label: str, content: str) -> None:
         """Update any context block and persist the change."""
         if label == GUIDANCE:
@@ -476,7 +515,14 @@ class ContextBlockAgent:
                 self._persist_block(label)
             logger.info(f"Reset block {label} to default")
             return
-        raise ValueError(f"Unknown block label {label!r}. Must be one of: {sorted(DEFAULT_MEMORY_BLOCKS)}")
+        schema = self.state._schema_for(label)
+        if schema is not None:
+            with self._lock:
+                self.state.update_block(label, "")
+                self._persist_block(label)
+            logger.info("Reset custom block %s to empty content", label)
+            return
+        raise ValueError(f"Unknown block label {label!r}. Must be one of: {self.state._known_labels()}")
 
     def clear_block(self, label: str) -> None:
         """Clear a block's content."""
