@@ -1168,8 +1168,8 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
         )
     )
     conn.execute(
-        "UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ?",
-        (ghost.content, ghost.gist, memory_id, uid),
+        "UPDATE memories SET content = ?, is_ghost = 1, gist = ? WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (ghost.content, ghost.gist, memory_id, uid, tenant_id),
     )
     conn.commit()
     conn.close()
@@ -1338,7 +1338,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     )
     new_version = options.to_version + 1
     conn.execute(
-        "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+        "UPDATE memories SET content = ?, tags = ?, emotional_context = ?, metrics = ?, version = ?, updated_at = ? WHERE id = ? AND user_id = ? AND tenant_id = ?",
         (
             version_row["content"],
             version_row["tags"],
@@ -1348,6 +1348,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
             datetime.now(timezone.utc).isoformat(),
             options.memory_id,
             uid,
+            tenant_id,
         ),
     )
     conn.commit()
