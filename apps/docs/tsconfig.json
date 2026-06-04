@@ -3,7 +3,8 @@
   "compilerOptions": {
     "strict": true,
     "noImplicitAny": true,
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    "baseUrl": undefined
   },
   "exclude": ["node_modules"]
 }
