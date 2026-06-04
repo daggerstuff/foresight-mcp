@@ -76,6 +76,18 @@ from .memory_types import (
 from .profile_synthesizer import ProfileConfig, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
+from .document_layer import (
+    DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
+    VALID_DOCUMENT_SOURCES as _VALID_DOCUMENT_SOURCES,
+    Document as _Document,
+    DocumentChunk as _DocumentChunk,
+    DocumentLayerError as _DocumentLayerError,
+    DocumentStore as _DocumentStore,
+    chunk_text as _chunk_text,
+    content_hash as _content_hash,
+    get_document_store as get_document_store,
+    reset_document_store as reset_document_store,
+)
 from .stream_producer import (
     KafkaProducer,
     KinesisProducer,
@@ -271,7 +283,7 @@ def get_db_connection():
     return get_pool().acquire()
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 8
 
 
 def _seed_default_tenant(conn) -> None:
@@ -403,6 +415,41 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE curation_runs ADD COLUMN transcript_bundle_json TEXT",
         "ALTER TABLE curation_runs ADD COLUMN session_id TEXT",
         "ALTER TABLE curation_runs ADD COLUMN project_path TEXT",
+    ],
+    8: [
+        """CREATE TABLE IF NOT EXISTS documents (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            source TEXT NOT NULL,
+            content TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            char_count INTEGER NOT NULL,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            metadata TEXT DEFAULT '{}',
+            UNIQUE(tenant_id, user_id, content_hash)
+        )""",
+        """CREATE TABLE IF NOT EXISTS document_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL DEFAULT 'default',
+            user_id TEXT NOT NULL,
+            memory_id TEXT,
+            chunk_index INTEGER NOT NULL,
+            start_offset INTEGER NOT NULL,
+            end_offset INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(document_id, chunk_index),
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(tenant_id, user_id, created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(tenant_id, user_id, content_hash)",
+        "CREATE INDEX IF NOT EXISTS idx_document_chunks_doc ON document_chunks(document_id, chunk_index)",
+        "CREATE INDEX IF NOT EXISTS idx_document_chunks_memory ON document_chunks(memory_id)",
     ],
 }
 
@@ -3003,6 +3050,131 @@ def query_entities(query: EntityQuery, user_id: str | None = None) -> str:
         )
 
     return "Invalid query_type"
+
+
+# =============================================================================
+# Document Layer Tools (MEM-7)
+# =============================================================================
+
+
+@mcp.tool(output_schema=None)
+def create_document(
+    title: str,
+    content: str,
+    user_id: str | None = None,
+    source: str = "note",
+    metadata: dict[str, Any] | None = None,
+    char_budget: int = _DOC_CHUNK_BUDGET,
+    memory_id_for_chunk: str | None = None,
+) -> str:
+    """
+    Persist a raw source document and its extracted chunks.
+
+    Separates source content from derived memories so that extraction
+    can be re-run without losing the original. Chunks are produced
+    synchronously with paragraph-based splitting (see chunk_text).
+
+    Args:
+        title: Human-readable document title.
+        content: Raw source text.
+        user_id: Optional user ID override.
+        source: One of transcript/article/journal/note/email/other.
+        metadata: Optional JSON-serializable metadata.
+        char_budget: Soft max chars per chunk (100-8000).
+        memory_id_for_chunk: If set, applied to every chunk produced.
+    """
+    uid = user_id or USER_ID
+    store = get_document_store()
+    try:
+        doc, chunks = store.create_document(
+            title=title,
+            content=content,
+            user_id=uid,
+            source=source,
+            metadata=metadata,
+            char_budget=char_budget,
+            memory_id_for_chunk=memory_id_for_chunk,
+        )
+    except _DocumentLayerError as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {
+            "document": doc.to_dict(),
+            "chunks": [c.to_dict() for c in chunks],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def get_document(
+    document_id: str,
+    user_id: str | None = None,
+) -> str:
+    """Fetch a stored document by ID."""
+    uid = user_id or USER_ID
+    store = get_document_store()
+    try:
+        doc = store.get_document(document_id=document_id, user_id=uid)
+    except _DocumentLayerError as exc:
+        return f"Error: {exc}"
+    if doc is None:
+        return f"Document {document_id} not found."
+    return json.dumps(doc.to_dict(), indent=2)
+
+
+@mcp.tool(output_schema=None)
+def list_document_chunks(
+    document_id: str,
+    user_id: str | None = None,
+) -> str:
+    """List all chunks produced from a document, in order."""
+    uid = user_id or USER_ID
+    store = get_document_store()
+    try:
+        chunks = store.list_chunks(document_id=document_id, user_id=uid)
+    except _DocumentLayerError as exc:
+        return f"Error: {exc}"
+    return json.dumps([c.to_dict() for c in chunks], indent=2)
+
+
+@mcp.tool(output_schema=None)
+def get_memory_source(
+    memory_id: str,
+    user_id: str | None = None,
+) -> str:
+    """Reverse-lookup: given a memory_id, return its source document + chunk."""
+    uid = user_id or USER_ID
+    store = get_document_store()
+    try:
+        result = store.get_memory_source(memory_id=memory_id, user_id=uid)
+    except _DocumentLayerError as exc:
+        return f"Error: {exc}"
+    if result is None:
+        return f"No source document found for memory {memory_id}."
+    doc, chunk = result
+    return json.dumps(
+        {"document": doc.to_dict(), "chunk": chunk.to_dict()},
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def delete_document(
+    document_id: str,
+    user_id: str | None = None,
+) -> str:
+    """Delete a document and all of its chunks (CASCADE)."""
+    uid = user_id or USER_ID
+    store = get_document_store()
+    try:
+        deleted = store.delete_document(document_id=document_id, user_id=uid)
+    except _DocumentLayerError as exc:
+        return f"Error: {exc}"
+    return json.dumps(
+        {"document_id": document_id, "deleted": deleted},
+        indent=2,
+    )
 
 
 # =============================================================================
