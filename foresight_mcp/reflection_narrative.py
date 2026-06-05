@@ -42,10 +42,11 @@ Caching
 -------
 
 The default cache is an in-process ``dict`` keyed by
-``tenant_id:user_id:report_id:model_version:insights_hash``. The caller
-may pass an external cache (e.g. a persistent dict) via the ``cache``
-parameter for testability and durability. The companion ticket GAP-6b
-(PIX-3740) adds a SQLite-backed persistent cache.
+``tenant_id:user_id:report_id:model_version:insights_hash``. Callers
+may pass a persistent :class:`foresight_mcp.narrative_cache.NarrativeCache`
+via the ``cache`` parameter for durability across restarts (PIX-3740).
+The dispatch between in-process dict and SQLite-backed cache is
+internal to :func:`generate_insight_narrative`.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ from .audit import (
     AuditEvent,
     AuditLog,
 )
+from .narrative_cache import NarrativeCache
 from .reflection_engine import ReflectionReport
 
 logger = logging.getLogger("foresight_reflection_narrative")
@@ -112,6 +114,21 @@ Write a 2-4 paragraph narrative summary suitable for surfacing in a clinical coa
 # ============================================================
 
 
+def _compute_insights_hash(report: ReflectionReport) -> str:
+    """SHA-256 hex digest of the structured insights, truncated to 16 chars.
+
+    Used as part of the cache key and as a parameter to the persistent
+    :class:`NarrativeCache` so cache lookups can verify the stored
+    entry still matches the current insight payload.
+    """
+    return hashlib.sha256(
+        "|".join(
+            f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}"
+            for i in report.insights
+        ).encode("utf-8"),
+    ).hexdigest()[:16]
+
+
 def _compute_cache_key(
     report: ReflectionReport,
     model_version: str,
@@ -125,12 +142,7 @@ def _compute_cache_key(
 
         tenant_id:user_id:report_id:model_version:insights_hash
     """
-    insights_hash = hashlib.sha256(
-        "|".join(
-            f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}"
-            for i in report.insights
-        ).encode("utf-8"),
-    ).hexdigest()[:16]
+    insights_hash = _compute_insights_hash(report)
     return f"{tenant_id}:{user_id}:{report.report_id}:{model_version}:{insights_hash}"
 
 
@@ -225,7 +237,7 @@ def _audit(
                 )
             )
             return
-        except Exception as exc:  # noqa: BLE001 — fall back to logger
+        except Exception as exc:
             logger.warning(
                 "audit_log.record failed; falling back to logger.info: %s",
                 exc,
@@ -252,7 +264,7 @@ def _audit(
 
 
 # Module-level in-process cache. Lost on restart. Sufficient as a stopgap;
-# callers may supply a persistent cache via the ``cache`` parameter.
+# callers may supply a persistent NarrativeCache via the ``cache`` parameter.
 _default_cache: dict[str, str] = {}
 
 
@@ -263,7 +275,7 @@ def generate_insight_narrative(
     user_id: str,
     llm_call: LLMCallable,
     model_version: str = "caller-default",
-    cache: dict[str, str] | None = None,
+    cache: dict[str, str] | NarrativeCache | None = None,
     audit_log: AuditLog | None = None,
 ) -> str:
     """Generate a natural-language narrative summary of a reflection report.
@@ -282,10 +294,11 @@ def generate_insight_narrative(
         model_version: Model identifier used for cache keying and audit.
             Defaults to ``"caller-default"`` if the caller does not
             specify.
-        cache: Optional cache dict. If provided, used as the cache store.
-            If ``None``, the module-level in-process dict is used. The
-            cache key includes ``tenant_id`` and ``user_id`` to enforce
-            isolation.
+        cache: Optional cache. May be an in-process ``dict`` for tests
+            or a persistent :class:`NarrativeCache` (PIX-3740) for
+            durability across restarts. If ``None``, the module-level
+            in-process dict is used. The cache key always includes
+            ``tenant_id`` and ``user_id`` to enforce isolation.
         audit_log: Optional :class:`foresight_mcp.audit.AuditLog`. If
             provided, success / error / cache-hit events are persisted
             as queryable, tenant-isolated rows. If ``None`` (the
@@ -297,8 +310,9 @@ def generate_insight_narrative(
         A natural-language narrative string.
 
     Raises:
-        TypeError: If ``reflection_report`` is not a :class:`ReflectionReport`
-            or ``llm_call`` is not callable.
+        TypeError: If ``reflection_report`` is not a :class:`ReflectionReport`,
+            ``llm_call`` is not callable, or ``cache`` is neither ``None``,
+            a ``dict``, nor a :class:`NarrativeCache`.
         ValueError: If ``tenant_id`` or ``user_id`` is empty.
         ReflectionNarrativeError: If the LLM callable raises. The original
             exception is preserved on ``__cause__``. The caller may catch
@@ -315,13 +329,32 @@ def generate_insight_narrative(
         raise ValueError("user_id is required and must be a non-empty string")
     if not callable(llm_call):
         raise TypeError("llm_call must be callable")
+    if cache is not None and not isinstance(cache, (dict, NarrativeCache)):
+        raise TypeError(
+            f"cache must be a dict or NarrativeCache, "
+            f"got {type(cache).__name__}"
+        )
 
     if cache is None:
         cache = _default_cache
 
-    cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
-    if cache_key in cache:
-        logger.debug("reflection_narrative_cache_hit", extra={"cache_key": cache_key})
+    insights_hash = _compute_insights_hash(reflection_report)
+    if isinstance(cache, NarrativeCache):
+        cached = cache.get(
+            reflection_report.report_id,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            model_version=model_version,
+            insights_hash=insights_hash,
+        )
+    else:
+        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
+        cached = cache.get(cache_key)
+
+    if cached is not None:
+        logger.debug(
+            "reflection_narrative_cache_hit", extra={"cache_key": insights_hash}
+        )
         _audit(
             event_type=NARRATIVE_CACHE_HIT,
             tenant_id=tenant_id,
@@ -334,7 +367,7 @@ def generate_insight_narrative(
             outcome="cache_hit",
             audit_log=audit_log,
         )
-        return cache[cache_key]
+        return cached
 
     prompt = _build_phi_safe_prompt(reflection_report)
     prompt_hash = _hash_payload(prompt)
@@ -378,7 +411,18 @@ def generate_insight_narrative(
         audit_log=audit_log,
     )
 
-    cache[cache_key] = response
+    if isinstance(cache, NarrativeCache):
+        cache.put(
+            reflection_report.report_id,
+            response,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            model_version=model_version,
+            insights_hash=insights_hash,
+        )
+    else:
+        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
+        cache[cache_key] = response
     return response
 
 

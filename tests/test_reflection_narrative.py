@@ -8,6 +8,8 @@ Covers:
 * Caching keyed on (report_id, tenant_id, user_id, model_version, insights_hash)
 * Fallback contract: raises ``ReflectionNarrativeError`` on LLM failure
 * Input validation: type and value errors for malformed inputs
+* Persistent NarrativeCache integration (PIX-3740 / GAP-6b)
+* Tenant-isolated audit row emission (PIX-3741 / GAP-6c)
 """
 
 import sys
@@ -24,11 +26,13 @@ from foresight_mcp.audit import (
     NARRATIVE_GENERATED,
     AuditLog,
 )
+from foresight_mcp.narrative_cache import NarrativeCache
 from foresight_mcp.reflection_engine import ReflectionInsight, ReflectionReport
 from foresight_mcp.reflection_narrative import (
     ReflectionNarrativeError,
     _build_phi_safe_prompt,
     _compute_cache_key,
+    _compute_insights_hash,
     generate_insight_narrative,
 )
 
@@ -172,7 +176,6 @@ def test_narrative_respects_tenant_isolation() -> None:
         captured_calls.append((prompt, tenant_id, user_id))
         return f"narrative for {tenant_id}"
 
-    # Tenant A first call -> LLM invoked
     out_a1 = generate_insight_narrative(
         report,
         tenant_id="tenant_a",
@@ -180,7 +183,6 @@ def test_narrative_respects_tenant_isolation() -> None:
         llm_call=capturing_llm,
         cache=isolated_cache,
     )
-    # Tenant A second call -> cache hit, LLM NOT called again
     out_a2 = generate_insight_narrative(
         report,
         tenant_id="tenant_a",
@@ -188,7 +190,6 @@ def test_narrative_respects_tenant_isolation() -> None:
         llm_call=capturing_llm,
         cache=isolated_cache,
     )
-    # Tenant B same report -> different cache key, LLM called again
     out_b = generate_insight_narrative(
         report,
         tenant_id="tenant_b",
@@ -214,7 +215,6 @@ def test_narrative_respects_tenant_isolation() -> None:
     keys = list(isolated_cache.keys())
     assert any("tenant_a" in k for k in keys)
     assert any("tenant_b" in k for k in keys)
-    # And the two keys are distinct
     assert len(set(keys)) == 2
 
 
@@ -236,7 +236,6 @@ def test_narrative_caches_by_report_id_and_tenant() -> None:
 
     cache: dict[str, str] = {}
 
-    # Same report, different model versions -> two distinct cache entries
     out_v1 = generate_insight_narrative(
         report_a,
         tenant_id="t",
@@ -253,7 +252,6 @@ def test_narrative_caches_by_report_id_and_tenant() -> None:
         model_version="claude-5",
         cache=cache,
     )
-    # Same model version, same report -> cache hit
     out_v1_again = generate_insight_narrative(
         report_a,
         tenant_id="t",
@@ -262,7 +260,6 @@ def test_narrative_caches_by_report_id_and_tenant() -> None:
         model_version="claude-4",
         cache=cache,
     )
-    # Different report_id -> new cache key
     out_b = generate_insight_narrative(
         report_b,
         tenant_id="t",
@@ -272,19 +269,12 @@ def test_narrative_caches_by_report_id_and_tenant() -> None:
         cache=cache,
     )
 
-    # 3 LLM calls total: v1, v2, report_b (v1_again is cached)
     assert call_count == 3
-    # v1 and v1_again are identical
     assert out_v1 == out_v1_again
-    # v1 and v2 differ (different model_version)
     assert out_v1 != out_v2
-    # v1 and report_b differ (different report_id)
     assert out_v1 != out_b
-
-    # Cache should hold 3 entries
     assert len(cache) == 3
 
-    # The cache key for the same (tenant, user, report, model) is deterministic
     key_a_v1 = _compute_cache_key(report_a, "claude-4", "t", "u")
     assert key_a_v1 in cache
     assert cache[key_a_v1] == out_v1
@@ -316,14 +306,11 @@ def test_narrative_falls_back_to_structured_on_llm_error() -> None:
             llm_call=failing_llm,
             cache=cache,
         )
-    # Original exception preserved on __cause__
     assert isinstance(exc_info.value.__cause__, RuntimeError)
     assert "LLM provider unavailable" in str(exc_info.value.__cause__)
 
-    # Failed calls do NOT pollute the cache
     assert len(cache) == 0
 
-    # After a failure, a subsequent call with a working LLM should succeed
     def working_llm(prompt: str, tenant_id: str, user_id: str) -> str:
         return "recovered narrative"
 
@@ -411,6 +398,151 @@ def test_generate_insight_narrative_with_empty_insights() -> None:
     )
     assert isinstance(out, str)
     assert "t/u" in out
+
+
+# ============================================================
+# Persistent NarrativeCache integration (PIX-3740 / GAP-6b)
+# ============================================================
+
+
+def test_reflection_narrative_uses_narrative_cache_persistent_storage(
+    tmp_path: Any,
+) -> None:
+    cache = NarrativeCache(str(tmp_path / "narratives.db"))
+    try:
+        report = _make_report()
+        call_count = 0
+
+        def counting_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+            nonlocal call_count
+            call_count += 1
+            return "persisted narrative"
+
+        out1 = generate_insight_narrative(
+            report,
+            tenant_id="tenant-persist",
+            user_id="user-1",
+            llm_call=counting_llm,
+            cache=cache,
+        )
+        assert out1 == "persisted narrative"
+        assert call_count == 1
+
+        out2 = generate_insight_narrative(
+            report,
+            tenant_id="tenant-persist",
+            user_id="user-1",
+            llm_call=counting_llm,
+            cache=cache,
+        )
+        assert out2 == "persisted narrative"
+        assert call_count == 1
+    finally:
+        cache.close()
+
+
+def test_reflection_narrative_narrative_cache_survives_restart(
+    tmp_path: Any,
+) -> None:
+    db_path = str(tmp_path / "narratives.db")
+    report = _make_report()
+
+    cache1 = NarrativeCache(db_path)
+    try:
+        generate_insight_narrative(
+            report,
+            tenant_id="tenant-restart",
+            user_id="user-1",
+            llm_call=_fake_llm,
+            cache=cache1,
+        )
+    finally:
+        cache1.close()
+
+    def must_not_call(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("LLM must not be called when cache is hydrated from disk")
+
+    cache2 = NarrativeCache(db_path)
+    try:
+        out = generate_insight_narrative(
+            report,
+            tenant_id="tenant-restart",
+            user_id="user-1",
+            llm_call=must_not_call,
+            cache=cache2,
+        )
+        assert out
+    finally:
+        cache2.close()
+
+
+def test_reflection_narrative_narrative_cache_tenant_isolation(
+    tmp_path: Any,
+) -> None:
+    cache = NarrativeCache(str(tmp_path / "narratives.db"))
+    try:
+        report = _make_report()
+        insights_hash = _compute_insights_hash(report)
+
+        generate_insight_narrative(
+            report,
+            tenant_id="tenant-a",
+            user_id="user-1",
+            llm_call=_fake_llm,
+            cache=cache,
+        )
+
+        out_b = generate_insight_narrative(
+            report,
+            tenant_id="tenant-b",
+            user_id="user-1",
+            llm_call=_fake_llm,
+            cache=cache,
+        )
+        assert out_b
+
+        a = cache.get(
+            report.report_id,
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="caller-default",
+            insights_hash=insights_hash,
+        )
+        b = cache.get(
+            report.report_id,
+            tenant_id="tenant-b",
+            user_id="user-1",
+            model_version="caller-default",
+            insights_hash=insights_hash,
+        )
+        assert a is not None
+        assert b is not None
+        assert a != b
+        assert a.startswith("Narrative for tenant-a/")
+        assert b.startswith("Narrative for tenant-b/")
+
+        c = cache.get(
+            report.report_id,
+            tenant_id="tenant-c",
+            user_id="user-1",
+            model_version="caller-default",
+            insights_hash=insights_hash,
+        )
+        assert c is None
+    finally:
+        cache.close()
+
+
+def test_reflection_narrative_rejects_invalid_cache_type() -> None:
+    report = _make_report()
+    with pytest.raises(TypeError, match="cache must be a dict or NarrativeCache"):
+        generate_insight_narrative(
+            report,
+            tenant_id="t",
+            user_id="u",
+            llm_call=_fake_llm,
+            cache=cast(Any, "not a cache"),
+        )
 
 
 # ============================================================
