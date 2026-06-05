@@ -288,7 +288,22 @@ def generate_insight_narrative(
     cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
     if cache_key in cache:
         logger.debug("reflection_narrative_cache_hit", extra={"cache_key": cache_key})
-        return cache[cache_key]
+        start = time.perf_counter()
+        cached_response = cache[cache_key]
+        prompt = _build_phi_safe_prompt(reflection_report)
+        _audit(
+            audit_log=audit_log,
+            event_type=AuditEvent.NARRATIVE_GENERATED,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            report_id=reflection_report.report_id,
+            model_version=model_version,
+            prompt_hash=_hash_payload(prompt),
+            response_hash=_hash_payload(cached_response),
+            latency_ms=(time.perf_counter() - start) * 1000.0,
+            outcome="cache_hit",
+        )
+        return cached_response
 
     prompt = _build_phi_safe_prompt(reflection_report)
     prompt_hash = _hash_payload(prompt)

@@ -436,6 +436,38 @@ def test_reflection_narrative_emits_audit_row_on_success(tmp_path: Path) -> None
     audit_log.close()
 
 
+def test_reflection_narrative_emits_audit_row_on_cache_hit(tmp_path: Path) -> None:
+    """Cached narrative reads still write success audit rows."""
+    audit_log = AuditLog(tmp_path / "audit.db")
+    report = _make_report(report_id="refl_cached")
+    cache: dict[str, str] = {}
+    call_count = 0
+
+    def counting_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+        nonlocal call_count
+        call_count += 1
+        return "cached narrative"
+
+    for _ in range(2):
+        generate_insight_narrative(
+            report,
+            tenant_id="tenant_a",
+            user_id="user_1",
+            llm_call=counting_llm,
+            model_version="model-v1",
+            cache=cache,
+            audit_log=audit_log,
+        )
+
+    rows = audit_log.query("tenant_a")
+    assert call_count == 1
+    assert len(rows) == 2
+    assert [row.metadata["outcome"] for row in rows] == ["success", "cache_hit"]
+    assert rows[0].metadata["prompt_hash"] == rows[1].metadata["prompt_hash"]
+    assert rows[0].metadata["response_hash"] == rows[1].metadata["response_hash"]
+    audit_log.close()
+
+
 def test_reflection_narrative_emits_audit_row_on_error(tmp_path: Path) -> None:
     """Failed narrative generation writes a structured audit row."""
     audit_log = AuditLog(tmp_path / "audit.db")
