@@ -28,10 +28,15 @@ consistent with HIPAA requirements.
 Audit
 -----
 
-Every successful and failed call emits a structured ``logging`` entry via
-``logger.info("reflection_narrative_generated", extra={...})``. This is a
-stopgap: when a tenant-isolated LLM client is added to the system, a proper
-audit table should replace this. See the dependency note on PIX-3738.
+Every successful and failed call writes a row to the
+:class:`foresight_mcp.audit.AuditLog` table when one is supplied via
+the ``audit_log`` parameter. The row contains ``tenant_id``,
+``user_id``, ``report_id``, ``model_version``, ``prompt_hash``,
+``response_hash``, ``latency_ms``, and ``outcome``. No raw prompt or
+response text is stored. If no ``audit_log`` is supplied (e.g. unit
+tests, ephemeral CLI runs), the module falls back to a structured
+``logger.info(...)`` call for compatibility. The audit table is
+append-only at the SQLite layer (see :mod:`foresight_mcp.audit`).
 
 Caching
 -------
@@ -39,7 +44,8 @@ Caching
 The default cache is an in-process ``dict`` keyed by
 ``tenant_id:user_id:report_id:model_version:insights_hash``. The caller
 may pass an external cache (e.g. a persistent dict) via the ``cache``
-parameter for testability and durability.
+parameter for testability and durability. The companion ticket GAP-6b
+(PIX-3740) adds a SQLite-backed persistent cache.
 """
 
 from __future__ import annotations
@@ -50,6 +56,13 @@ import logging
 import time
 from typing import Any, Callable
 
+from .audit import (
+    NARRATIVE_CACHE_HIT,
+    NARRATIVE_FAILED,
+    NARRATIVE_GENERATED,
+    AuditEvent,
+    AuditLog,
+)
 from .reflection_engine import ReflectionReport
 
 logger = logging.getLogger("foresight_reflection_narrative")
@@ -172,6 +185,7 @@ def _hash_payload(payload: str) -> str:
 
 def _audit(
     *,
+    event_type: str,
     tenant_id: str,
     user_id: str,
     report_id: str,
@@ -180,16 +194,45 @@ def _audit(
     response_hash: str | None,
     latency_ms: float,
     outcome: str,
+    audit_log: AuditLog | None = None,
 ) -> None:
-    """Emit a structured audit log entry.
+    """Emit a structured audit entry.
 
-    Stopgap implementation using Python ``logging``. A proper audit table
-    should replace this once a tenant-isolated LLM client is introduced.
-    The ``extra`` dict is picked up by any ``dictConfig``-style formatter
-    the host application wires up.
+    If ``audit_log`` is provided, the entry is written to the audit
+    table as a queryable, tenant-isolated, append-only row. Otherwise
+    the entry is emitted via :func:`logging.Logger.info` with the same
+    fields as ``extra`` (a stopgap for environments without an
+    audit-log sink). The metadata dictionary never includes raw prompt
+    or response bodies — only hashes and timing.
     """
+    metadata: dict[str, Any] = {
+        "report_id": report_id,
+        "model_version": model_version,
+        "prompt_hash": prompt_hash,
+        "response_hash": response_hash,
+        "latency_ms": latency_ms,
+        "outcome": outcome,
+    }
+    if audit_log is not None:
+        try:
+            audit_log.record(
+                AuditEvent(
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    event_type=event_type,
+                    resource_id=report_id,
+                    metadata=metadata,
+                )
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — fall back to logger
+            logger.warning(
+                "audit_log.record failed; falling back to logger.info: %s",
+                exc,
+            )
+
     logger.info(
-        "reflection_narrative_generated",
+        event_type,
         extra={
             "tenant_id": tenant_id,
             "user_id": user_id,
@@ -221,6 +264,7 @@ def generate_insight_narrative(
     llm_call: LLMCallable,
     model_version: str = "caller-default",
     cache: dict[str, str] | None = None,
+    audit_log: AuditLog | None = None,
 ) -> str:
     """Generate a natural-language narrative summary of a reflection report.
 
@@ -242,6 +286,12 @@ def generate_insight_narrative(
             If ``None``, the module-level in-process dict is used. The
             cache key includes ``tenant_id`` and ``user_id`` to enforce
             isolation.
+        audit_log: Optional :class:`foresight_mcp.audit.AuditLog`. If
+            provided, success / error / cache-hit events are persisted
+            as queryable, tenant-isolated rows. If ``None`` (the
+            default), the module falls back to a structured
+            ``logger.info(...)`` call for compatibility. Production
+            deployments should always pass a configured ``audit_log``.
 
     Returns:
         A natural-language narrative string.
@@ -272,6 +322,18 @@ def generate_insight_narrative(
     cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
     if cache_key in cache:
         logger.debug("reflection_narrative_cache_hit", extra={"cache_key": cache_key})
+        _audit(
+            event_type=NARRATIVE_CACHE_HIT,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            report_id=reflection_report.report_id,
+            model_version=model_version,
+            prompt_hash="",
+            response_hash=None,
+            latency_ms=0.0,
+            outcome="cache_hit",
+            audit_log=audit_log,
+        )
         return cache[cache_key]
 
     prompt = _build_phi_safe_prompt(reflection_report)
@@ -283,6 +345,7 @@ def generate_insight_narrative(
     except Exception as exc:
         latency_ms = (time.perf_counter() - start) * 1000.0
         _audit(
+            event_type=NARRATIVE_FAILED,
             tenant_id=tenant_id,
             user_id=user_id,
             report_id=reflection_report.report_id,
@@ -291,6 +354,7 @@ def generate_insight_narrative(
             response_hash=None,
             latency_ms=latency_ms,
             outcome="error",
+            audit_log=audit_log,
         )
         raise ReflectionNarrativeError(
             f"LLM call failed for report {reflection_report.report_id}: {exc}"
@@ -302,6 +366,7 @@ def generate_insight_narrative(
     response_hash = _hash_payload(response)
 
     _audit(
+        event_type=NARRATIVE_GENERATED,
         tenant_id=tenant_id,
         user_id=user_id,
         report_id=reflection_report.report_id,
@@ -310,6 +375,7 @@ def generate_insight_narrative(
         response_hash=response_hash,
         latency_ms=latency_ms,
         outcome="success",
+        audit_log=audit_log,
     )
 
     cache[cache_key] = response

@@ -18,6 +18,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from foresight_mcp.audit import (
+    NARRATIVE_CACHE_HIT,
+    NARRATIVE_FAILED,
+    NARRATIVE_GENERATED,
+    AuditLog,
+)
 from foresight_mcp.reflection_engine import ReflectionInsight, ReflectionReport
 from foresight_mcp.reflection_narrative import (
     ReflectionNarrativeError,
@@ -405,3 +411,121 @@ def test_generate_insight_narrative_with_empty_insights() -> None:
     )
     assert isinstance(out, str)
     assert "t/u" in out
+
+
+# ============================================================
+# Audit emission (PIX-3741 / GAP-6c)
+# ============================================================
+
+
+def test_reflection_narrative_emits_audit_row_on_success(tmp_path: Any) -> None:
+    log = AuditLog(str(tmp_path / "audit.db"))
+    try:
+        report = _make_report()
+        out = generate_insight_narrative(
+            report,
+            tenant_id="tenant-success",
+            user_id="user-1",
+            llm_call=_fake_llm,
+            cache={},
+            audit_log=log,
+        )
+        assert out
+
+        rows = log.query("tenant-success", event_type=NARRATIVE_GENERATED)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.tenant_id == "tenant-success"
+        assert row.user_id == "user-1"
+        assert row.resource_id == report.report_id
+        assert row.metadata["outcome"] == "success"
+        assert row.metadata["report_id"] == report.report_id
+        assert row.metadata["prompt_hash"]
+        assert row.metadata["response_hash"]
+        assert row.metadata["latency_ms"] >= 0
+    finally:
+        log.close()
+
+
+def test_reflection_narrative_emits_audit_row_on_error(tmp_path: Any) -> None:
+    def boom(prompt: str, tenant_id: str, user_id: str) -> str:
+        raise RuntimeError("upstream provider timeout")
+
+    log = AuditLog(str(tmp_path / "audit.db"))
+    try:
+        report = _make_report()
+        with pytest.raises(ReflectionNarrativeError):
+            generate_insight_narrative(
+                report,
+                tenant_id="tenant-fail",
+                user_id="user-1",
+                llm_call=boom,
+                cache={},
+                audit_log=log,
+            )
+
+        rows = log.query("tenant-fail", event_type=NARRATIVE_FAILED)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.tenant_id == "tenant-fail"
+        assert row.user_id == "user-1"
+        assert row.metadata["outcome"] == "error"
+        assert row.metadata["response_hash"] is None
+    finally:
+        log.close()
+
+
+def test_reflection_narrative_emits_audit_row_on_cache_hit(tmp_path: Any) -> None:
+    log = AuditLog(str(tmp_path / "audit.db"))
+    try:
+        report = _make_report()
+        cache: dict[str, str] = {}
+        out1 = generate_insight_narrative(
+            report,
+            tenant_id="tenant-cache",
+            user_id="user-1",
+            llm_call=_fake_llm,
+            cache=cache,
+            audit_log=log,
+        )
+        assert out1
+
+        def must_not_call(*args: Any, **kwargs: Any) -> str:
+            raise AssertionError("LLM callable should not be invoked on cache hit")
+
+        out2 = generate_insight_narrative(
+            report,
+            tenant_id="tenant-cache",
+            user_id="user-1",
+            llm_call=must_not_call,
+            cache=cache,
+            audit_log=log,
+        )
+        assert out2 == out1
+
+        cache_hits = log.query("tenant-cache", event_type=NARRATIVE_CACHE_HIT)
+        assert len(cache_hits) == 1
+        assert cache_hits[0].metadata["outcome"] == "cache_hit"
+    finally:
+        log.close()
+
+
+def test_reflection_narrative_audit_log_is_optional() -> None:
+    report = _make_report()
+    out = generate_insight_narrative(
+        report,
+        tenant_id="tenant-noaudit",
+        user_id="user-1",
+        llm_call=_fake_llm,
+        cache={},
+    )
+    assert out
+
+    out2 = generate_insight_narrative(
+        report,
+        tenant_id="tenant-noaudit",
+        user_id="user-1",
+        llm_call=_fake_llm,
+        cache={},
+    )
+    assert out2 == out
