@@ -131,7 +131,7 @@ export class LWWRegister<T> {
     return this.value
   }
 
-  toDict(): any {
+  toDict(): { value: T | null; timestamp: number; nodeId: string; vectorClock: Record<string, number> } {
     return {
       value: this.value,
       timestamp: this.timestamp,
@@ -302,7 +302,7 @@ export class ORSet<T> {
     this.vc.merge(other.vectorClock)
   }
 
-  toDict(): any {
+  toDict(): { adds: Record<string, string[]>; removes: Record<string, string[]>; vectorClock: Record<string, number>; nodeId: string } {
     const addsObj: Record<string, string[]> = {}
     for (const [hash, tags] of this.adds.entries()) {
       addsObj[hash] = Array.from(tags)
@@ -419,8 +419,8 @@ export class LWWMap<T> {
     this.vc.merge(other.vectorClock)
   }
 
-  toDict(): any {
-    const entriesObj: Record<string, any> = {}
+  toDict(): { entries: Record<string, { value: T | null; timestamp: number; nodeId: string; vectorClock: Record<string, number> }>; vectorClock: Record<string, number>; nodeId: string } {
+    const entriesObj: Record<string, { value: T | null; timestamp: number; nodeId: string; vectorClock: Record<string, number> }> = {}
     for (const [key, reg] of this.entries.entries()) {
       entriesObj[key] = reg.toDict()
     }
