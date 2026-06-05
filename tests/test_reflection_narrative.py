@@ -405,3 +405,76 @@ def test_generate_insight_narrative_with_empty_insights() -> None:
     )
     assert isinstance(out, str)
     assert "t/u" in out
+
+
+def test_reflection_narrative_uses_injected_cache() -> None:
+    """A cache object can provide persistent get/put behavior without dict APIs."""
+
+    class RecordingCache:
+        def __init__(self) -> None:
+            self.values: dict[tuple[str, str, str, str, str], str] = {}
+            self.get_calls: list[tuple[str, str, str, str, str]] = []
+            self.put_calls: list[tuple[str, str, str, str, str, str]] = []
+
+        def get(
+            self,
+            report_id: str,
+            *,
+            tenant_id: str,
+            user_id: str,
+            model_version: str,
+            insights_hash: str,
+        ) -> str | None:
+            key = (tenant_id, user_id, report_id, model_version, insights_hash)
+            self.get_calls.append(key)
+            return self.values.get(key)
+
+        def put(
+            self,
+            report_id: str,
+            narrative: str,
+            *,
+            tenant_id: str,
+            user_id: str,
+            model_version: str,
+            insights_hash: str,
+        ) -> None:
+            key = (tenant_id, user_id, report_id, model_version, insights_hash)
+            self.put_calls.append(
+                (tenant_id, user_id, report_id, model_version, insights_hash, narrative)
+            )
+            self.values[key] = narrative
+
+    report = _make_report(report_id="refl_injected")
+    cache = RecordingCache()
+    call_count = 0
+
+    def counting_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+        nonlocal call_count
+        call_count += 1
+        return f"cached response {call_count}"
+
+    first = generate_insight_narrative(
+        report,
+        tenant_id="tenant-a",
+        user_id="user-1",
+        llm_call=counting_llm,
+        model_version="model-a",
+        cache=cache,
+    )
+    second = generate_insight_narrative(
+        report,
+        tenant_id="tenant-a",
+        user_id="user-1",
+        llm_call=counting_llm,
+        model_version="model-a",
+        cache=cache,
+    )
+
+    assert first == "cached response 1"
+    assert second == first
+    assert call_count == 1
+    assert len(cache.get_calls) == 2
+    assert len(cache.put_calls) == 1
+    assert cache.get_calls[0][0] == "tenant-a"
+    assert cache.get_calls[0][1] == "user-1"
