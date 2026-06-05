@@ -28,10 +28,10 @@ consistent with HIPAA requirements.
 Audit
 -----
 
-Every successful and failed call emits a structured ``logging`` entry via
-``logger.info("reflection_narrative_generated", extra={...})``. This is a
-stopgap: when a tenant-isolated LLM client is added to the system, a proper
-audit table should replace this. See the dependency note on PIX-3738.
+Every successful and failed call can emit a structured row through
+``AuditLog``. Callers that do not pass an audit log retain the previous
+structured ``logging`` fallback, so unit tests and lightweight environments do
+not need a database.
 
 Caching
 -------
@@ -50,6 +50,7 @@ import logging
 import time
 from typing import Any, Callable
 
+from .audit import AuditEvent, AuditLog
 from .reflection_engine import ReflectionReport
 
 logger = logging.getLogger("foresight_reflection_narrative")
@@ -172,6 +173,8 @@ def _hash_payload(payload: str) -> str:
 
 def _audit(
     *,
+    audit_log: AuditLog | None,
+    event_type: str,
     tenant_id: str,
     user_id: str,
     report_id: str,
@@ -181,24 +184,33 @@ def _audit(
     latency_ms: float,
     outcome: str,
 ) -> None:
-    """Emit a structured audit log entry.
+    """Emit a structured audit event or fall back to logging."""
+    metadata = {
+        "model_version": model_version,
+        "prompt_hash": prompt_hash,
+        "response_hash": response_hash,
+        "latency_ms": latency_ms,
+        "outcome": outcome,
+    }
+    if audit_log is not None:
+        audit_log.record(
+            AuditEvent(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                event_type=event_type,
+                resource_id=report_id,
+                metadata=metadata,
+            )
+        )
+        return
 
-    Stopgap implementation using Python ``logging``. A proper audit table
-    should replace this once a tenant-isolated LLM client is introduced.
-    The ``extra`` dict is picked up by any ``dictConfig``-style formatter
-    the host application wires up.
-    """
     logger.info(
-        "reflection_narrative_generated",
+        event_type,
         extra={
             "tenant_id": tenant_id,
             "user_id": user_id,
             "report_id": report_id,
-            "model_version": model_version,
-            "prompt_hash": prompt_hash,
-            "response_hash": response_hash,
-            "latency_ms": latency_ms,
-            "outcome": outcome,
+            **metadata,
         },
     )
 
@@ -221,6 +233,7 @@ def generate_insight_narrative(
     llm_call: LLMCallable,
     model_version: str = "caller-default",
     cache: dict[str, str] | None = None,
+    audit_log: AuditLog | None = None,
 ) -> str:
     """Generate a natural-language narrative summary of a reflection report.
 
@@ -242,6 +255,9 @@ def generate_insight_narrative(
             If ``None``, the module-level in-process dict is used. The
             cache key includes ``tenant_id`` and ``user_id`` to enforce
             isolation.
+        audit_log: Optional SQLite-backed audit log. If provided, success
+            and error events are inserted into ``audit_events``. If omitted,
+            the function keeps the previous structured logging fallback.
 
     Returns:
         A natural-language narrative string.
@@ -283,6 +299,8 @@ def generate_insight_narrative(
     except Exception as exc:
         latency_ms = (time.perf_counter() - start) * 1000.0
         _audit(
+            audit_log=audit_log,
+            event_type=AuditEvent.NARRATIVE_FAILED,
             tenant_id=tenant_id,
             user_id=user_id,
             report_id=reflection_report.report_id,
@@ -302,6 +320,8 @@ def generate_insight_narrative(
     response_hash = _hash_payload(response)
 
     _audit(
+        audit_log=audit_log,
+        event_type=AuditEvent.NARRATIVE_GENERATED,
         tenant_id=tenant_id,
         user_id=user_id,
         report_id=reflection_report.report_id,

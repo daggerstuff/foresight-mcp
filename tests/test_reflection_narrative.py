@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from foresight_mcp.audit import AuditLog
 from foresight_mcp.reflection_engine import ReflectionInsight, ReflectionReport
 from foresight_mcp.reflection_narrative import (
     ReflectionNarrativeError,
@@ -405,3 +406,83 @@ def test_generate_insight_narrative_with_empty_insights() -> None:
     )
     assert isinstance(out, str)
     assert "t/u" in out
+
+
+def test_reflection_narrative_emits_audit_row_on_success(tmp_path: Path) -> None:
+    """Successful narrative generation writes a structured audit row."""
+    audit_log = AuditLog(tmp_path / "audit.db")
+    report = _make_report(report_id="refl_success")
+
+    out = generate_insight_narrative(
+        report,
+        tenant_id="tenant_a",
+        user_id="user_1",
+        llm_call=_fake_llm,
+        model_version="model-v1",
+        cache={},
+        audit_log=audit_log,
+    )
+
+    rows = audit_log.query("tenant_a")
+    assert len(rows) == 1
+    event = rows[0]
+    assert event.event_type == "reflection_narrative_generated"
+    assert event.resource_id == "refl_success"
+    assert event.metadata["model_version"] == "model-v1"
+    assert event.metadata["outcome"] == "success"
+    assert event.metadata["prompt_hash"]
+    assert event.metadata["response_hash"]
+    assert out not in str(event.metadata)
+    audit_log.close()
+
+
+def test_reflection_narrative_emits_audit_row_on_error(tmp_path: Path) -> None:
+    """Failed narrative generation writes a structured audit row."""
+    audit_log = AuditLog(tmp_path / "audit.db")
+    report = _make_report(report_id="refl_error")
+
+    def failing_llm(prompt: str, tenant_id: str, user_id: str) -> str:
+        raise RuntimeError("provider unavailable")
+
+    with pytest.raises(ReflectionNarrativeError):
+        generate_insight_narrative(
+            report,
+            tenant_id="tenant_a",
+            user_id="user_1",
+            llm_call=failing_llm,
+            model_version="model-v1",
+            cache={},
+            audit_log=audit_log,
+        )
+
+    rows = audit_log.query("tenant_a")
+    assert len(rows) == 1
+    event = rows[0]
+    assert event.event_type == "reflection_narrative_failed"
+    assert event.resource_id == "refl_error"
+    assert event.metadata["outcome"] == "error"
+    assert event.metadata["response_hash"] is None
+    assert "provider unavailable" not in str(event.metadata)
+    audit_log.close()
+
+
+def test_reflection_narrative_audit_log_is_optional(caplog: pytest.LogCaptureFixture) -> None:
+    """Callers without an AuditLog keep the previous logger-based fallback."""
+    report = _make_report(report_id="refl_optional")
+
+    with caplog.at_level("INFO", logger="foresight_reflection_narrative"):
+        out = generate_insight_narrative(
+            report,
+            tenant_id="tenant_a",
+            user_id="user_1",
+            llm_call=_fake_llm,
+            cache={},
+        )
+
+    assert "Narrative for tenant_a/user_1" in out
+    assert any(
+        record.message == "reflection_narrative_generated"
+        and getattr(record, "tenant_id") == "tenant_a"
+        and getattr(record, "report_id") == "refl_optional"
+        for record in caplog.records
+    )
