@@ -178,6 +178,8 @@ class NarrativeCache:
                     created_at = excluded.created_at,
                     last_accessed_at = excluded.last_accessed_at,
                     access_count = 0
+                WHERE narrative_cache.tenant_id = excluded.tenant_id
+                    AND narrative_cache.user_id = excluded.user_id
                 """,
                 (
                     cache_key,
