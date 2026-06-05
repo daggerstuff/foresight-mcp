@@ -284,7 +284,7 @@ export class ORSet<T> {
       if (!this.adds.has(hash)) {
         this.adds.set(hash, new Set())
       }
-      for (const tag of tags as string[]) {
+      for (const tag of tags) {
         this.adds.get(hash)!.add(tag)
       }
     }
@@ -294,7 +294,7 @@ export class ORSet<T> {
       if (!this.removes.has(hash)) {
         this.removes.set(hash, new Set())
       }
-      for (const tag of tags as string[]) {
+      for (const tag of tags) {
         this.removes.get(hash)!.add(tag)
       }
     }
@@ -330,13 +330,13 @@ export class ORSet<T> {
 
     if (data.adds) {
       for (const [hash, tags] of Object.entries(data.adds)) {
-        orset.adds.set(hash, new Set(tags as string[]))
+        orset.adds.set(hash, new Set(tags))
       }
     }
 
     if (data.removes) {
       for (const [hash, tags] of Object.entries(data.removes)) {
-        orset.removes.set(hash, new Set(tags as string[]))
+        orset.removes.set(hash, new Set(tags))
       }
     }
 
