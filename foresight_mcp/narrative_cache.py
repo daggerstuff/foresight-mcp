@@ -116,6 +116,7 @@ class NarrativeCache:
                 """,
                 (now, cache_key, tenant_id, user_id),
             )
+            self._harden_file_permissions()
             self._hits += 1
             return str(row["narrative"])
 
@@ -194,6 +195,7 @@ class NarrativeCache:
                 ),
             )
             self._evict_lru()
+            self._harden_file_permissions()
 
     def clear(self, tenant_id: str | None = None) -> int:
         """Clear all cache entries, or only entries for one tenant."""
@@ -205,6 +207,7 @@ class NarrativeCache:
                     "DELETE FROM narrative_cache WHERE tenant_id = ?",
                     (tenant_id,),
                 )
+            self._harden_file_permissions()
             return int(cursor.rowcount)
 
     def stats(self) -> dict[str, Any]:
@@ -263,6 +266,7 @@ class NarrativeCache:
                 ON narrative_cache(created_at)
                 """
             )
+            self._harden_file_permissions()
 
     def _size(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS count FROM narrative_cache").fetchone()
@@ -293,6 +297,15 @@ class NarrativeCache:
             (overflow,),
         )
         self._eviction_count += max(int(cursor.rowcount), 0)
+
+    def _harden_file_permissions(self) -> None:
+        for path in (
+            self.db_path,
+            Path(f"{self.db_path}-wal"),
+            Path(f"{self.db_path}-shm"),
+        ):
+            if path.exists():
+                path.chmod(0o600)
 
     @staticmethod
     def _cache_key(

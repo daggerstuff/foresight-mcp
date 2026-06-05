@@ -1,3 +1,6 @@
+import sqlite3
+import stat
+import threading
 import time
 
 from foresight_mcp.narrative_cache import NarrativeCache
@@ -266,3 +269,102 @@ def test_narrative_cache_stats(tmp_path) -> None:
     assert stats["misses"] == 1
     assert stats["hit_rate"] == 0.5
     assert stats["eviction_count"] == 1
+
+
+def test_narrative_cache_uses_wal_mode(tmp_path) -> None:
+    path = tmp_path / "narratives.sqlite3"
+    cache = NarrativeCache(path)
+    cache.close()
+
+    conn = sqlite3.connect(path)
+    try:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        conn.close()
+
+    assert journal_mode == "wal"
+
+
+def test_narrative_cache_allows_cross_thread_access(tmp_path) -> None:
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            cache.put(
+                "report-1",
+                "thread narrative",
+                tenant_id="tenant-a",
+                user_id="user-1",
+                model_version="model-a",
+                insights_hash="hash-a",
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert errors == []
+    assert (
+        cache.get(
+            "report-1",
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="hash-a",
+        )
+        == "thread narrative"
+    )
+
+
+def test_narrative_cache_cleans_expired_entries_on_put_when_near_full(tmp_path) -> None:
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3", max_entries=10, ttl_seconds=0.01)
+    for index in range(9):
+        cache.put(
+            f"expired-{index}",
+            f"expired narrative {index}",
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash=f"hash-{index}",
+        )
+    time.sleep(0.02)
+
+    cache.put(
+        "fresh",
+        "fresh narrative",
+        tenant_id="tenant-a",
+        user_id="user-1",
+        model_version="model-a",
+        insights_hash="fresh-hash",
+    )
+
+    assert cache.stats()["size"] == 1
+    assert (
+        cache.get(
+            "fresh",
+            tenant_id="tenant-a",
+            user_id="user-1",
+            model_version="model-a",
+            insights_hash="fresh-hash",
+        )
+        == "fresh narrative"
+    )
+
+
+def test_narrative_cache_close_is_idempotent(tmp_path) -> None:
+    cache = NarrativeCache(tmp_path / "narratives.sqlite3")
+
+    cache.close()
+    cache.close()
+
+
+def test_narrative_cache_db_file_is_private(tmp_path) -> None:
+    path = tmp_path / "narratives.sqlite3"
+    NarrativeCache(path).close()
+
+    file_mode = stat.S_IMODE(path.stat().st_mode)
+
+    assert file_mode == 0o600
