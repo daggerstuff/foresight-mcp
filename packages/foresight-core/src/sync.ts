@@ -68,7 +68,7 @@ export class LocalStorageOperationStorage implements OperationStorage {
   private async getQueue(): Promise<Operation[]> {
     if (typeof localStorage === 'undefined') return []
     const data = localStorage.getItem(this.key)
-    return data ? JSON.parse(data) : []
+    return data ? (JSON.parse(data) as Operation[]) : []
   }
 
   private async saveQueue(queue: Operation[]): Promise<void> {

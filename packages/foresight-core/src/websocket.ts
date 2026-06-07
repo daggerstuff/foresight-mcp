@@ -93,8 +93,8 @@ export class ForesightWebSocketClient {
           reject(error)
         }
 
-        this.ws.onmessage = (event) => {
-          this.handleMessage(event.data)
+        this.ws.onmessage = (event: MessageEvent) => {
+          this.handleMessage(event.data as string)
         }
       } catch (error) {
         reject(error)
@@ -182,7 +182,7 @@ export class ForesightWebSocketClient {
 
   private handleMessage(data: string): void {
     try {
-      const message: WebSocketMessage = JSON.parse(data)
+      const message = JSON.parse(data) as WebSocketMessage
       this.messageHandlers.forEach((handler) => handler(message))
     } catch (error) {
       console.error('Failed to parse WebSocket message:', error)
