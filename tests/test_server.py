@@ -31,6 +31,26 @@ from foresight_mcp.server import (
 )
 
 
+@pytest.fixture(autouse=True)
+def setup_test_db(tmp_path, monkeypatch):
+    """Isolate DB per test function to prevent tenant memory limit issues."""
+    db_file = tmp_path / "test_memory.db"
+    monkeypatch.setenv("FORESIGHT_DB_PATH", str(db_file))
+
+    import foresight_mcp.config as config_module
+    import foresight_mcp.connection_pool as conn_pool_module
+    from foresight_mcp.connection_pool import reset_pool
+    from foresight_mcp.server import init_db
+
+    monkeypatch.setattr(config_module, "DB_PATH", str(db_file))
+    monkeypatch.setattr(conn_pool_module, "DB_PATH", str(db_file))
+    reset_pool()
+
+    init_db()
+    yield
+    reset_pool()
+
+
 def test_store_memory():
     # Use unique content to avoid dedup collision with previous runs
     unique = f"test_{datetime.now(timezone.utc).isoformat()}_{hashlib.md5(b'store_test').hexdigest()[:8]}"
@@ -1718,11 +1738,14 @@ def test_handle_version_rollback_respects_tenant_scope():
         conn.close()
     finally:
         os.unlink(db_path)
+
+
 def test_memory_hard_cap_enforcement():
     """Storing memory beyond hard cap returns error."""
-    import tempfile
     import os
     import sqlite3
+    import tempfile
+
     # Create temp DB
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
@@ -1747,16 +1770,20 @@ def test_memory_hard_cap_enforcement():
         conn.close()
         # Patch config DB_PATH BEFORE importing other modules
         import foresight_mcp.config as config_module
+
         original_db_path = config_module.DB_PATH
         config_module.DB_PATH = db_path
         # Also patch connection_pool's DB_PATH
         import foresight_mcp.connection_pool as conn_pool_module
+
         conn_pool_module.DB_PATH = db_path
         from foresight_mcp.connection_pool import reset_pool
         from foresight_mcp.hybrid_retriever import reset_hybrid_retriever
+
         reset_pool()
         reset_hybrid_retriever()
         import foresight_mcp.server as server_module
+
         server_module._narrative_cache = None
         try:
             # Patch the limit to a small value for testing
@@ -1764,8 +1791,7 @@ def test_memory_hard_cap_enforcement():
             server_module.DEFAULT_MAX_MEMORY_PER_TENANT = 5
             try:
                 from foresight_mcp.server import store_memory
-                from foresight_mcp.config import USER_ID
-                from foresight_mcp.tenant_context import get_current_tenant_id
+
                 for i in range(5):
                     result = store_memory(f"test memory {i}")
                     assert "Error" not in result, f"Should not error at {i}: {result}"
@@ -1783,10 +1809,14 @@ def test_memory_hard_cap_enforcement():
             server_module._narrative_cache = None
     finally:
         os.unlink(db_path)
+
+
 def test_memory_budget_metrics_utilization():
     """memory_budget utilization_pct is calculated correctly."""
-    from foresight_mcp.server import get_system_status, SystemStatusOptions, store_memory
     import json
+
+    from foresight_mcp.server import SystemStatusOptions, get_system_status, store_memory
+
     # Store a few memories
     for i in range(5):
         store_memory(f"budget test {i}")
@@ -1795,3 +1825,37 @@ def test_memory_budget_metrics_utilization():
     assert data["memory_budget"]["current_count"] >= 5
     assert data["memory_budget"]["utilization_pct"] >= 0
     assert data["memory_budget"]["hard_cap_enforced"] is False
+
+
+def test_cascade_retrieval_basic():
+    """Cascade retrieval returns results when use_cascade is enabled."""
+    from foresight_mcp.server import SearchOptions, search_memories
+
+    result = search_memories(SearchOptions(query="test", use_cascade=True, limit=5))
+    # Should return results (falls back to hybrid since no embeddings)
+    assert "memories" in result.lower() or "found" in result.lower()
+
+
+def test_cascade_retrieval_respects_limit():
+    """Cascade retrieval respects the limit parameter."""
+    from foresight_mcp.server import SearchOptions, search_memories
+
+    result = search_memories(SearchOptions(query="test", use_cascade=True, limit=2))
+    # Count lines in result
+    lines = [line for line in result.split("\n") if line.startswith("- [")]
+    assert len(lines) <= 2
+
+
+def test_search_options_cascade_fields():
+    """SearchOptions accepts cascade-related fields."""
+    from foresight_mcp.server import SearchOptions
+
+    opts = SearchOptions(query="test", use_cascade=True, cascade_depth=3, cascade_limit=100)
+    assert opts.use_cascade is True
+    assert opts.cascade_depth == 3
+    assert opts.cascade_limit == 100
+    # Test defaults
+    opts2 = SearchOptions(query="test")
+    assert opts2.use_cascade is False
+    assert opts2.cascade_depth == 2
+    assert opts2.cascade_limit == 100

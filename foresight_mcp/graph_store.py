@@ -17,6 +17,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
+from .config import DB_PATH
 from .connection_pool import get_pool
 from .entity_extractor import Entity, ExtractionResult, Relationship
 from .sql_helpers import build_type_filter
@@ -90,7 +91,7 @@ class GraphStore:
                 user_id TEXT NOT NULL,
                 name TEXT NOT NULL,
                 entity_type TEXT NOT NULL
-                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object')),
+                CHECK(entity_type IN ('person', 'place', 'concept', 'event', 'emotion', 'object', 'cluster')),
                 description TEXT,
                 properties TEXT DEFAULT '{}',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -547,13 +548,15 @@ class GraphStore:
         self,
         start_entity_id: str,
         user_id: str,
-        max_depth: int = 2,
-        max_results: int = 50,
-        relationship_types: list[str] | None = None,
+        *args: Any,
         tenant_id: str | None = None,
+        **kwargs: Any,
     ) -> GraphTraversalResult:
         """Traverse graph from a starting entity, scoped to tenant."""
-        tid = tenant_id or get_current_tenant_id()
+        max_depth = kwargs.get("max_depth", args[0] if len(args) > 0 else 2)
+        max_results = kwargs.get("max_results", args[1] if len(args) > 1 else 50)
+        relationship_types = kwargs.get("relationship_types", args[2] if len(args) > 2 else None)
+        tid = tenant_id or kwargs.get("tenant_id", args[3] if len(args) > 3 else None) or get_current_tenant_id()
         _validate_input(user_id, tid)
         pool = get_pool(self.db_path)
         conn = pool.acquire()
@@ -818,25 +821,21 @@ class GraphStore:
 
 
 # Global instance management
-_graph_store: GraphStore | None = None
+_state: dict[str, Any] = {"graph_store": None}
 _lock = threading.Lock()
 
 
 def get_graph_store(db_path: str | None = None) -> GraphStore:
     """Get or create global graph store instance."""
-    global _graph_store
     with _lock:
-        if _graph_store is None:
+        if _state["graph_store"] is None:
             if db_path is None:
-                from .config import DB_PATH
-
                 db_path = DB_PATH
-            _graph_store = GraphStore(db_path)
-        return _graph_store
+            _state["graph_store"] = GraphStore(db_path)
+        return _state["graph_store"]
 
 
 def reset_graph_store() -> None:
     """Reset global graph store (for testing)."""
-    global _graph_store
     with _lock:
-        _graph_store = None
+        _state["graph_store"] = None
