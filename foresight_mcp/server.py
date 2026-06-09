@@ -121,15 +121,28 @@ class MemoryOptions(BaseModel):
     metrics: dict[str, Any] | None = Field(
         default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)"
     )
-
-
+    relation_type: str | None = Field(
+        default=None,
+        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related"
+    )
+    related_memory_id: str | None = Field(
+        default=None,
+        description="ID of the memory this one relates to (paired with relation_type)"
+    )
 class MemoryUpdateOptions(BaseModel):
     content: str | None = Field(default=None, description="New memory content")
     category: str | None = Field(default=None, description="New category label")
     scope: str | None = Field(default=None, description="New memory scope")
     retention: str | None = Field(default=None, description="New retention policy")
     tags: list[str] | None = Field(default=None, description="New list of tags")
-
+    relation_type: str | None = Field(
+        default=None,
+        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related"
+    )
+    related_memory_id: str | None = Field(
+        default=None,
+        description="ID of the memory this one relates to (paired with relation_type)"
+    )
 
 class SearchOptions(BaseModel):
     query_type: Literal["id", "keyword", "list"] = Field(default="keyword", description="Type of search/retrieval")
@@ -976,11 +989,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     """Helper to handle memory storage."""
     if not options.content:
         return "Error: Content is required for 'store' action"
-
     opts = options.options or MemoryOptions()
     memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
     content_h = _content_hash(options.content.strip())
-
     conn = get_db_connection()
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
@@ -988,7 +999,6 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         "ORDER BY created_at DESC LIMIT 1",
         (uid, tenant_id, content_h),
     ).fetchone()
-
     if existing:
         conn.execute(
             "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
@@ -998,11 +1008,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         conn.commit()
         conn.close()
         return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
-
     # Parse emotional context and metrics
     emo_ctx = EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
     met = EmpathyMetrics.from_dict(opts.metrics) if opts.metrics else None
-
     memory = MemoryObject.create(
         content=options.content,
         scope=cast(MemoryScope, opts.scope),
@@ -1011,14 +1019,12 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         metrics=met,
     )
     memory.id = memory_id
-
     # Socratic Gate
     ms = get_memory_system()
     gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, uid))
     memory.tags = gate_result.suggested_tags
     if opts.category and opts.category not in memory.tags:
         memory.tags.append(opts.category)
-
     # Store
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
@@ -1044,7 +1050,19 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     )
     conn.commit()
     conn.close()
-
+    # Create memory relationship if specified
+    if opts.relation_type and opts.related_memory_id:
+        store = get_memory_relationship_store()
+        try:
+            store.link_memories(
+                source_memory_id=memory_id,
+                target_memory_id=opts.related_memory_id,
+                relationship_type=opts.relation_type,
+                user_id=uid,
+                tenant_id=tenant_id,
+            )
+        except MemoryRelationshipError as exc:
+            logger.warning(f"Failed to create memory relationship: {exc}")
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
@@ -1054,16 +1072,13 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     """Helper to handle memory updates."""
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
-
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
     ).fetchone()
-
     if not row:
         conn.close()
         return f"Memory {options.memory_id} not found."
-
     updates_list = []
     values = []
     if options.updates.content:
@@ -1080,7 +1095,6 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
         updates_list.extend(["content = ?", "version = ?"])
         values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
-
     if options.updates.category:
         updates_list.append("category = ?")
         values.append(options.updates.category)
@@ -1093,11 +1107,9 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     if options.updates.tags:
         updates_list.append("tags = ?")
         values.append(json.dumps(options.updates.tags))
-
     if not updates_list:
         conn.close()
         return "No updates provided."
-
     updates_list.append("updated_at = ?")
     values.append(datetime.now(timezone.utc).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
@@ -1115,6 +1127,19 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
     )
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    # Create memory relationship if specified
+    if options.updates.relation_type and options.updates.related_memory_id:
+        store = get_memory_relationship_store()
+        try:
+            store.link_memories(
+                source_memory_id=options.memory_id,
+                target_memory_id=options.updates.related_memory_id,
+                relationship_type=options.updates.relation_type,
+                user_id=uid,
+                tenant_id=tenant_id,
+            )
+        except MemoryRelationshipError as exc:
+            logger.warning(f"Failed to create memory relationship: {exc}")
     return f"Updated memory {options.memory_id}"
 
 
@@ -2992,6 +3017,8 @@ def store_memory(
     importance: float = 0.5,
     emotional_context: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    relation_type: str | None = None,
+    related_memory_id: str | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="store") used by callers and tests."""
     options = MemoryAction(
@@ -3004,6 +3031,8 @@ def store_memory(
             importance=importance,
             emotional_context=emotional_context,
             metrics=metrics,
+            relation_type=relation_type,
+            related_memory_id=related_memory_id,
         ),
     )
     return manage_memories(options, user_id=user_id)
@@ -3053,12 +3082,13 @@ def update_memory(
     scope: str | None = None,
     retention: str | None = None,
     tags: list[str] | None = None,
+    relation_type: str | None = None,
+    related_memory_id: str | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="update")."""
-    updates = MemoryUpdateOptions(content=content, category=category, scope=scope, retention=retention, tags=tags)
+    updates = MemoryUpdateOptions(content=content, category=category, scope=scope, retention=retention, tags=tags, relation_type=relation_type, related_memory_id=related_memory_id)
     options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
     return manage_memories(options, user_id=user_id)
-
 
 @mcp.tool(output_schema=None)
 def delete_memory(memory_id: str, user_id: str | None = None) -> str:
