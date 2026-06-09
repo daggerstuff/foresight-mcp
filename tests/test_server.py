@@ -14,7 +14,7 @@ import pytest
 from fastmcp import Client
 from foresight_cli.cli import _decode_tool_result
 from foresight_mcp import memory_status, store_memory
-from foresight_mcp.block_registry import InjectionPoint, MemoryBlockSchema
+from foresight_mcp.block_registry import MemoryBlockSchema
 from foresight_mcp.context_blocks import register_context_block_schema
 from foresight_mcp.hybrid_retriever import HybridResult, HybridSearchResult
 from foresight_mcp.server import (
@@ -22,7 +22,6 @@ from foresight_mcp.server import (
     CurationRunAction,
     _extract_terms,
     _format_context_blocks_by_injection_point,
-    _format_injection_output,
     _score_memory_relevance,
     get_relevant_memories,
     inject_context,
@@ -50,6 +49,7 @@ def test_store_memory_dedup():
 
 # ====== PIX-2083 content_hash dedup tests ======
 
+
 def test_memories_content_hash_backfill_computes_correct_hash():
     """v10 backfill: existing rows get content_hash = sha256(content)."""
     db_path = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
@@ -64,6 +64,7 @@ def test_memories_content_hash_backfill_computes_correct_hash():
             )"""
         )
         from foresight_mcp.document_layer import content_hash
+
         test_content = "backfill test content 123"
         expected_hash = content_hash(test_content)
         conn.execute(
@@ -72,14 +73,10 @@ def test_memories_content_hash_backfill_computes_correct_hash():
         )
         conn.commit()
 
-        row = conn.execute(
-            "SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'"
-        ).fetchone()
+        row = conn.execute("SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'").fetchone()
         assert row[0] is None, "precondition: content_hash starts NULL"
 
-        rows = conn.execute(
-            "SELECT id, content FROM memories WHERE content_hash IS NULL"
-        ).fetchall()
+        rows = conn.execute("SELECT id, content FROM memories WHERE content_hash IS NULL").fetchall()
         for r in rows:
             conn.execute(
                 "UPDATE memories SET content_hash = ? WHERE id = ?",
@@ -87,9 +84,7 @@ def test_memories_content_hash_backfill_computes_correct_hash():
             )
         conn.commit()
 
-        row = conn.execute(
-            "SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'"
-        ).fetchone()
+        row = conn.execute("SELECT content_hash FROM memories WHERE id = 'mem-backfill-1'").fetchone()
         assert row[0] == expected_hash, f"expected {expected_hash}, got {row[0]}"
 
         conn.close()
@@ -104,7 +99,6 @@ def test_store_memory_uses_content_hash_for_dedup():
     content_hash index for deterministic, index-based dedup.
     """
     from foresight_mcp import store_memory
-    from foresight_mcp.document_layer import content_hash
 
     unique_marker = hashlib.md5(f"hash_dedup_{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:8]
     content = f"hash_dedup_test_{unique_marker}"
@@ -127,7 +121,9 @@ def test_store_memory_dedup_increments_activation_count():
     assert "Duplicate detected" in r2
 
     import sqlite3 as _sql
+
     from foresight_mcp.config import DB_PATH
+
     conn = _sql.connect(str(DB_PATH))
     conn.row_factory = _sql.Row
     row = conn.execute(
@@ -163,6 +159,7 @@ def test_store_memory_tenant_isolation_on_dedup():
             )"""
         )
         from foresight_mcp.document_layer import content_hash
+
         shared_content = "cross-tenant dedup test"
         h = content_hash(shared_content)
         now = datetime.now(timezone.utc).isoformat()
@@ -510,8 +507,12 @@ def test_extract_terms_empty():
 def test_inject_context_returns_formatted_output():
     """inject_context returns structured context block with matching memories."""
     results = [
-        _make_hybrid_result("mem1", "User prefers Python type hints in all functions", combined_score=0.85, importance=0.8),
-        _make_hybrid_result("mem2", "Session discussed database migration strategies", combined_score=0.7, importance=0.6),
+        _make_hybrid_result(
+            "mem1", "User prefers Python type hints in all functions", combined_score=0.85, importance=0.8
+        ),
+        _make_hybrid_result(
+            "mem2", "Session discussed database migration strategies", combined_score=0.7, importance=0.6
+        ),
     ]
 
     with (
@@ -528,8 +529,7 @@ def test_inject_context_returns_formatted_output():
 def test_inject_context_respects_max_memories():
     """inject_context respects the max_memories limit."""
     results = [
-        _make_hybrid_result(f"mem{i}", f"Memory about python topic number {i}", combined_score=0.9)
-        for i in range(10)
+        _make_hybrid_result(f"mem{i}", f"Memory about python topic number {i}", combined_score=0.9) for i in range(10)
     ]
 
     with (
@@ -539,7 +539,7 @@ def test_inject_context_respects_max_memories():
     ):
         result = inject_context("python topic", max_memories=2)
 
-    memory_lines = [l for l in result.splitlines() if l.startswith("- [")]
+    memory_lines = [line for line in result.splitlines() if line.startswith("- [")]
     assert len(memory_lines) <= 2
 
 
@@ -635,10 +635,7 @@ def test_get_relevant_memories_filters_by_min_relevance():
 
 def test_get_relevant_memories_respects_limit():
     """get_relevant_memories respects the limit parameter."""
-    results = [
-        _make_hybrid_result(f"mem{i}", f"Memory {i}", combined_score=0.9 - i * 0.05)
-        for i in range(10)
-    ]
+    results = [_make_hybrid_result(f"mem{i}", f"Memory {i}", combined_score=0.9 - i * 0.05) for i in range(10)]
     with (
         _patch_hybrid_retriever(results),
         patch("foresight_mcp.server.USER_ID", "inject_test_user"),
@@ -816,15 +813,13 @@ def test_registered_context_block_schema_allows_validated_custom_block():
         custom_block = next(block for block in listed["blocks"] if block["label"] == label)
         assert custom_block["description"] == "Short custom notes"
         assert custom_block["char_limit"] == 12
-
         invalid = _decode_json_result(
             manage_context_blocks(
                 ContextBlockAction(action="update", label=label, content="this note is too long"), user_id=user_id
             )
         )
         assert invalid["ok"] is False
-        assert "Content exceeds char limit" in invalid["error"]
-
+        assert "Content exceeds char limit" in invalid["error"]["message"]
         reloaded = _decode_json_result(
             manage_context_blocks(ContextBlockAction(action="get", label=label), user_id=user_id)
         )
@@ -1591,8 +1586,7 @@ def test_old_archive_update_would_leak_across_tenants():
         conn.commit()
 
         assert cursor.rowcount == 2, (
-            "Vulnerability confirmed: old UPDATE leaks across tenants "
-            f"(updated {cursor.rowcount} rows instead of 1)"
+            f"Vulnerability confirmed: old UPDATE leaks across tenants (updated {cursor.rowcount} rows instead of 1)"
         )
         conn.close()
     finally:
@@ -1601,7 +1595,7 @@ def test_old_archive_update_would_leak_across_tenants():
 
 def _make_dict_conn(db_path: str, **kwargs):
     """Unused — kept for reference. Use the closure pattern instead to avoid recursion."""
-    return None
+    return
 
 
 def test_handle_version_rollback_respects_tenant_scope():
@@ -1660,8 +1654,18 @@ def test_handle_version_rollback_respects_tenant_scope():
                     created_at, updated_at, tags, is_ghost, version)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    memory_id, content, tenant, "user-1", "session", "short_term",
-                    "fact", now, now, tags, 0, 3,
+                    memory_id,
+                    content,
+                    tenant,
+                    "user-1",
+                    "session",
+                    "short_term",
+                    "fact",
+                    now,
+                    now,
+                    tags,
+                    0,
+                    3,
                 ),
             )
             conn.execute(
@@ -1670,8 +1674,15 @@ def test_handle_version_rollback_respects_tenant_scope():
                     tags, emotional_context, metrics)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    f"ver-{tenant}-2", memory_id, tenant, f"{tenant} target-version", 2,
-                    now, tags, "{}", "{}",
+                    f"ver-{tenant}-2",
+                    memory_id,
+                    tenant,
+                    f"{tenant} target-version",
+                    2,
+                    now,
+                    tags,
+                    "{}",
+                    "{}",
                 ),
             )
         conn.commit()

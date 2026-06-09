@@ -32,6 +32,7 @@ from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
 from .auth import AuthMiddleware
+from .block_registry import InjectionPoint, initialize_default_blocks
 from .config import (
     BANK_ID,
     DB_PATH,
@@ -49,6 +50,12 @@ from .context_blocks import (
 )
 from .crisis_detection import get_crisis_service
 from .decay_model import get_decay_model
+from .document_layer import (
+    DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
+    DocumentLayerError,
+    content_hash as _content_hash,
+    get_document_store,
+)
 from .enhanced_synthesizer import get_enhanced_synthesizer
 from .entity_extractor import get_entity_extractor
 from .event_bus import (
@@ -68,12 +75,8 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_relationships import (
-    VALID_RELATIONSHIP_TYPES,
-    MemoryRelationship,
     MemoryRelationshipError,
-    MemoryRelationshipStore,
     get_memory_relationship_store,
-    reset_memory_relationship_store,
 )
 from .memory_types import (
     EmotionalMetadata,
@@ -82,30 +85,13 @@ from .memory_types import (
     MemoryScope,
     RetentionPolicy,
 )
-from .profile_synthesizer import ProfileConfig, synthesize_profile as _synthesize_profile
+from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
-    LocalHashEmbedder as _LocalHashEmbedder,
-    SemanticSearch as _SemanticSearch,
     SemanticSearchError as _SemanticSearchError,
-    cosine_similarity as _cosine_similarity,
-    get_embedder as _get_embedder,
-    get_semantic_search as get_semantic_search,
-    reset_semantic_search as reset_semantic_search,
-)
-from .document_layer import (
-    DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
-    VALID_DOCUMENT_SOURCES as _VALID_DOCUMENT_SOURCES,
-    Document as _Document,
-    DocumentChunk as _DocumentChunk,
-    DocumentLayerError as _DocumentLayerError,
-    DocumentStore as _DocumentStore,
-    chunk_text as _chunk_text,
-    content_hash as _content_hash,
-    get_document_store as get_document_store,
-    reset_document_store as reset_document_store,
+    get_semantic_search,
 )
 from .stream_producer import (
     KafkaProducer,
@@ -614,7 +600,7 @@ _CURATION_WORKERS_LOCK = threading.Lock()
 _CURATION_CANCEL_SIGNALS: dict[str, threading.Event] = {}
 
 
-class CurationCanceled(RuntimeError):
+class CurationError(RuntimeError):
     """Raised when a curation run is canceled before publication completes."""
 
 
@@ -1165,23 +1151,24 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     if not row:
         conn.close()
         return f"Memory {memory_id} not found."
-    if not row.get("vector_id"):
+    row_dict = dict(row)
+    if not row_dict.get("vector_id"):
         conn.close()
         return "Cannot archive memory without vector_id. Embed first."
 
     ms = get_memory_system()
     ghost = ms["linker"].to_ghost(
         MemoryObject(
-            id=row["id"],
-            timestamp=row["created_at"],
-            scope=row["scope"],
-            retention=row["retention"],
-            content=row["content"],
-            tags=json.loads(row["tags"]) or [],
-            synthesized_from=json.loads(row["synthesized_from"]) or [],
-            is_ghost=bool(row.get("is_ghost", 0)),
-            vector_id=row["vector_id"],
-            gist=row.get("gist"),
+            id=row_dict["id"],
+            timestamp=row_dict["created_at"],
+            scope=row_dict["scope"],
+            retention=row_dict["retention"],
+            content=row_dict["content"],
+            tags=json.loads(row_dict["tags"]) or [],
+            synthesized_from=json.loads(row_dict["synthesized_from"]) or [],
+            is_ghost=bool(row_dict.get("is_ghost", 0)),
+            vector_id=row_dict["vector_id"],
+            gist=row_dict.get("gist"),
         )
     )
     conn.execute(
@@ -1491,38 +1478,36 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
     agent = get_context_block_agent(uid, tenant_id)
 
     if options.action == "list":
-        return _handle_context_block_list(agent)
-
-    if not options.label:
-        return _tool_error(options.action, "'label' is required for this action.")
-
-    if options.action == "get":
-        return _handle_context_block_get(agent, options.label)
-
-    if options.action == "update":
-        return _handle_context_block_update(agent, options.label, options.content)
-
-    if options.action in ("reset", "clear"):
+        res = _handle_context_block_list(agent)
+    elif not options.label:
+        res = _tool_error(options.action, "'label' is required for this action.")
+    elif options.action == "get":
+        res = _handle_context_block_get(agent, options.label)
+    elif options.action == "update":
+        res = _handle_context_block_update(agent, options.label, options.content)
+    elif options.action in ("reset", "clear"):
         try:
             if options.action == "reset":
                 agent.reset_block(options.label)
             else:
                 agent.clear_block(options.label)
+            message = (
+                f"Reset block '{options.label}' to default"
+                if options.action == "reset"
+                else f"Cleared block '{options.label}'"
+            )
+            res = _tool_response(
+                ok=True,
+                action=options.action,
+                label=options.label,
+                message=message,
+            )
         except ValueError as exc:
-            return _tool_error(options.action, str(exc), label=options.label)
-        message = (
-            f"Reset block '{options.label}' to default"
-            if options.action == "reset"
-            else f"Cleared block '{options.label}'"
-        )
-        return _tool_response(
-            ok=True,
-            action=options.action,
-            label=options.label,
-            message=message,
-        )
+            res = _tool_error(options.action, str(exc), label=options.label)
+    else:
+        res = _tool_error(options.action, f"Unsupported action: {options.action}")
 
-    return _tool_error(options.action, f"Unsupported action: {options.action}")
+    return res
 
 
 @mcp.tool(output_schema=None)
@@ -1683,7 +1668,7 @@ def _row_to_curation_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def _curation_run_output_bank(
-    run_id: str, source_bank_id: str, output_mode: str, requested_output_bank: str | None
+    run_id: str, _source_bank_id: str, output_mode: str, requested_output_bank: str | None
 ) -> str:
     """Resolve the effective output bank for a curation run."""
     if output_mode == "in_place":
@@ -1709,19 +1694,20 @@ def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> sqlite3.Row | 
 
 def _curation_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
     """Rebuild a worker payload from a curation run row."""
-    transcript_bundle_json = row["transcript_bundle_json"] if "transcript_bundle_json" in row.keys() else None
+    row_dict = dict(row)
+    transcript_bundle_json = row_dict.get("transcript_bundle_json")
     return {
-        "tenant_id": row["tenant_id"],
-        "user_id": row["user_id"],
-        "source_bank_id": row["source_bank_id"],
-        "output_bank_id": row["output_bank_id"],
-        "policy_mode": row["policy_mode"],
-        "tool_access": row["tool_access"],
-        "output_mode": row["output_mode"],
-        "instructions": row["instructions"],
+        "tenant_id": row_dict["tenant_id"],
+        "user_id": row_dict["user_id"],
+        "source_bank_id": row_dict["source_bank_id"],
+        "output_bank_id": row_dict["output_bank_id"],
+        "policy_mode": row_dict["policy_mode"],
+        "tool_access": row_dict["tool_access"],
+        "output_mode": row_dict["output_mode"],
+        "instructions": row_dict["instructions"],
         "transcript_bundle": json.loads(transcript_bundle_json) if transcript_bundle_json else None,
-        "session_id": row["session_id"] if "session_id" in row.keys() else None,
-        "project_path": row["project_path"] if "project_path" in row.keys() else None,
+        "session_id": row_dict.get("session_id"),
+        "project_path": row_dict.get("project_path"),
     }
 
 
@@ -1815,7 +1801,7 @@ def _is_run_canceled(uid: str, tenant_id: str, run_id: str) -> bool:
 def _raise_if_run_canceled(uid: str, tenant_id: str, run_id: str) -> None:
     """Abort background work when the run has been canceled."""
     if _is_run_canceled(uid, tenant_id, run_id):
-        raise CurationCanceled(f"Curation run {run_id} was canceled")
+        raise CurationError(f"Curation run {run_id} was canceled")
 
 
 def _delete_existing_curation_outputs(uid: str, tenant_id: str, bank_id: str, run_id: str) -> None:
@@ -1848,12 +1834,12 @@ def _promote_in_place_curation(
     conn = get_db_connection()
     try:
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before promotion started")
+            raise CurationError("Curation canceled before promotion started")
         if _is_run_canceled(uid, tenant_id, run_id):
-            raise CurationCanceled("Curation canceled before promotion started")
+            raise CurationError("Curation canceled before promotion started")
         conn.execute("BEGIN")
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before promotion committed")
+            raise CurationError("Curation canceled before promotion committed")
         if source_rows:
             placeholders = ",".join("?" for _ in source_rows)
             conn.execute(
@@ -1867,9 +1853,9 @@ def _promote_in_place_curation(
                 (source_bank_id, now, uid, tenant_id, *staged_ids),
             )
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before promotion committed")
+            raise CurationError("Curation canceled before promotion committed")
         if _is_run_canceled(uid, tenant_id, run_id):
-            raise CurationCanceled("Curation canceled before promotion committed")
+            raise CurationError("Curation canceled before promotion committed")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2021,7 +2007,7 @@ def _make_curated_entries(
             "category": "curation_summary",
             "scope": "arc",
             "retention": "long_term",
-            "tags": tags + ["summary"],
+            "tags": [*tags, "summary"],
         }
     )
 
@@ -2033,7 +2019,7 @@ def _make_curated_entries(
                     "category": row["category"] or "curated_memory",
                     "scope": row["scope"] or "arc",
                     "retention": row["retention"] or "long_term",
-                    "tags": tags + ["preserved"],
+                    "tags": [*tags, "preserved"],
                 }
             )
     elif run["policy_mode"] == "rebalance":
@@ -2044,7 +2030,7 @@ def _make_curated_entries(
                     "category": row["category"] or "curated_memory",
                     "scope": row["scope"] or "arc",
                     "retention": row["retention"] or "long_term",
-                    "tags": tags + ["rebalanced"],
+                    "tags": [*tags, "rebalanced"],
                 }
             )
         if synthesis and synthesis.get("insights"):
@@ -2054,7 +2040,7 @@ def _make_curated_entries(
                     "category": "curation_insight",
                     "scope": "arc",
                     "retention": "long_term",
-                    "tags": tags + ["synthesis"],
+                    "tags": [*tags, "synthesis"],
                 }
             )
     else:
@@ -2071,7 +2057,7 @@ def _make_curated_entries(
                 "category": "curation_rebuild",
                 "scope": "arc",
                 "retention": "long_term",
-                "tags": tags + ["rebuilt"],
+                "tags": [*tags, "rebuilt"],
             }
         )
 
@@ -2094,7 +2080,7 @@ def _insert_curation_entries(
         conn.execute("BEGIN")
         for entry in entries:
             if cancel_event and cancel_event.is_set():
-                raise CurationCanceled("Curation canceled before staged output committed")
+                raise CurationError("Curation canceled before staged output committed")
             memory_id = hashlib.sha256(f"{bank_id}:{entry['content']}:{uuid.uuid4().hex}".encode()).hexdigest()[:16]
             conn.execute(
                 "INSERT INTO memories "
@@ -2118,7 +2104,7 @@ def _insert_curation_entries(
             )
             created_ids.append(memory_id)
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before staged output committed")
+            raise CurationError("Curation canceled before staged output committed")
         conn.commit()
         return created_ids
     except Exception:
@@ -2203,7 +2189,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
                     source_rows,
                     created_ids,
                 )
-                raise CurationCanceled("Curation canceled after promotion; restored source bank")
+                raise CurationError("Curation canceled after promotion; restored source bank")
 
         summary = {
             "source_memory_count": len(source_rows),
@@ -2227,7 +2213,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             source_bank_id=payload["source_bank_id"],
             output_mode=payload["output_mode"],
         )
-    except CurationCanceled:
+    except CurationError:
         ended_at = datetime.now(timezone.utc).isoformat()
         row = _fetch_curation_run(uid, tenant_id, run_id)
         if row is None or row["status"] != "canceled":
@@ -2286,123 +2272,127 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
     if options.action == "create":
         source_bank_id = options.source_bank_id or BANK_ID
         if options.output_mode == "in_place" and options.tool_access != "operate":
-            return _tool_error("create", "output_mode=in_place requires tool_access=operate")
-        if options.output_mode == "in_place" and options.output_bank_id is not None:
-            return _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
-        if options.transcript_bundle and options.tool_access != "operate":
-            return _tool_error("create", "transcript_bundle requires tool_access=operate")
+            res = _tool_error("create", "output_mode=in_place requires tool_access=operate")
+        elif options.output_mode == "in_place" and options.output_bank_id is not None:
+            res = _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
+        elif options.transcript_bundle and options.tool_access != "operate":
+            res = _tool_error("create", "transcript_bundle requires tool_access=operate")
+        else:
+            run_id = f"cur_{uuid.uuid4().hex[:12]}"
+            output_bank_id = _curation_run_output_bank(
+                run_id, source_bank_id, options.output_mode, options.output_bank_id
+            )
+            created_at = datetime.now(timezone.utc).isoformat()
+            conn = get_db_connection()
+            conn.execute(
+                """INSERT INTO curation_runs
+                (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
+                 output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
+                 summary_json, error_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
+                (
+                    run_id,
+                    tenant_id,
+                    uid,
+                    source_bank_id,
+                    output_bank_id,
+                    options.policy_mode,
+                    options.tool_access,
+                    options.output_mode,
+                    options.instructions,
+                    json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
+                    options.session_id,
+                    options.project_path,
+                    created_at,
+                ),
+            )
+            conn.commit()
+            conn.close()
 
-        run_id = f"cur_{uuid.uuid4().hex[:12]}"
-        output_bank_id = _curation_run_output_bank(run_id, source_bank_id, options.output_mode, options.output_bank_id)
-        created_at = datetime.now(timezone.utc).isoformat()
-        conn = get_db_connection()
-        conn.execute(
-            """INSERT INTO curation_runs
-            (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
-             output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
-             summary_json, error_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
-            (
-                run_id,
-                tenant_id,
-                uid,
-                source_bank_id,
-                output_bank_id,
-                options.policy_mode,
-                options.tool_access,
-                options.output_mode,
-                options.instructions,
-                json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
-                options.session_id,
-                options.project_path,
-                created_at,
-            ),
-        )
-        conn.commit()
-        conn.close()
+            payload = {
+                "tenant_id": tenant_id,
+                "user_id": uid,
+                "source_bank_id": source_bank_id,
+                "output_bank_id": output_bank_id,
+                "policy_mode": options.policy_mode,
+                "tool_access": options.tool_access,
+                "output_mode": options.output_mode,
+                "instructions": options.instructions,
+                "transcript_bundle": options.transcript_bundle,
+                "session_id": options.session_id,
+                "project_path": options.project_path,
+            }
+            queue = OperationQueue(DB_PATH)
+            queue.enqueue(
+                Operation(
+                    id=run_id,
+                    type=OperationType.CREATE,
+                    entity_type="curation_run",
+                    entity_id=run_id,
+                    payload=payload,
+                ),
+                tenant_id=tenant_id,
+            )
+            _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
+            _start_curation_worker(run_id, payload)
+            run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
+            res = _tool_response(ok=True, action="create", run=run)
 
-        payload = {
-            "tenant_id": tenant_id,
-            "user_id": uid,
-            "source_bank_id": source_bank_id,
-            "output_bank_id": output_bank_id,
-            "policy_mode": options.policy_mode,
-            "tool_access": options.tool_access,
-            "output_mode": options.output_mode,
-            "instructions": options.instructions,
-            "transcript_bundle": options.transcript_bundle,
-            "session_id": options.session_id,
-            "project_path": options.project_path,
-        }
-        queue = OperationQueue(DB_PATH)
-        queue.enqueue(
-            Operation(
-                id=run_id,
-                type=OperationType.CREATE,
-                entity_type="curation_run",
-                entity_id=run_id,
-                payload=payload,
-            ),
-            tenant_id=tenant_id,
-        )
-        _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
-        _start_curation_worker(run_id, payload)
-        run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
-        return _tool_response(ok=True, action="create", run=run)
-
-    if options.action == "list":
+    elif options.action == "list":
         conn = get_db_connection()
         rows = conn.execute(
             "SELECT * FROM curation_runs WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ?",
             (uid, tenant_id, options.limit),
         ).fetchall()
         conn.close()
-        return _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
+        res = _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
 
-    if not options.run_id:
-        return _tool_error(options.action, "run_id is required for this action")
+    elif not options.run_id:
+        res = _tool_error(options.action, "run_id is required for this action")
 
-    row = _fetch_curation_run(uid, tenant_id, options.run_id)
-    if row is None:
-        return _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
+    else:
+        row = _fetch_curation_run(uid, tenant_id, options.run_id)
+        if row is None:
+            res = _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
+        elif options.action == "get":
+            res = _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
+        elif options.action == "cancel":
+            if row["status"] not in {"pending", "running"}:
+                res = _tool_error(
+                    "cancel",
+                    f"Run {options.run_id} is already {row['status']} and cannot be canceled.",
+                    run=_row_to_curation_run(row),
+                )
+            else:
+                ended_at = datetime.now(timezone.utc).isoformat()
+                _get_curation_cancel_event(options.run_id).set()
+                _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
+                OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
+                _publish_curation_status(options.run_id, "canceled", actor=uid)
+                res = _tool_response(
+                    ok=True,
+                    action="cancel",
+                    run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
+                )
+        elif options.action == "archive":
+            if row["status"] not in {"completed", "failed", "canceled"}:
+                res = _tool_error(
+                    "archive",
+                    f"Run {options.run_id} must be terminal before it can be archived.",
+                    run=_row_to_curation_run(row),
+                )
+            else:
+                archived_at = datetime.now(timezone.utc).isoformat()
+                _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
+                res = _tool_response(
+                    ok=True,
+                    action="archive",
+                    run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
+                )
+        else:
+            res = _tool_error(options.action, f"Unsupported action: {options.action}")
 
-    if options.action == "get":
-        return _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
-
-    if options.action == "cancel":
-        if row["status"] not in {"pending", "running"}:
-            return _tool_error(
-                "cancel",
-                f"Run {options.run_id} is already {row['status']} and cannot be canceled.",
-                run=_row_to_curation_run(row),
-            )
-        ended_at = datetime.now(timezone.utc).isoformat()
-        _get_curation_cancel_event(options.run_id).set()
-        _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
-        OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
-        _publish_curation_status(options.run_id, "canceled", actor=uid)
-        return _tool_response(
-            ok=True,
-            action="cancel",
-            run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
-        )
-
-    if options.action == "archive":
-        if row["status"] not in {"completed", "failed", "canceled"}:
-            return _tool_error(
-                "archive",
-                f"Run {options.run_id} must be terminal before it can be archived.",
-                run=_row_to_curation_run(row),
-            )
-        archived_at = datetime.now(timezone.utc).isoformat()
-        _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
-        return _tool_response(
-            ok=True,
-            action="archive",
-            run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
-        )
-
-    return _tool_error(options.action, f"Unsupported action: {options.action}")
+    return res
 
 
 # =============================================================================
@@ -2620,9 +2610,9 @@ def inject_context(
         min_importance=0.1,
     )
 
-    memories: list[HybridResult] = [
-        r for r in hybrid_result.results if r.combined_score >= min_relevance
-    ][:max_memories]
+    memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
+        :max_memories
+    ]
 
     formatted = _format_injection_output(memories, uid, tenant_id, terms)
 
@@ -2641,7 +2631,7 @@ def inject_context(
 def _format_injection_output(
     memories: list[HybridResult],
     uid: str,
-    tenant_id: str,
+    _tenant_id: str,
     terms: list[str],
 ) -> str:
     """Format memories and context block signals into a human-readable string."""
@@ -2652,16 +2642,12 @@ def _format_injection_output(
             snippet = (mem.content or "")[:120]
             if len(mem.content or "") > 120:
                 snippet += "..."
-            lines.append(
-                f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}"
-            )
+            lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
 
     sub_lines = _context_block_notes_for_terms(uid, terms)
     if sub_lines:
-        if not memories:
-            lines.append("[Relevant Context - 0 memories surfaced]")
         lines.append("")
-        lines.append("[Context Block Signals]")
+        lines.append("[Subconscious/Block Signals]")
         lines.extend(sub_lines)
 
     if not lines:
@@ -2682,8 +2668,6 @@ def _format_context_blocks_by_injection_point(
 
     Each entry contains: label, content, matched_terms.
     """
-    from .block_registry import InjectionPoint, initialize_default_blocks
-
     agent = get_context_block_agent(uid, tenant_id)
     registry = initialize_default_blocks()
     relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
@@ -2732,9 +2716,9 @@ def _context_block_notes_for_terms(
 
     lines: list[str] = []
     for point_value, entries in grouped.items():
-        matching_entries = [e for e in entries if any(
-            re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms
-        )]
+        matching_entries = [
+            e for e in entries if any(re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms)
+        ]
         if not matching_entries:
             continue
         for entry in matching_entries[:3]:
@@ -2786,9 +2770,7 @@ def get_relevant_memories(
         min_importance=0.0,
     )
 
-    memories = [
-        m.to_dict() for m in result.results if m.combined_score >= min_relevance
-    ][:limit]
+    memories = [m.to_dict() for m in result.results if m.combined_score >= min_relevance][:limit]
     payload = {
         "memories": memories,
         "total_candidates": result.total_candidates,
@@ -3123,20 +3105,17 @@ def synthesize_profile(
         Prompt block when ``format_prompt=True``.
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
     cfg = ProfileConfig(
         max_static_memories=max_static_memories,
         max_dynamic_memories=max_dynamic_memories,
         include_synthesis=include_synthesis,
     )
-    profile = _synthesize_profile(uid, tenant_id, cfg)
+    profile = _run_async(_synthesize_profile(uid, get_current_tenant_id(), cfg))
 
     if format_prompt:
-        from .profile_synthesizer import profile_to_prompt
-
         return profile_to_prompt(profile)
 
-    return json.dumps(profile, indent=2, ensure_ascii=False)
+    return json.dumps(profile.to_dict(), indent=2, ensure_ascii=False)
 
 
 # =============================================================================
@@ -3282,7 +3261,7 @@ def create_document(
             char_budget=char_budget,
             memory_id_for_chunk=memory_id_for_chunk,
         )
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     return json.dumps(
         {
@@ -3303,7 +3282,7 @@ def get_document(
     store = get_document_store()
     try:
         doc = store.get_document(document_id=document_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     if doc is None:
         return f"Document {document_id} not found."
@@ -3320,7 +3299,7 @@ def list_document_chunks(
     store = get_document_store()
     try:
         chunks = store.list_chunks(document_id=document_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     return json.dumps([c.to_dict() for c in chunks], indent=2)
 
@@ -3335,7 +3314,7 @@ def get_memory_source(
     store = get_document_store()
     try:
         result = store.get_memory_source(memory_id=memory_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     if result is None:
         return f"No source document found for memory {memory_id}."
@@ -3356,7 +3335,7 @@ def delete_document(
     store = get_document_store()
     try:
         deleted = store.delete_document(document_id=document_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     return json.dumps(
         {"document_id": document_id, "deleted": deleted},
@@ -3566,9 +3545,7 @@ def semantic_search_memories(
     prov = provider or _SEMANTIC_DEFAULT_PROVIDER
     try:
         store = get_semantic_search(provider=prov)
-        result = store.search(
-            query=query, user_id=uid, limit=limit, min_score=min_score
-        )
+        result = store.search(query=query, user_id=uid, limit=limit, min_score=min_score)
     except _SemanticSearchError as exc:
         return f"Error: {exc}"
     return json.dumps(result.to_dict(), indent=2)
@@ -3577,6 +3554,7 @@ def semantic_search_memories(
 # =============================================================================
 # Enhanced Synthesis Tools
 # =============================================================================
+
 
 def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction) -> str:
     """Helper for analyze synthesize action."""
@@ -3683,9 +3661,7 @@ def get_memory_strength(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    result = get_decay_model().get_memory_strength(
-        memory_id=memory_id, user_id=uid, tenant_id=tid
-    )
+    result = get_decay_model().get_memory_strength(memory_id=memory_id, user_id=uid, tenant_id=tid)
     if result is None:
         return f"Memory {memory_id} not found for user {uid} in tenant {tid}."
     return json.dumps(result, indent=2)
@@ -3710,9 +3686,7 @@ def apply_memory_decay(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    stats = get_decay_model().apply_decay_batch(
-        user_id=uid, tenant_id=tid, batch_size=batch_size
-    )
+    stats = get_decay_model().apply_decay_batch(user_id=uid, tenant_id=tid, batch_size=batch_size)
     return json.dumps(
         {
             "ok": True,
@@ -3778,9 +3752,7 @@ def get_decay_config(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    cfg = get_decay_model().get_decay_config(
-        user_id=uid, tenant_id=tid, category=category
-    )
+    cfg = get_decay_model().get_decay_config(user_id=uid, tenant_id=tid, category=category)
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
 
@@ -3849,9 +3821,7 @@ def get_decay_events(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    events = get_decay_model().get_decay_events(
-        user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit
-    )
+    events = get_decay_model().get_decay_events(user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit)
     return json.dumps(
         {
             "ok": True,
