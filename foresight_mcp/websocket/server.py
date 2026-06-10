@@ -11,6 +11,7 @@ Handles WebSocket connections with:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -46,6 +47,14 @@ class Connection:
     last_event_id: str | None = None
     subscriptions: set[str] = field(default_factory=set)
 
+    def send_message(self, message: dict[str, Any]) -> None:
+        """Send a message to the connected client."""
+        try:
+            message_str = json.dumps(message)
+            self.send(message_str)
+        except Exception as e:
+            logger.error(f"Error sending message to connection {self.id}: {e}")
+
 
 class WebSocketHandler:
     """
@@ -58,7 +67,7 @@ class WebSocketHandler:
     - Reconnection support
     """
 
-    def __init__(self, auth_callback: Callable[[str], bool] | None = None):
+    def __init__(self, auth_callback: Callable[[str], tuple[str, str] | None] | None = None):
         self._connections: dict[str, Connection] = {}
         self._auth_callback = auth_callback
 
@@ -116,6 +125,8 @@ class WebSocketHandler:
             "connection_id": conn_id,
             "message": "Connected to Foresight WebSocket server",
             "heartbeat_interval": 30,  # seconds
+            "user_id": user_id,
+            "tenant_id": tenant_id,
         }
 
     async def disconnect(self, connection_id: str) -> None:
@@ -149,11 +160,16 @@ class WebSocketHandler:
                     result = self._auth_callback(token)
 
                 if result:
+                    user_id, tenant_id = result
+                    connection.user_id = user_id
+                    connection.tenant_id = tenant_id
                     connection.state = ConnectionState.AUTHENTICATED
-                    logger.info(f"Connection {connection_id} authenticated")
+                    logger.info(f"Connection {connection_id} authenticated as {user_id} in tenant {tenant_id}")
                     return {
                         "type": "authenticated",
                         "connection_id": connection_id,
+                        "user_id": user_id,
+                        "tenant_id": tenant_id,
                     }
             except Exception as e:
                 logger.error(f"Authentication error: {e}")
@@ -283,6 +299,8 @@ class WebSocketServer:
             heartbeat_interval: Interval for sending ping
             heartbeat_timeout: Timeout for considering connection dead
         """
+        import json
+
         self.handler = WebSocketHandler(auth_callback)
         self._event_bus = event_bus
         self._heartbeat_interval = heartbeat_interval
@@ -374,8 +392,20 @@ class WebSocketServer:
 
     def _broadcast_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Broadcast event to all subscribed connections."""
-        # This would send to all connected WebSocket clients
-        # Implementation depends on the WebSocket server framework
+        import json
+
+        message = {
+            "type": "event",
+            "event_type": event_type,
+            "payload": payload,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        for connection in self.handler._connections.values():
+            try:
+                connection.send_message(message)
+            except Exception as e:
+                logger.error(f"Error broadcasting event to connection {connection.id}: {e}")
 
     def get_buffered_events(self, since_event_id: str | None = None) -> list[dict[str, Any]]:
         """Get buffered events for reconnection sync."""

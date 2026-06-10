@@ -21,16 +21,16 @@ Context blocks are named containers that hold high-signal context with:
 
 ## Default context blocks
 
-| Block              | Purpose                                                  |
-| ------------------ | -------------------------------------------------------- |
-| `core_directives`  | Role definition and operating principles                 |
-| `guidance`         | Active guidance for the next session or turn             |
-| `pending_items`    | Open work that should survive context resets             |
-| `project_context`  | Architecture notes, constraints, and repo-specific state |
-| `session_patterns` | Repeated patterns across sessions                        |
-| `user_preferences` | User workflow and communication preferences              |
-| `self_improvement` | Lessons about the memory system itself                   |
-| `tool_guidelines`  | Tool-usage reminders and constraints                     |
+| Block | Purpose |
+| --- | --- |
+| `core_directives` | Role definition and operating principles |
+| `guidance` | Active guidance for the next session or turn |
+| `pending_items` | Open work that should survive context resets |
+| `project_context` | Architecture notes, constraints, and repo-specific state |
+| `session_patterns` | Repeated patterns across sessions |
+| `user_preferences` | User workflow and communication preferences |
+| `self_improvement` | Lessons about the memory system itself |
+| `tool_guidelines` | Tool-usage reminders and constraints |
 
 ## Working with blocks in Python
 

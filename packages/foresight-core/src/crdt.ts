@@ -131,7 +131,12 @@ export class LWWRegister<T> {
     return this.value
   }
 
-  toDict(): { value: T | null; timestamp: number; nodeId: string; vectorClock: Record<string, number> } {
+  toDict(): {
+    value: T | null
+    timestamp: number
+    nodeId: string
+    vectorClock: Record<string, number>
+  } {
     return {
       value: this.value,
       timestamp: this.timestamp,
@@ -140,7 +145,12 @@ export class LWWRegister<T> {
     }
   }
 
-  static fromDict<T>(data: { value: T | null; timestamp?: number; nodeId?: string; vectorClock?: Record<string, number> }): LWWRegister<T> {
+  static fromDict<T>(data: {
+    value: T | null
+    timestamp?: number
+    nodeId?: string
+    vectorClock?: Record<string, number>
+  }): LWWRegister<T> {
     return new LWWRegister<T>(
       data.value,
       data.timestamp ?? 0,
@@ -302,7 +312,12 @@ export class ORSet<T> {
     this.vc.merge(other.vectorClock)
   }
 
-  toDict(): { adds: Record<string, string[]>; removes: Record<string, string[]>; vectorClock: Record<string, number>; nodeId: string } {
+  toDict(): {
+    adds: Record<string, string[]>
+    removes: Record<string, string[]>
+    vectorClock: Record<string, number>
+    nodeId: string
+  } {
     const addsObj: Record<string, string[]> = {}
     for (const [hash, tags] of this.adds.entries()) {
       addsObj[hash] = Array.from(tags)
@@ -321,7 +336,12 @@ export class ORSet<T> {
     }
   }
 
-  static fromDict<T>(data: { nodeId?: string; vectorClock?: Record<string, number>; adds?: Record<string, string[]>; removes?: Record<string, string[]> }): ORSet<T> {
+  static fromDict<T>(data: {
+    nodeId?: string
+    vectorClock?: Record<string, number>
+    adds?: Record<string, string[]>
+    removes?: Record<string, string[]>
+  }): ORSet<T> {
     const orset = new ORSet<T>()
     orset.nodeId = data.nodeId ?? 'default'
     if (data.vectorClock) {
@@ -419,8 +439,28 @@ export class LWWMap<T> {
     this.vc.merge(other.vectorClock)
   }
 
-  toDict(): { entries: Record<string, { value: T | null; timestamp: number; nodeId: string; vectorClock: Record<string, number> }>; vectorClock: Record<string, number>; nodeId: string } {
-    const entriesObj: Record<string, { value: T | null; timestamp: number; nodeId: string; vectorClock: Record<string, number> }> = {}
+  toDict(): {
+    entries: Record<
+      string,
+      {
+        value: T | null
+        timestamp: number
+        nodeId: string
+        vectorClock: Record<string, number>
+      }
+    >
+    vectorClock: Record<string, number>
+    nodeId: string
+  } {
+    const entriesObj: Record<
+      string,
+      {
+        value: T | null
+        timestamp: number
+        nodeId: string
+        vectorClock: Record<string, number>
+      }
+    > = {}
     for (const [key, reg] of this.entries.entries()) {
       entriesObj[key] = reg.toDict()
     }
@@ -432,7 +472,19 @@ export class LWWMap<T> {
     }
   }
 
-  static fromDict<T>(data: { nodeId?: string; vectorClock?: Record<string, number>; entries?: Record<string, { value: T | null; timestamp?: number; nodeId?: string; vectorClock?: Record<string, number> }> }): LWWMap<T> {
+  static fromDict<T>(data: {
+    nodeId?: string
+    vectorClock?: Record<string, number>
+    entries?: Record<
+      string,
+      {
+        value: T | null
+        timestamp?: number
+        nodeId?: string
+        vectorClock?: Record<string, number>
+      }
+    >
+  }): LWWMap<T> {
     const lwwMap = new LWWMap<T>()
     lwwMap.nodeId = data.nodeId ?? 'default'
     if (data.vectorClock) {

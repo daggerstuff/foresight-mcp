@@ -32,6 +32,7 @@ from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
 from .auth import AuthMiddleware
+from .block_registry import InjectionPoint, initialize_default_blocks
 from .config import (
     BANK_ID,
     DB_PATH,
@@ -49,16 +50,39 @@ from .context_blocks import (
 )
 from .crisis_detection import get_crisis_service
 from .decay_model import get_decay_model
-from .enhanced_synthesizer import get_enhanced_synthesizer
-from .entity_extractor import get_entity_extractor
-from .event_bus import (
-    curation_status_changed,
-    get_event_bus,
-    memory_deleted,
-    memory_retrieved,
-    memory_stored,
-    memory_updated,
+from .document_layer import (
+    DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
+    DocumentLayerError,
+    content_hash as _content_hash,
+    get_document_store,
 )
+from .enhanced_synthesizer import get_enhanced_synthesizer
+from .entity_extractor import Entity, get_entity_extractor
+from .clustering import cluster_memories
+from .event_bus import (
+    Event as Event,
+    EventType as EventType,
+    EventBus as EventBus,
+    curation_status_changed as curation_status_changed,
+    get_event_bus as get_event_bus,
+    memory_deleted as memory_deleted,
+    memory_retrieved as memory_retrieved,
+    memory_stored as memory_stored,
+    memory_updated as memory_updated,
+)
+from .hooks import (
+    HookExecutor as HookExecutor,
+    HookRegistration as HookRegistration,
+    HookRegistry as HookRegistry,
+    HookType as HookType,
+    get_hook_executor as get_hook_executor,
+    list_hooks as list_hooks,
+    register_hook as register_hook,
+    unregister_hook as unregister_hook,
+)
+
+# WebSocket imports
+from .websocket.server import WebSocketServer as WebSocketServer
 from .graph_store import get_graph_store
 from .hybrid_retriever import HybridResult, get_hybrid_retriever
 from .memory_components import (
@@ -68,12 +92,8 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_relationships import (
-    VALID_RELATIONSHIP_TYPES,
-    MemoryRelationship,
     MemoryRelationshipError,
-    MemoryRelationshipStore,
     get_memory_relationship_store,
-    reset_memory_relationship_store,
 )
 from .memory_types import (
     EmotionalMetadata,
@@ -82,31 +102,16 @@ from .memory_types import (
     MemoryScope,
     RetentionPolicy,
 )
-from .profile_synthesizer import ProfileConfig, synthesize_profile as _synthesize_profile
+from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceeded, get_rate_limiter
 from .reflection_engine import get_reflection_engine
+from .reflection_narrative import _default_cache as _reflection_narrative_cache
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
-    LocalHashEmbedder as _LocalHashEmbedder,
-    SemanticSearch as _SemanticSearch,
     SemanticSearchError as _SemanticSearchError,
-    cosine_similarity as _cosine_similarity,
-    get_embedder as _get_embedder,
-    get_semantic_search as get_semantic_search,
-    reset_semantic_search as reset_semantic_search,
+    get_semantic_search,
 )
-from .document_layer import (
-    DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
-    VALID_DOCUMENT_SOURCES as _VALID_DOCUMENT_SOURCES,
-    Document as _Document,
-    DocumentChunk as _DocumentChunk,
-    DocumentLayerError as _DocumentLayerError,
-    DocumentStore as _DocumentStore,
-    chunk_text as _chunk_text,
-    content_hash as _content_hash,
-    get_document_store as get_document_store,
-    reset_document_store as reset_document_store,
-)
+from .narrative_cache import NarrativeCache, DEFAULT_MAX_ENTRIES as NARRATIVE_MAX_ENTRIES
 from .stream_producer import (
     KafkaProducer,
     KinesisProducer,
@@ -119,6 +124,23 @@ from .temporal_service import get_temporal_service
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 from .websocket.subscriptions import SubscriptionManager
+
+DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
+DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
+DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
+# Global narrative cache instance for metrics (lazy initialization)
+_narrative_cache: NarrativeCache | None = None
+
+
+def get_narrative_cache() -> NarrativeCache:
+    """Get or create global narrative cache instance."""
+    global _narrative_cache
+    if _narrative_cache is None:
+        from .config import DB_PATH
+
+        cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
+        _narrative_cache = NarrativeCache(cache_path)
+    return _narrative_cache
 
 
 # Tool argument grouping models
@@ -135,6 +157,13 @@ class MemoryOptions(BaseModel):
     metrics: dict[str, Any] | None = Field(
         default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)"
     )
+    relation_type: str | None = Field(
+        default=None,
+        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
+    )
+    related_memory_id: str | None = Field(
+        default=None, description="ID of the memory this one relates to (paired with relation_type)"
+    )
 
 
 class MemoryUpdateOptions(BaseModel):
@@ -143,6 +172,13 @@ class MemoryUpdateOptions(BaseModel):
     scope: str | None = Field(default=None, description="New memory scope")
     retention: str | None = Field(default=None, description="New retention policy")
     tags: list[str] | None = Field(default=None, description="New list of tags")
+    relation_type: str | None = Field(
+        default=None,
+        description="Optional typed relationship to another memory. Allowed: updates, extends, derives, contradicts, supports, related",
+    )
+    related_memory_id: str | None = Field(
+        default=None, description="ID of the memory this one relates to (paired with relation_type)"
+    )
 
 
 class SearchOptions(BaseModel):
@@ -153,6 +189,9 @@ class SearchOptions(BaseModel):
     offset: int = Field(default=0, description="Result offset")
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
+    use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
+    cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
+    cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
 
 
 class ContextBlockAction(BaseModel):
@@ -181,6 +220,10 @@ class CurationRunAction(BaseModel):
         description="Whether curated results land in a reviewable output bank or in place",
     )
     instructions: str | None = Field(default=None, description="Optional curator instructions")
+    run_clustering: bool = Field(
+        default=False,
+        description="If True, run memory clustering after curation completes",
+    )
     transcript_bundle: list[dict[str, Any]] | None = Field(
         default=None, description="Optional transcript bundle to incorporate during curation"
     )
@@ -210,6 +253,10 @@ class TemporalWindow(BaseModel):
 class SystemStatusOptions(BaseModel):
     include_trends: bool = Field(default=False, description="Whether to include temporal trend analysis")
     timeframe: str = Field(default="30 days", description="Timeframe for trend analysis")
+    include_cache_metrics: bool = Field(default=False, description="Whether to include cache and budget metrics")
+    enforce_hard_caps: bool = Field(
+        default=False, description="Whether to enforce hard caps on memory and cache counts"
+    )
 
 
 class EntityAction(BaseModel):
@@ -614,7 +661,7 @@ _CURATION_WORKERS_LOCK = threading.Lock()
 _CURATION_CANCEL_SIGNALS: dict[str, threading.Event] = {}
 
 
-class CurationCanceled(RuntimeError):
+class CurationError(RuntimeError):
     """Raised when a curation run is canceled before publication completes."""
 
 
@@ -990,19 +1037,24 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     """Helper to handle memory storage."""
     if not options.content:
         return "Error: Content is required for 'store' action"
-
     opts = options.options or MemoryOptions()
+    # Hard cap enforcement: check memory count per tenant
+    conn = get_db_connection()
+    current_count = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+        (uid, tenant_id),
+    ).fetchone()[0]
+    if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
+        conn.close()
+        return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
     memory_id = hashlib.sha256(f"{options.content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
     content_h = _content_hash(options.content.strip())
-
-    conn = get_db_connection()
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
         "WHERE user_id = ? AND tenant_id = ? AND content_hash = ? AND is_ghost = 0 "
         "ORDER BY created_at DESC LIMIT 1",
         (uid, tenant_id, content_h),
     ).fetchone()
-
     if existing:
         conn.execute(
             "UPDATE memories SET activation_count = activation_count + 1, updated_at = ? "
@@ -1012,11 +1064,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         conn.commit()
         conn.close()
         return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
-
     # Parse emotional context and metrics
     emo_ctx = EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
     met = EmpathyMetrics.from_dict(opts.metrics) if opts.metrics else None
-
     memory = MemoryObject.create(
         content=options.content,
         scope=cast(MemoryScope, opts.scope),
@@ -1025,14 +1075,12 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         metrics=met,
     )
     memory.id = memory_id
-
     # Socratic Gate
     ms = get_memory_system()
     gate_result = _run_async(SocraticGate(ms["tagger"]).evaluate(memory, uid))
     memory.tags = gate_result.suggested_tags
     if opts.category and opts.category not in memory.tags:
         memory.tags.append(opts.category)
-
     # Store
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
@@ -1058,7 +1106,19 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     )
     conn.commit()
     conn.close()
-
+    # Create memory relationship if specified
+    if opts.relation_type and opts.related_memory_id:
+        store = get_memory_relationship_store()
+        try:
+            store.link_memories(
+                source_memory_id=memory_id,
+                target_memory_id=opts.related_memory_id,
+                relationship_type=opts.relation_type,
+                user_id=uid,
+                tenant_id=tenant_id,
+            )
+        except MemoryRelationshipError as exc:
+            logger.warning(f"Failed to create memory relationship: {exc}")
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
     return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
@@ -1068,16 +1128,13 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     """Helper to handle memory updates."""
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
-
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
     ).fetchone()
-
     if not row:
         conn.close()
         return f"Memory {options.memory_id} not found."
-
     updates_list = []
     values = []
     if options.updates.content:
@@ -1094,7 +1151,6 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
         updates_list.extend(["content = ?", "version = ?"])
         values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
-
     if options.updates.category:
         updates_list.append("category = ?")
         values.append(options.updates.category)
@@ -1107,11 +1163,9 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     if options.updates.tags:
         updates_list.append("tags = ?")
         values.append(json.dumps(options.updates.tags))
-
     if not updates_list:
         conn.close()
         return "No updates provided."
-
     updates_list.append("updated_at = ?")
     values.append(datetime.now(timezone.utc).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
@@ -1129,6 +1183,19 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
     )
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+    # Create memory relationship if specified
+    if options.updates.relation_type and options.updates.related_memory_id:
+        store = get_memory_relationship_store()
+        try:
+            store.link_memories(
+                source_memory_id=options.memory_id,
+                target_memory_id=options.updates.related_memory_id,
+                relationship_type=options.updates.relation_type,
+                user_id=uid,
+                tenant_id=tenant_id,
+            )
+        except MemoryRelationshipError as exc:
+            logger.warning(f"Failed to create memory relationship: {exc}")
     return f"Updated memory {options.memory_id}"
 
 
@@ -1165,23 +1232,24 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
     if not row:
         conn.close()
         return f"Memory {memory_id} not found."
-    if not row.get("vector_id"):
+    row_dict = dict(row)
+    if not row_dict.get("vector_id"):
         conn.close()
         return "Cannot archive memory without vector_id. Embed first."
 
     ms = get_memory_system()
     ghost = ms["linker"].to_ghost(
         MemoryObject(
-            id=row["id"],
-            timestamp=row["created_at"],
-            scope=row["scope"],
-            retention=row["retention"],
-            content=row["content"],
-            tags=json.loads(row["tags"]) or [],
-            synthesized_from=json.loads(row["synthesized_from"]) or [],
-            is_ghost=bool(row.get("is_ghost", 0)),
-            vector_id=row["vector_id"],
-            gist=row.get("gist"),
+            id=row_dict["id"],
+            timestamp=row_dict["created_at"],
+            scope=row_dict["scope"],
+            retention=row_dict["retention"],
+            content=row_dict["content"],
+            tags=json.loads(row_dict["tags"]) or [],
+            synthesized_from=json.loads(row_dict["synthesized_from"]) or [],
+            is_ghost=bool(row_dict.get("is_ghost", 0)),
+            vector_id=row_dict["vector_id"],
+            gist=row_dict.get("gist"),
         )
     )
     conn.execute(
@@ -1491,38 +1559,36 @@ def manage_context_blocks(options: ContextBlockAction, user_id: str | None = Non
     agent = get_context_block_agent(uid, tenant_id)
 
     if options.action == "list":
-        return _handle_context_block_list(agent)
-
-    if not options.label:
-        return _tool_error(options.action, "'label' is required for this action.")
-
-    if options.action == "get":
-        return _handle_context_block_get(agent, options.label)
-
-    if options.action == "update":
-        return _handle_context_block_update(agent, options.label, options.content)
-
-    if options.action in ("reset", "clear"):
+        res = _handle_context_block_list(agent)
+    elif not options.label:
+        res = _tool_error(options.action, "'label' is required for this action.")
+    elif options.action == "get":
+        res = _handle_context_block_get(agent, options.label)
+    elif options.action == "update":
+        res = _handle_context_block_update(agent, options.label, options.content)
+    elif options.action in ("reset", "clear"):
         try:
             if options.action == "reset":
                 agent.reset_block(options.label)
             else:
                 agent.clear_block(options.label)
+            message = (
+                f"Reset block '{options.label}' to default"
+                if options.action == "reset"
+                else f"Cleared block '{options.label}'"
+            )
+            res = _tool_response(
+                ok=True,
+                action=options.action,
+                label=options.label,
+                message=message,
+            )
         except ValueError as exc:
-            return _tool_error(options.action, str(exc), label=options.label)
-        message = (
-            f"Reset block '{options.label}' to default"
-            if options.action == "reset"
-            else f"Cleared block '{options.label}'"
-        )
-        return _tool_response(
-            ok=True,
-            action=options.action,
-            label=options.label,
-            message=message,
-        )
+            res = _tool_error(options.action, str(exc), label=options.label)
+    else:
+        res = _tool_error(options.action, f"Unsupported action: {options.action}")
 
-    return _tool_error(options.action, f"Unsupported action: {options.action}")
+    return res
 
 
 @mcp.tool(output_schema=None)
@@ -1683,7 +1749,7 @@ def _row_to_curation_run(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 
 def _curation_run_output_bank(
-    run_id: str, source_bank_id: str, output_mode: str, requested_output_bank: str | None
+    run_id: str, _source_bank_id: str, output_mode: str, requested_output_bank: str | None
 ) -> str:
     """Resolve the effective output bank for a curation run."""
     if output_mode == "in_place":
@@ -1709,19 +1775,21 @@ def _fetch_curation_run(uid: str, tenant_id: str, run_id: str) -> sqlite3.Row | 
 
 def _curation_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
     """Rebuild a worker payload from a curation run row."""
-    transcript_bundle_json = row["transcript_bundle_json"] if "transcript_bundle_json" in row.keys() else None
+    row_dict = dict(row)
+    transcript_bundle_json = row_dict.get("transcript_bundle_json")
     return {
-        "tenant_id": row["tenant_id"],
-        "user_id": row["user_id"],
-        "source_bank_id": row["source_bank_id"],
-        "output_bank_id": row["output_bank_id"],
-        "policy_mode": row["policy_mode"],
-        "tool_access": row["tool_access"],
-        "output_mode": row["output_mode"],
-        "instructions": row["instructions"],
+        "tenant_id": row_dict["tenant_id"],
+        "user_id": row_dict["user_id"],
+        "source_bank_id": row_dict["source_bank_id"],
+        "output_bank_id": row_dict["output_bank_id"],
+        "policy_mode": row_dict["policy_mode"],
+        "tool_access": row_dict["tool_access"],
+        "output_mode": row_dict["output_mode"],
+        "instructions": row_dict["instructions"],
+        "run_clustering": row_dict.get("run_clustering", False),
         "transcript_bundle": json.loads(transcript_bundle_json) if transcript_bundle_json else None,
-        "session_id": row["session_id"] if "session_id" in row.keys() else None,
-        "project_path": row["project_path"] if "project_path" in row.keys() else None,
+        "session_id": row_dict.get("session_id"),
+        "project_path": row_dict.get("project_path"),
     }
 
 
@@ -1815,7 +1883,7 @@ def _is_run_canceled(uid: str, tenant_id: str, run_id: str) -> bool:
 def _raise_if_run_canceled(uid: str, tenant_id: str, run_id: str) -> None:
     """Abort background work when the run has been canceled."""
     if _is_run_canceled(uid, tenant_id, run_id):
-        raise CurationCanceled(f"Curation run {run_id} was canceled")
+        raise CurationError(f"Curation run {run_id} was canceled")
 
 
 def _delete_existing_curation_outputs(uid: str, tenant_id: str, bank_id: str, run_id: str) -> None:
@@ -1848,12 +1916,12 @@ def _promote_in_place_curation(
     conn = get_db_connection()
     try:
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before promotion started")
+            raise CurationError("Curation canceled before promotion started")
         if _is_run_canceled(uid, tenant_id, run_id):
-            raise CurationCanceled("Curation canceled before promotion started")
+            raise CurationError("Curation canceled before promotion started")
         conn.execute("BEGIN")
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before promotion committed")
+            raise CurationError("Curation canceled before promotion committed")
         if source_rows:
             placeholders = ",".join("?" for _ in source_rows)
             conn.execute(
@@ -1867,9 +1935,9 @@ def _promote_in_place_curation(
                 (source_bank_id, now, uid, tenant_id, *staged_ids),
             )
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before promotion committed")
+            raise CurationError("Curation canceled before promotion committed")
         if _is_run_canceled(uid, tenant_id, run_id):
-            raise CurationCanceled("Curation canceled before promotion committed")
+            raise CurationError("Curation canceled before promotion committed")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2021,7 +2089,7 @@ def _make_curated_entries(
             "category": "curation_summary",
             "scope": "arc",
             "retention": "long_term",
-            "tags": tags + ["summary"],
+            "tags": [*tags, "summary"],
         }
     )
 
@@ -2033,7 +2101,7 @@ def _make_curated_entries(
                     "category": row["category"] or "curated_memory",
                     "scope": row["scope"] or "arc",
                     "retention": row["retention"] or "long_term",
-                    "tags": tags + ["preserved"],
+                    "tags": [*tags, "preserved"],
                 }
             )
     elif run["policy_mode"] == "rebalance":
@@ -2044,7 +2112,7 @@ def _make_curated_entries(
                     "category": row["category"] or "curated_memory",
                     "scope": row["scope"] or "arc",
                     "retention": row["retention"] or "long_term",
-                    "tags": tags + ["rebalanced"],
+                    "tags": [*tags, "rebalanced"],
                 }
             )
         if synthesis and synthesis.get("insights"):
@@ -2054,7 +2122,7 @@ def _make_curated_entries(
                     "category": "curation_insight",
                     "scope": "arc",
                     "retention": "long_term",
-                    "tags": tags + ["synthesis"],
+                    "tags": [*tags, "synthesis"],
                 }
             )
     else:
@@ -2071,7 +2139,7 @@ def _make_curated_entries(
                 "category": "curation_rebuild",
                 "scope": "arc",
                 "retention": "long_term",
-                "tags": tags + ["rebuilt"],
+                "tags": [*tags, "rebuilt"],
             }
         )
 
@@ -2094,7 +2162,7 @@ def _insert_curation_entries(
         conn.execute("BEGIN")
         for entry in entries:
             if cancel_event and cancel_event.is_set():
-                raise CurationCanceled("Curation canceled before staged output committed")
+                raise CurationError("Curation canceled before staged output committed")
             memory_id = hashlib.sha256(f"{bank_id}:{entry['content']}:{uuid.uuid4().hex}".encode()).hexdigest()[:16]
             conn.execute(
                 "INSERT INTO memories "
@@ -2118,7 +2186,7 @@ def _insert_curation_entries(
             )
             created_ids.append(memory_id)
         if cancel_event and cancel_event.is_set():
-            raise CurationCanceled("Curation canceled before staged output committed")
+            raise CurationError("Curation canceled before staged output committed")
         conn.commit()
         return created_ids
     except Exception:
@@ -2203,7 +2271,21 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
                     source_rows,
                     created_ids,
                 )
-                raise CurationCanceled("Curation canceled after promotion; restored source bank")
+                raise CurationError("Curation canceled after promotion; restored source bank")
+
+        # Run clustering after curation if requested
+        clustering_summary: dict[str, Any] | None = None
+        if payload.get("run_clustering"):
+            try:
+                _raise_if_run_canceled(uid, tenant_id, run_id)
+                cluster_memories_for_run = _fetch_memories_for_clustering(uid, tenant_id)
+                if cluster_memories_for_run:
+                    cluster_result = cluster_memories(cluster_memories_for_run)
+                    if cluster_result.cluster_entities:
+                        clustering_summary = _upsert_cluster_results(cluster_result, uid, tenant_id)
+            except Exception as exc:
+                logger.warning("Clustering post-curation failed for run %s: %s", run_id, exc)
+                clustering_summary = {"error": str(exc)}
 
         summary = {
             "source_memory_count": len(source_rows),
@@ -2213,6 +2295,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "synthesis": synthesis,
             "reflection": reflection,
             "transcript_processed": bool(payload.get("transcript_bundle")),
+            "clustering": clustering_summary,
         }
         summary.update(promotion_summary)
         _raise_if_run_canceled(uid, tenant_id, run_id)
@@ -2227,7 +2310,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             source_bank_id=payload["source_bank_id"],
             output_mode=payload["output_mode"],
         )
-    except CurationCanceled:
+    except CurationError:
         ended_at = datetime.now(timezone.utc).isoformat()
         row = _fetch_curation_run(uid, tenant_id, run_id)
         if row is None or row["status"] != "canceled":
@@ -2286,123 +2369,128 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
     if options.action == "create":
         source_bank_id = options.source_bank_id or BANK_ID
         if options.output_mode == "in_place" and options.tool_access != "operate":
-            return _tool_error("create", "output_mode=in_place requires tool_access=operate")
-        if options.output_mode == "in_place" and options.output_bank_id is not None:
-            return _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
-        if options.transcript_bundle and options.tool_access != "operate":
-            return _tool_error("create", "transcript_bundle requires tool_access=operate")
+            res = _tool_error("create", "output_mode=in_place requires tool_access=operate")
+        elif options.output_mode == "in_place" and options.output_bank_id is not None:
+            res = _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
+        elif options.transcript_bundle and options.tool_access != "operate":
+            res = _tool_error("create", "transcript_bundle requires tool_access=operate")
+        else:
+            run_id = f"cur_{uuid.uuid4().hex[:12]}"
+            output_bank_id = _curation_run_output_bank(
+                run_id, source_bank_id, options.output_mode, options.output_bank_id
+            )
+            created_at = datetime.now(timezone.utc).isoformat()
+            conn = get_db_connection()
+            conn.execute(
+                """INSERT INTO curation_runs
+                (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
+                 output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
+                 summary_json, error_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
+                (
+                    run_id,
+                    tenant_id,
+                    uid,
+                    source_bank_id,
+                    output_bank_id,
+                    options.policy_mode,
+                    options.tool_access,
+                    options.output_mode,
+                    options.instructions,
+                    json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
+                    options.session_id,
+                    options.project_path,
+                    created_at,
+                ),
+            )
+            conn.commit()
+            conn.close()
 
-        run_id = f"cur_{uuid.uuid4().hex[:12]}"
-        output_bank_id = _curation_run_output_bank(run_id, source_bank_id, options.output_mode, options.output_bank_id)
-        created_at = datetime.now(timezone.utc).isoformat()
-        conn = get_db_connection()
-        conn.execute(
-            """INSERT INTO curation_runs
-            (id, tenant_id, user_id, source_bank_id, output_bank_id, policy_mode, tool_access,
-             output_mode, status, instructions, transcript_bundle_json, session_id, project_path,
-             summary_json, error_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, '{}', '{}', ?)""",
-            (
-                run_id,
-                tenant_id,
-                uid,
-                source_bank_id,
-                output_bank_id,
-                options.policy_mode,
-                options.tool_access,
-                options.output_mode,
-                options.instructions,
-                json.dumps(options.transcript_bundle) if options.transcript_bundle else None,
-                options.session_id,
-                options.project_path,
-                created_at,
-            ),
-        )
-        conn.commit()
-        conn.close()
+            payload = {
+                "tenant_id": tenant_id,
+                "user_id": uid,
+                "source_bank_id": source_bank_id,
+                "output_bank_id": output_bank_id,
+                "policy_mode": options.policy_mode,
+                "tool_access": options.tool_access,
+                "output_mode": options.output_mode,
+                "instructions": options.instructions,
+                "run_clustering": options.run_clustering,
+                "transcript_bundle": options.transcript_bundle,
+                "session_id": options.session_id,
+                "project_path": options.project_path,
+            }
+            queue = OperationQueue(DB_PATH)
+            queue.enqueue(
+                Operation(
+                    id=run_id,
+                    type=OperationType.CREATE,
+                    entity_type="curation_run",
+                    entity_id=run_id,
+                    payload=payload,
+                ),
+                tenant_id=tenant_id,
+            )
+            _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
+            _start_curation_worker(run_id, payload)
+            run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
+            res = _tool_response(ok=True, action="create", run=run)
 
-        payload = {
-            "tenant_id": tenant_id,
-            "user_id": uid,
-            "source_bank_id": source_bank_id,
-            "output_bank_id": output_bank_id,
-            "policy_mode": options.policy_mode,
-            "tool_access": options.tool_access,
-            "output_mode": options.output_mode,
-            "instructions": options.instructions,
-            "transcript_bundle": options.transcript_bundle,
-            "session_id": options.session_id,
-            "project_path": options.project_path,
-        }
-        queue = OperationQueue(DB_PATH)
-        queue.enqueue(
-            Operation(
-                id=run_id,
-                type=OperationType.CREATE,
-                entity_type="curation_run",
-                entity_id=run_id,
-                payload=payload,
-            ),
-            tenant_id=tenant_id,
-        )
-        _publish_curation_status(run_id, "pending", actor=uid, output_bank_id=output_bank_id)
-        _start_curation_worker(run_id, payload)
-        run = _row_to_curation_run(_fetch_curation_run(uid, tenant_id, run_id))
-        return _tool_response(ok=True, action="create", run=run)
-
-    if options.action == "list":
+    elif options.action == "list":
         conn = get_db_connection()
         rows = conn.execute(
             "SELECT * FROM curation_runs WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ?",
             (uid, tenant_id, options.limit),
         ).fetchall()
         conn.close()
-        return _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
+        res = _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
 
-    if not options.run_id:
-        return _tool_error(options.action, "run_id is required for this action")
+    elif not options.run_id:
+        res = _tool_error(options.action, "run_id is required for this action")
 
-    row = _fetch_curation_run(uid, tenant_id, options.run_id)
-    if row is None:
-        return _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
+    else:
+        row = _fetch_curation_run(uid, tenant_id, options.run_id)
+        if row is None:
+            res = _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
+        elif options.action == "get":
+            res = _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
+        elif options.action == "cancel":
+            if row["status"] not in {"pending", "running"}:
+                res = _tool_error(
+                    "cancel",
+                    f"Run {options.run_id} is already {row['status']} and cannot be canceled.",
+                    run=_row_to_curation_run(row),
+                )
+            else:
+                ended_at = datetime.now(timezone.utc).isoformat()
+                _get_curation_cancel_event(options.run_id).set()
+                _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
+                OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
+                _publish_curation_status(options.run_id, "canceled", actor=uid)
+                res = _tool_response(
+                    ok=True,
+                    action="cancel",
+                    run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
+                )
+        elif options.action == "archive":
+            if row["status"] not in {"completed", "failed", "canceled"}:
+                res = _tool_error(
+                    "archive",
+                    f"Run {options.run_id} must be terminal before it can be archived.",
+                    run=_row_to_curation_run(row),
+                )
+            else:
+                archived_at = datetime.now(timezone.utc).isoformat()
+                _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
+                res = _tool_response(
+                    ok=True,
+                    action="archive",
+                    run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
+                )
+        else:
+            res = _tool_error(options.action, f"Unsupported action: {options.action}")
 
-    if options.action == "get":
-        return _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
-
-    if options.action == "cancel":
-        if row["status"] not in {"pending", "running"}:
-            return _tool_error(
-                "cancel",
-                f"Run {options.run_id} is already {row['status']} and cannot be canceled.",
-                run=_row_to_curation_run(row),
-            )
-        ended_at = datetime.now(timezone.utc).isoformat()
-        _get_curation_cancel_event(options.run_id).set()
-        _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
-        OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
-        _publish_curation_status(options.run_id, "canceled", actor=uid)
-        return _tool_response(
-            ok=True,
-            action="cancel",
-            run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
-        )
-
-    if options.action == "archive":
-        if row["status"] not in {"completed", "failed", "canceled"}:
-            return _tool_error(
-                "archive",
-                f"Run {options.run_id} must be terminal before it can be archived.",
-                run=_row_to_curation_run(row),
-            )
-        archived_at = datetime.now(timezone.utc).isoformat()
-        _update_curation_run(options.run_id, tenant_id, archived_at=archived_at)
-        return _tool_response(
-            ok=True,
-            action="archive",
-            run=_row_to_curation_run(_fetch_curation_run(uid, tenant_id, options.run_id)),
-        )
-
-    return _tool_error(options.action, f"Unsupported action: {options.action}")
+    return res
 
 
 # =============================================================================
@@ -2620,9 +2708,9 @@ def inject_context(
         min_importance=0.1,
     )
 
-    memories: list[HybridResult] = [
-        r for r in hybrid_result.results if r.combined_score >= min_relevance
-    ][:max_memories]
+    memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
+        :max_memories
+    ]
 
     formatted = _format_injection_output(memories, uid, tenant_id, terms)
 
@@ -2641,7 +2729,7 @@ def inject_context(
 def _format_injection_output(
     memories: list[HybridResult],
     uid: str,
-    tenant_id: str,
+    _tenant_id: str,
     terms: list[str],
 ) -> str:
     """Format memories and context block signals into a human-readable string."""
@@ -2652,16 +2740,12 @@ def _format_injection_output(
             snippet = (mem.content or "")[:120]
             if len(mem.content or "") > 120:
                 snippet += "..."
-            lines.append(
-                f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}"
-            )
+            lines.append(f"- [{mem.memory_id}] (score: {mem.combined_score:.2f}) {snippet}")
 
     sub_lines = _context_block_notes_for_terms(uid, terms)
     if sub_lines:
-        if not memories:
-            lines.append("[Relevant Context - 0 memories surfaced]")
         lines.append("")
-        lines.append("[Context Block Signals]")
+        lines.append("[Subconscious/Block Signals]")
         lines.extend(sub_lines)
 
     if not lines:
@@ -2682,8 +2766,6 @@ def _format_context_blocks_by_injection_point(
 
     Each entry contains: label, content, matched_terms.
     """
-    from .block_registry import InjectionPoint, initialize_default_blocks
-
     agent = get_context_block_agent(uid, tenant_id)
     registry = initialize_default_blocks()
     relevant_labels = [USER_PREFERENCES, SESSION_PATTERNS, PENDING_ITEMS]
@@ -2732,9 +2814,9 @@ def _context_block_notes_for_terms(
 
     lines: list[str] = []
     for point_value, entries in grouped.items():
-        matching_entries = [e for e in entries if any(
-            re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms
-        )]
+        matching_entries = [
+            e for e in entries if any(re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms)
+        ]
         if not matching_entries:
             continue
         for entry in matching_entries[:3]:
@@ -2786,9 +2868,7 @@ def get_relevant_memories(
         min_importance=0.0,
     )
 
-    memories = [
-        m.to_dict() for m in result.results if m.combined_score >= min_relevance
-    ][:limit]
+    memories = [m.to_dict() for m in result.results if m.combined_score >= min_relevance][:limit]
     payload = {
         "memories": memories,
         "total_candidates": result.total_candidates,
@@ -2828,6 +2908,29 @@ def main():
     init_db()
     initialize_stream_producer()
     _resume_pending_curation_runs()
+
+    # Initialize WebSocket server
+    async def websocket_auth_callback(token: str) -> tuple[str, str] | None:
+        """Auth callback for WebSocket connections."""
+        # For now, use the same auth as the main server
+        # In a real implementation, this would check the token against the auth system
+        # and return (user_id, tenant_id) if valid, or None if invalid
+        if not token:
+            return None
+
+        # Simple validation: token must start with "user_" to be considered valid
+        # This is a placeholder for actual authentication logic
+        if token.startswith("user_"):
+            user_id = token
+            tenant_id = "default"
+            return user_id, tenant_id
+
+        return None
+
+    # Create and start WebSocket server
+    websocket_server = WebSocketServer(auth_callback=websocket_auth_callback)
+    websocket_server.start()
+
     mcp.run(show_banner=False)
 
 
@@ -2950,40 +3053,83 @@ def query_memories_temporal(options: TemporalWindow, user_id: str | None = None)
 def get_system_status(options: SystemStatusOptions | None = None, user_id: str | None = None) -> str:
     """
     Get system health, memory statistics, and temporal trends.
-
     Args:
         options: Optional status and trend parameters
         user_id: Optional user ID override
     """
     uid = user_id or USER_ID
     opts = options or SystemStatusOptions()
+    tenant_id = get_current_tenant_id()
     conn = get_db_connection()
-
     # Basic stats
     count = conn.execute(
-        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, get_current_tenant_id())
+        "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ?", (uid, tenant_id)
     ).fetchone()[0]
-
     scope_counts = conn.execute(
         "SELECT scope, COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? GROUP BY scope",
-        (uid, get_current_tenant_id()),
+        (uid, tenant_id),
     ).fetchall()
     conn.close()
-
     result = {
         "status": "healthy",
         "memory_count": count,
         "by_scope": {r[0]: r[1] for r in scope_counts},
-        "tenant_id": get_current_tenant_id(),
+        "tenant_id": tenant_id,
     }
-
     # Add temporal stats/trends if requested
     if opts.include_trends:
         builder = get_temporal_query_builder()
         service = get_temporal_service()
         result["temporal_stats"] = service.get_memory_stats(user_id=uid)
         result["trend_analysis"] = builder.analyze_trends(user_id=uid, timeframe=opts.timeframe)
-
+    # Add cache and budget metrics if requested
+    if opts.include_cache_metrics:
+        # Memory budget status
+        result["memory_budget"] = {
+            "current_count": count,
+            "max_per_tenant": DEFAULT_MAX_MEMORY_PER_TENANT,
+            "utilization_pct": round((count / DEFAULT_MAX_MEMORY_PER_TENANT) * 100, 2),
+            "hard_cap_enforced": opts.enforce_hard_caps,
+        }
+        # Narrative cache metrics (persistent)
+        try:
+            narrative_cache = get_narrative_cache()
+            cache_stats = narrative_cache.stats()
+            result["cache_metrics"] = {
+                "narrative_cache": {
+                    "type": "persistent",
+                    "size": cache_stats["size"],
+                    "max_entries": cache_stats["max_entries"],
+                    "ttl_seconds": cache_stats["ttl_seconds"],
+                    "hits": cache_stats["hits"],
+                    "misses": cache_stats["misses"],
+                    "evictions": cache_stats["eviction_count"],
+                    "utilization_pct": round((cache_stats["size"] / cache_stats["max_entries"]) * 100, 2),
+                },
+                "reflection_narrative_in_process_cache": {
+                    "type": "in_process",
+                    "size": len(_reflection_narrative_cache),
+                },
+            }
+        except Exception:
+            result["cache_metrics"] = {
+                "narrative_cache": {"type": "persistent", "error": "Unable to retrieve narrative cache metrics"},
+                "reflection_narrative_in_process_cache": {
+                    "type": "in_process",
+                    "size": len(_reflection_narrative_cache),
+                },
+            }
+        # TF-IDF cache metrics
+        try:
+            retriever = get_hybrid_retriever()
+            tfidf_cache_size = len(retriever._tfidf_cache)
+            result["cache_metrics"]["tfidf_cache"] = {
+                "size": tfidf_cache_size,
+                "max_size": DEFAULT_MAX_TFIDF_CACHE_SIZE,
+                "utilization_pct": round((tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2),
+            }
+        except Exception:
+            result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
     return json.dumps(result, indent=2)
 
 
@@ -3010,6 +3156,8 @@ def store_memory(
     importance: float = 0.5,
     emotional_context: dict[str, Any] | None = None,
     metrics: dict[str, Any] | None = None,
+    relation_type: str | None = None,
+    related_memory_id: str | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="store") used by callers and tests."""
     options = MemoryAction(
@@ -3022,6 +3170,8 @@ def store_memory(
             importance=importance,
             emotional_context=emotional_context,
             metrics=metrics,
+            relation_type=relation_type,
+            related_memory_id=related_memory_id,
         ),
     )
     return manage_memories(options, user_id=user_id)
@@ -3071,9 +3221,19 @@ def update_memory(
     scope: str | None = None,
     retention: str | None = None,
     tags: list[str] | None = None,
+    relation_type: str | None = None,
+    related_memory_id: str | None = None,
 ) -> str:
     """Legacy alias for manage_memories(action="update")."""
-    updates = MemoryUpdateOptions(content=content, category=category, scope=scope, retention=retention, tags=tags)
+    updates = MemoryUpdateOptions(
+        content=content,
+        category=category,
+        scope=scope,
+        retention=retention,
+        tags=tags,
+        relation_type=relation_type,
+        related_memory_id=related_memory_id,
+    )
     options = MemoryAction(action="update", memory_id=memory_id, updates=updates)
     return manage_memories(options, user_id=user_id)
 
@@ -3123,20 +3283,17 @@ def synthesize_profile(
         Prompt block when ``format_prompt=True``.
     """
     uid = user_id or USER_ID
-    tenant_id = get_current_tenant_id()
     cfg = ProfileConfig(
         max_static_memories=max_static_memories,
         max_dynamic_memories=max_dynamic_memories,
         include_synthesis=include_synthesis,
     )
-    profile = _synthesize_profile(uid, tenant_id, cfg)
+    profile = _run_async(_synthesize_profile(uid, get_current_tenant_id(), cfg))
 
     if format_prompt:
-        from .profile_synthesizer import profile_to_prompt
-
         return profile_to_prompt(profile)
 
-    return json.dumps(profile, indent=2, ensure_ascii=False)
+    return json.dumps(profile.to_dict(), indent=2, ensure_ascii=False)
 
 
 # =============================================================================
@@ -3282,7 +3439,7 @@ def create_document(
             char_budget=char_budget,
             memory_id_for_chunk=memory_id_for_chunk,
         )
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     return json.dumps(
         {
@@ -3303,7 +3460,7 @@ def get_document(
     store = get_document_store()
     try:
         doc = store.get_document(document_id=document_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     if doc is None:
         return f"Document {document_id} not found."
@@ -3320,7 +3477,7 @@ def list_document_chunks(
     store = get_document_store()
     try:
         chunks = store.list_chunks(document_id=document_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     return json.dumps([c.to_dict() for c in chunks], indent=2)
 
@@ -3335,7 +3492,7 @@ def get_memory_source(
     store = get_document_store()
     try:
         result = store.get_memory_source(memory_id=memory_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     if result is None:
         return f"No source document found for memory {memory_id}."
@@ -3356,10 +3513,208 @@ def delete_document(
     store = get_document_store()
     try:
         deleted = store.delete_document(document_id=document_id, user_id=uid)
-    except _DocumentLayerError as exc:
+    except DocumentLayerError as exc:
         return f"Error: {exc}"
     return json.dumps(
         {"document_id": document_id, "deleted": deleted},
+        indent=2,
+    )
+
+
+# =============================================================================
+# Clustering Tools (PIX-3841)
+# =============================================================================
+
+
+def _fetch_memories_for_clustering(
+    uid: str,
+    tenant_id: str,
+    limit: int = 10_000,
+) -> list[dict[str, Any]]:
+    """Fetch non-ghost memories for a user/tenant for clustering.
+
+    Returns dicts with id, content, user_id, tenant_id matching
+    the input format expected by ``cluster_memories()``.
+    """
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """SELECT id, content, user_id, tenant_id
+               FROM memories
+               WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (uid, tenant_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "content": row["content"],
+                "user_id": row["user_id"],
+                "tenant_id": row["tenant_id"] or tenant_id,
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def _upsert_cluster_results(
+    result: ClusterResult,
+    uid: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Upsert cluster entities and link memories into the graph store.
+
+    Returns a summary dict with entity_count and link_count.
+    """
+    store = get_graph_store()
+
+    entity_count = 0
+    for entity_dict in result.cluster_entities:
+        entity = Entity(
+            id=entity_dict["id"],
+            name=entity_dict["name"],
+            entity_type=entity_dict["entity_type"],  # "cluster"
+            description=entity_dict.get("description"),
+            properties=entity_dict.get("properties", {}),
+        )
+        store.upsert_entity(entity, uid, tenant_id=tenant_id)
+        entity_count += 1
+
+    # Group memory links by memory_id for batch linking
+    memory_groups: dict[str, dict[str, Any]] = {}
+    for link in result.memory_links:
+        mid = link["memory_id"]
+        if mid not in memory_groups:
+            memory_groups[mid] = {"entity_ids": [], "scores": {}}
+        memory_groups[mid]["entity_ids"].append(link["entity_id"])
+        memory_groups[mid]["scores"][link["entity_id"]] = link.get("relevance_score", 1.0)
+
+    link_count = 0
+    for mid, group in memory_groups.items():
+        store.link_memory_to_entities(
+            mid,
+            group["entity_ids"],
+            uid,
+            scores=group["scores"],
+            tenant_id=tenant_id,
+        )
+        link_count += len(group["entity_ids"])
+
+    return {
+        "entity_count": entity_count,
+        "link_count": link_count,
+        "cluster_count": entity_count,
+    }
+
+
+@mcp.tool(output_schema=None)
+def run_clustering(
+    user_id: str | None = None,
+    min_similarity: float = 0.25,
+    min_cluster_size: int = 2,
+    max_clusters: int | None = 20,
+) -> str:
+    """Group memories into semantic clusters using token-set Jaccard similarity.
+
+    Clusters are created as entities in the graph store and memories are
+    linked to their respective clusters. Can be called directly or triggered
+    as part of a curation run.
+
+    The implementation uses token-set Jaccard similarity as a cheap
+    stand-in for semantic distance and merges the densest pairs greedily.
+
+    Args:
+        user_id: Optional user ID override.
+        min_similarity: Minimum Jaccard similarity to consider (default 0.25).
+        min_cluster_size: Minimum memories per cluster (default 2).
+        max_clusters: Maximum clusters to create (default 20, None for unlimited).
+
+    Returns:
+        JSON summary of the clustering operation.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+
+    memories = _fetch_memories_for_clustering(uid, tenant_id)
+    if not memories:
+        return json.dumps(
+            {"ok": True, "clusters_created": 0, "memories_processed": 0, "message": "No memories to cluster."},
+            indent=2,
+        )
+
+    result = cluster_memories(
+        memories,
+        min_similarity=min_similarity,
+        min_cluster_size=min_cluster_size,
+        max_clusters=max_clusters,
+    )
+
+    if not result.cluster_entities:
+        return json.dumps(
+            {
+                "ok": True,
+                "clusters_created": 0,
+                "memories_processed": len(memories),
+                "message": "No clusters met the similarity threshold.",
+            },
+            indent=2,
+        )
+
+    summary = _upsert_cluster_results(result, uid, tenant_id)
+    return json.dumps(
+        {
+            "ok": True,
+            "clusters_created": summary["cluster_count"],
+            "memories_processed": len(memories),
+            "memory_links_created": summary["link_count"],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def query_clusters(
+    user_id: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Query cluster entities from the graph store.
+
+    Returns all cluster entities with their member memory count.
+
+    Args:
+        user_id: Optional user ID override.
+        limit: Maximum number of cluster entities to return (default 50).
+
+    Returns:
+        JSON list of cluster entities with member info.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+    store = get_graph_store()
+
+    entities = store.get_entities_by_type(uid, "cluster", limit=limit, tenant_id=tenant_id)
+    clusters = []
+    for entity in entities:
+        member_ids = entity.properties.get("member_ids", [])
+        clusters.append(
+            {
+                "cluster_id": entity.id,
+                "name": entity.name,
+                "description": entity.description,
+                "member_count": len(member_ids),
+                "member_ids": member_ids[:20],  # truncate for readability
+                "properties": entity.properties,
+            }
+        )
+
+    return json.dumps(
+        {
+            "ok": True,
+            "cluster_count": len(clusters),
+            "clusters": clusters,
+        },
         indent=2,
     )
 
@@ -3566,9 +3921,7 @@ def semantic_search_memories(
     prov = provider or _SEMANTIC_DEFAULT_PROVIDER
     try:
         store = get_semantic_search(provider=prov)
-        result = store.search(
-            query=query, user_id=uid, limit=limit, min_score=min_score
-        )
+        result = store.search(query=query, user_id=uid, limit=limit, min_score=min_score)
     except _SemanticSearchError as exc:
         return f"Error: {exc}"
     return json.dumps(result.to_dict(), indent=2)
@@ -3577,6 +3930,7 @@ def semantic_search_memories(
 # =============================================================================
 # Enhanced Synthesis Tools
 # =============================================================================
+
 
 def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction) -> str:
     """Helper for analyze synthesize action."""
@@ -3683,9 +4037,7 @@ def get_memory_strength(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    result = get_decay_model().get_memory_strength(
-        memory_id=memory_id, user_id=uid, tenant_id=tid
-    )
+    result = get_decay_model().get_memory_strength(memory_id=memory_id, user_id=uid, tenant_id=tid)
     if result is None:
         return f"Memory {memory_id} not found for user {uid} in tenant {tid}."
     return json.dumps(result, indent=2)
@@ -3710,9 +4062,7 @@ def apply_memory_decay(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    stats = get_decay_model().apply_decay_batch(
-        user_id=uid, tenant_id=tid, batch_size=batch_size
-    )
+    stats = get_decay_model().apply_decay_batch(user_id=uid, tenant_id=tid, batch_size=batch_size)
     return json.dumps(
         {
             "ok": True,
@@ -3778,9 +4128,7 @@ def get_decay_config(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    cfg = get_decay_model().get_decay_config(
-        user_id=uid, tenant_id=tid, category=category
-    )
+    cfg = get_decay_model().get_decay_config(user_id=uid, tenant_id=tid, category=category)
     return json.dumps({"ok": True, "action": "get_decay_config", **cfg.to_dict()}, indent=2)
 
 
@@ -3849,9 +4197,7 @@ def get_decay_events(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    events = get_decay_model().get_decay_events(
-        user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit
-    )
+    events = get_decay_model().get_decay_events(user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit)
     return json.dumps(
         {
             "ok": True,

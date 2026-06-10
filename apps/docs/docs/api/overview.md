@@ -10,11 +10,11 @@ workflows.
 
 ## Available APIs
 
-| API                                | Description                      |
-| ---------------------------------- | -------------------------------- |
-| [Python API](./python-api)         | Python helper and tool reference |
-| [TypeScript API](./typescript-api) | TypeScript SDK reference         |
-| [CLI Reference](./cli-reference)   | Command-line interface           |
+| API | Description |
+| --- | --- |
+| [Python API](./python-api) | Python helper and tool reference |
+| [TypeScript API](./typescript-api) | TypeScript SDK reference |
+| [CLI Reference](./cli-reference) | Command-line interface |
 
 ## Quick links
 

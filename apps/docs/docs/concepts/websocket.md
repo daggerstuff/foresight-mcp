@@ -37,11 +37,11 @@ await client.unsubscribe(subscriptionId)
 
 ## Event Filters
 
-| Filter       | Description       |
-| ------------ | ----------------- |
-| `*`          | All entities      |
-| `memory:*`   | All memory events |
-| `memory:123` | Specific memory   |
+| Filter | Description |
+| --- | --- |
+| `*` | All entities |
+| `memory:*` | All memory events |
+| `memory:123` | Specific memory |
 
 ## Message Format
 

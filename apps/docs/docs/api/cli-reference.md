@@ -20,11 +20,11 @@ uv run python scripts/foresight-cli.py --help
 
 ## Global options
 
-| Option            | Description                                                    | Default |
-| ----------------- | -------------------------------------------------------------- | ------- |
-| `--help`          | Show help                                                      | -       |
-| `--json`          | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
-| `--user-id`, `-u` | Override the active user ID                                    | auto    |
+| Option | Description | Default |
+| --- | --- | --- |
+| `--help` | Show help | - |
+| `--json` | Emit the raw backend JSON envelope or a wrapped error envelope | `false` |
+| `--user-id`, `-u` | Override the active user ID | auto |
 
 ## Memory commands
 
@@ -71,17 +71,17 @@ foresight curate archive <run_id>
 
 ### `foresight curate create` options
 
-| Option                     | Description                                            | Default             |
-| -------------------------- | ------------------------------------------------------ | ------------------- |
-| `--source-bank-id`         | Source bank to curate                                  | required            |
-| `--output-bank-id`         | Optional destination bank override for reviewable runs | auto                |
-| `--policy-mode`            | `preserve`, `rebalance`, or `rebuild`                  | `rebalance`         |
-| `--tool-access`            | `disabled`, `observe`, or `operate`                    | `observe`           |
-| `--output-mode`            | `reviewable_output` or `in_place`                      | `reviewable_output` |
-| `--instructions`           | Curator guidance for this run                          | none                |
-| `--transcript-bundle-file` | JSON transcript bundle to fold into curation           | none                |
-| `--session-id`             | Optional session identifier for the transcript bundle  | none                |
-| `--project-path`           | Optional project path for the transcript bundle        | none                |
+| Option | Description | Default |
+| --- | --- | --- |
+| `--source-bank-id` | Source bank to curate | required |
+| `--output-bank-id` | Optional destination bank override for reviewable runs | auto |
+| `--policy-mode` | `preserve`, `rebalance`, or `rebuild` | `rebalance` |
+| `--tool-access` | `disabled`, `observe`, or `operate` | `observe` |
+| `--output-mode` | `reviewable_output` or `in_place` | `reviewable_output` |
+| `--instructions` | Curator guidance for this run | none |
+| `--transcript-bundle-file` | JSON transcript bundle to fold into curation | none |
+| `--session-id` | Optional session identifier for the transcript bundle | none |
+| `--project-path` | Optional project path for the transcript bundle | none |
 
 `reviewable_output` writes curated memories to a separate bank. `in_place` first
 writes to a staging bank, and only after a successful run archives the original

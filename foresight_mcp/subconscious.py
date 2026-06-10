@@ -17,7 +17,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .block_registry import MemoryBlockSchema as RegisteredMemoryBlockSchema, get_registry, initialize_default_blocks
+from .block_registry import (
+    DEFAULT_BLOCK_SCHEMAS,
+    MemoryBlockSchema as RegisteredMemoryBlockSchema,
+    get_registry,
+    initialize_default_blocks,
+)
 from .config import DB_PATH
 from .connection_pool import get_pool
 from .memory_components import MemoryCrisisTagger, SocraticGate
@@ -179,14 +184,15 @@ class ContextBlockState:
 
     def initialize_defaults(self) -> None:
         """Initialize context blocks with registered default schemas and content."""
-        registry = initialize_default_blocks()
-        for label, content in DEFAULT_MEMORY_BLOCKS.items():
-            schema = registry.get_schema(label)
-            self.blocks[label] = MemoryBlock(
-                label=label,
-                content=content,
-                description=schema.description if schema else f"Memory block for {label}",
-                char_limit=schema.char_limit or 5000 if schema else 5000,
+        initialize_default_blocks()
+        for schema in DEFAULT_BLOCK_SCHEMAS:
+            # Extract default content from schema, fallback to empty string
+            default_content = getattr(schema, "content", "")
+            self.blocks[schema.label] = MemoryBlock(
+                label=schema.label,
+                content=default_content,
+                description=schema.description,
+                char_limit=schema.char_limit if hasattr(schema, "char_limit") else 5000,
             )
 
     def register_schema(self, schema: RegisteredMemoryBlockSchema) -> None:
@@ -199,8 +205,7 @@ class ContextBlockState:
 
     def _known_labels(self) -> list[str]:
         """Return sorted labels that may be addressed by update/reset operations."""
-        labels = set(DEFAULT_MEMORY_BLOCKS) | set(self.blocks)
-        labels.update(schema.label for schema in initialize_default_blocks().list_schemas())
+        labels = {schema.label for schema in initialize_default_blocks().list_schemas()} | set(self.blocks)
         return sorted(labels)
 
     def _validate_block_content(self, label: str, content: str) -> None:
@@ -224,7 +229,7 @@ class ContextBlockState:
         rejected to prevent typos silently creating orphan blocks.
         """
         schema = self._schema_for(label)
-        if label not in DEFAULT_MEMORY_BLOCKS and label not in self.blocks and schema is None:
+        if not schema:
             raise ValueError(f"Unknown block label {label!r}. Must be one of: {self._known_labels()}")
         self._validate_block_content(label, content)
         if label in self.blocks:
@@ -233,8 +238,8 @@ class ContextBlockState:
             self.blocks[label] = MemoryBlock(
                 label=label,
                 content=content,
-                description=schema.description if schema else f"Memory block for {label}",
-                char_limit=schema.char_limit or 5000 if schema else 5000,
+                description=schema.description,
+                char_limit=schema.char_limit if hasattr(schema, "char_limit") else 5000,
             )
 
     def append_to_block(self, label: str, content: str, max_items: int = 10) -> None:
@@ -353,13 +358,14 @@ class ContextBlockAgent:
                 block.updated_at = updated_at
             else:
                 schema = self.state._schema_for(label)
-                self.state.blocks[label] = MemoryBlock(
-                    label=label,
-                    content=row["content"],
-                    description=schema.description if schema else f"Memory block for {label}",
-                    char_limit=schema.char_limit or 5000 if schema else 5000,
-                    updated_at=updated_at,
-                )
+                if schema:
+                    self.state.blocks[label] = MemoryBlock(
+                        label=label,
+                        content=row["content"],
+                        description=schema.description,
+                        char_limit=schema.char_limit if hasattr(schema, "char_limit") else 5000,
+                        updated_at=updated_at,
+                    )
 
     def _persist_block(self, label: str) -> None:
         """Persist one block for the current user and tenant."""
@@ -509,18 +515,13 @@ class ContextBlockAgent:
 
     def reset_block(self, label: str) -> None:
         """Reset a block to its default content."""
-        if label in DEFAULT_MEMORY_BLOCKS:
-            with self._lock:
-                self.state.update_block(label, DEFAULT_MEMORY_BLOCKS[label])
-                self._persist_block(label)
-            logger.info(f"Reset block {label} to default")
-            return
         schema = self.state._schema_for(label)
         if schema is not None:
             with self._lock:
-                self.state.update_block(label, "")
+                default_content = getattr(schema, "content", "")
+                self.state.update_block(label, default_content)
                 self._persist_block(label)
-            logger.info("Reset custom block %s to empty content", label)
+            logger.info(f"Reset block {label} to default")
             return
         raise ValueError(f"Unknown block label {label!r}. Must be one of: {self.state._known_labels()}")
 

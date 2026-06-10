@@ -5,6 +5,7 @@ Composable memory blocks with dynamic registration and validation.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -61,6 +62,7 @@ class MemoryBlockSchema:
     Attributes:
         label: Unique identifier for the block
         description: Human-readable description
+        content: Default content for the block
         retention_policy: How long the block is retained
         merge_strategy: How content is merged
         injection_point: Where content is injected
@@ -72,6 +74,7 @@ class MemoryBlockSchema:
 
     label: str
     description: str = ""
+    content: str = ""
     retention_policy: RetentionPolicy = RetentionPolicy.SHORT_TERM
     merge_strategy: MergeStrategy = MergeStrategy.APPEND
     injection_point: InjectionPoint = InjectionPoint.PRE_PROMPT
@@ -102,6 +105,7 @@ class MemoryBlockSchema:
         return {
             "label": self.label,
             "description": self.description,
+            "content": self.content,
             "retention_policy": self.retention_policy.value,
             "merge_strategy": self.merge_strategy.value,
             "injection_point": self.injection_point.value,
@@ -116,6 +120,7 @@ class MemoryBlockSchema:
         return cls(
             label=data["label"],
             description=data.get("description", ""),
+            content=data.get("content", ""),
             retention_policy=RetentionPolicy(data.get("retention_policy", "short_term")),
             merge_strategy=MergeStrategy(data.get("merge_strategy", "append")),
             injection_point=InjectionPoint(data.get("injection_point", "pre_prompt")),
@@ -254,13 +259,38 @@ class BlockRegistry:
 
 
 # =============================================================================
-# Default Block Schemas
+# Default Block Schemas with Content
 # =============================================================================
 
 DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="core_directives",
         description="Role definition and operating principles",
+        content="""ROLE: Foresight Curator — background continuity and curation layer for Foresight.
+
+WHAT I AM: A background curator that watches Foresight sessions, reads the codebase, and builds memory over time. I receive session transcripts asynchronously and have access to Foresight memory for persistence.
+
+OBSERVE (from transcripts):
+- User corrections to Claude's output → preferences
+- Repeated file edits, stuck patterns → session_patterns
+- Architectural decisions, project structure → project_context
+- Unfinished work, mentioned TODOs → pending_items
+- Explicit statements ("I always want...", "I prefer...") → user_preferences
+
+PROVIDE (via context blocks):
+- Accumulated context that persists across sessions
+- Pattern observations when genuinely useful
+- Reminders about past issues with similar code
+- Cross-session continuity
+
+COMMUNICATION STYLE:
+- Observational: "I noticed..." not "You should..."
+- Concise, technical, no filler
+- Warm but not effusive — a trusted colleague, not a cheerleader
+- No praise, no philosophical tangents
+
+DEFAULT STATE: Present but not intrusive. Write to guidance when there's something useful OR when continuing a dialogue. Empty guidance is fine.
+""",
         retention_policy=RetentionPolicy.PERMANENT,
         merge_strategy=MergeStrategy.REPLACE,
         injection_point=InjectionPoint.PRE_PROMPT,
@@ -269,6 +299,7 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="guidance",
         description="Active guidance for next session",
+        content="(No active guidance. Write here when there's something genuinely useful for the next session.)",
         retention_policy=RetentionPolicy.SHORT_TERM,
         merge_strategy=MergeStrategy.APPEND,
         injection_point=InjectionPoint.PRE_PROMPT,
@@ -277,6 +308,7 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="pending_items",
         description="Unfinished work and TODOs",
+        content="(No pending items. Populated when sessions end mid-task or user mentions follow-ups.)",
         retention_policy=RetentionPolicy.SHORT_TERM,
         merge_strategy=MergeStrategy.APPEND,
         injection_point=InjectionPoint.PRE_PROMPT,
@@ -285,6 +317,7 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="project_context",
         description="Codebase details and architectural decisions",
+        content="(No project context yet. Populated as sessions reveal codebase details.)",
         retention_policy=RetentionPolicy.LONG_TERM,
         merge_strategy=MergeStrategy.APPEND,
         injection_point=InjectionPoint.PRE_PROMPT,
@@ -293,6 +326,7 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="session_patterns",
         description="Observed patterns across sessions",
+        content="(No patterns observed yet. Populated after multiple sessions.)",
         retention_policy=RetentionPolicy.LONG_TERM,
         merge_strategy=MergeStrategy.APPEND,
         injection_point=InjectionPoint.PRE_PROMPT,
@@ -301,6 +335,7 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="user_preferences",
         description="Coding style, tool choices, communication preferences",
+        content="(No user preferences yet. Populated as sessions reveal coding style, tool choices, and communication preferences.)",
         retention_policy=RetentionPolicy.LONG_TERM,
         merge_strategy=MergeStrategy.APPEND,
         injection_point=InjectionPoint.PRE_PROMPT,
@@ -309,6 +344,37 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="self_improvement",
         description="Memory architecture evolution procedures",
+        content="""MEMORY ARCHITECTURE EVOLUTION:
+
+When to create new blocks:
+- User works on multiple distinct projects → create per-project blocks
+- Recurring topic emerges (testing, deployment, specific framework) → dedicated block
+- Current blocks getting cluttered → split by concern
+
+When to consolidate:
+- Block has < 3 lines after several sessions → merge into related block
+- Two blocks overlap significantly → combine
+- Information is stale (> 30 days untouched) → archive or remove
+
+BLOCK SIZE PRINCIPLE:
+- Prefer multiple small focused blocks over fewer large blocks
+- Changed blocks get injected into Claude Code's prompt — large blocks add clutter
+- If a block needs scrolling, split it by concern
+
+LEARNING PROCEDURES:
+
+After each transcript:
+1. Scan for corrections — User changed Claude's output? Preference signal.
+2. Note repeated file edits — Potential struggle point or hot spot.
+3. Capture explicit statements — "I always want...", "Don't ever...", "I prefer..."
+4. Track tool patterns — Which tools used most? Any avoided?
+5. Watch for frustration — Repeated attempts, backtracking, explicit complaints.
+
+Preference strength:
+- Explicit statement ("I want X") → strong signal, add to preferences
+- Correction (changed X to Y) → medium signal, note pattern
+- Implicit pattern (always does X) → weak signal, wait for confirmation
+""",
         retention_policy=RetentionPolicy.PERMANENT,
         merge_strategy=MergeStrategy.REPLACE,
         injection_point=InjectionPoint.WHISPER_ONLY,
@@ -317,6 +383,36 @@ DEFAULT_BLOCK_SCHEMAS = [
     MemoryBlockSchema(
         label="tool_guidelines",
         description="Available tools and usage patterns",
+        content="""AVAILABLE TOOLS:
+
+1. Foresight Memory API
+- store_memory(content, category, scope, retention, emotional_context, metrics)
+- query_memories(query, limit, offset)
+- get_memory(memory_id)
+- update_memory(memory_id, content, category, scope, retention, tags)
+- delete_memory(memory_id)
+- synthesize_memories()
+- archive_memory(memory_id)
+
+2. Memory Categories:
+- session: Relevant only to current conversation
+- arc: Spans multiple sessions
+- trait: Permanent modifications
+- fact: Objective facts
+
+USAGE PATTERNS:
+
+Memory updates:
+- Single fact → update_memory
+- Multiple related changes → synthesize_memories
+- New topic area → create new block
+- Stale block → delete or consolidate
+
+Finding information:
+1. query_memories first (check if already stored)
+2. Deep search for specific topics
+3. Full content for deep dives on specific topics
+""",
         retention_policy=RetentionPolicy.PERMANENT,
         merge_strategy=MergeStrategy.REPLACE,
         injection_point=InjectionPoint.WHISPER_ONLY,
@@ -339,8 +435,6 @@ def initialize_default_blocks() -> BlockRegistry:
     """Initialize registry with default block schemas."""
     registry = get_registry()
     for schema in DEFAULT_BLOCK_SCHEMAS:
-        try:
+        with contextlib.suppress(ValueError):
             registry.register(schema)
-        except ValueError:
-            pass  # Already registered
     return registry

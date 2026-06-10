@@ -10,17 +10,17 @@ operations.
 
 ## Event Types
 
-| Event              | Description             |
-| ------------------ | ----------------------- |
-| `memory.stored`    | New memory created      |
-| `memory.retrieved` | Memory accessed         |
-| `memory.updated`   | Memory modified         |
-| `memory.deleted`   | Memory removed          |
-| `block.created`    | Block schema registered |
-| `block.updated`    | Block content changed   |
-| `block.deleted`    | Block removed           |
-| `anomaly.detected` | Anomaly flagged         |
-| `system.error`     | System error occurred   |
+| Event | Description |
+| --- | --- |
+| `memory.stored` | New memory created |
+| `memory.retrieved` | Memory accessed |
+| `memory.updated` | Memory modified |
+| `memory.deleted` | Memory removed |
+| `block.created` | Block schema registered |
+| `block.updated` | Block content changed |
+| `block.deleted` | Block removed |
+| `anomaly.detected` | Anomaly flagged |
+| `system.error` | System error occurred |
 
 ## Event Structure
 

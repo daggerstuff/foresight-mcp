@@ -81,11 +81,11 @@ foresight --install-completion
 
 ### Environment Variables
 
-| Variable            | Description             | Default                  |
-| ------------------- | ----------------------- | ------------------------ |
+| Variable | Description | Default |
+| --- | --- | --- |
 | `FORESIGHT_DB_PATH` | Path to SQLite database | `~/.foresight/memory.db` |
-| `FORESIGHT_USER_ID` | Default user ID         | System user              |
-| `FORESIGHT_BANK_ID` | Memory bank identifier  | `default`                |
+| `FORESIGHT_USER_ID` | Default user ID | System user |
+| `FORESIGHT_BANK_ID` | Memory bank identifier | `default` |
 
 ### Config File
 

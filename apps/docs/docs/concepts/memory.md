@@ -30,21 +30,21 @@ interface Memory {
 
 ## Scopes
 
-| Scope     | Description               | Use Case           |
-| --------- | ------------------------- | ------------------ |
-| `session` | Current conversation      | Temporary context  |
-| `arc`     | Story arc / project phase | Multi-session work |
-| `trait`   | Persistent characteristic | User preferences   |
-| `fact`    | Standalone fact           | Reference data     |
+| Scope | Description | Use Case |
+| --- | --- | --- |
+| `session` | Current conversation | Temporary context |
+| `arc` | Story arc / project phase | Multi-session work |
+| `trait` | Persistent characteristic | User preferences |
+| `fact` | Standalone fact | Reference data |
 
 ## Retention Policies
 
-| Policy       | Duration              | Auto-delete |
-| ------------ | --------------------- | ----------- |
-| `ephemeral`  | Session end           | Yes         |
-| `short_term` | Arc completion        | Yes         |
-| `long_term`  | Candidate for archive | No          |
-| `permanent`  | Never                 | No          |
+| Policy | Duration | Auto-delete |
+| --- | --- | --- |
+| `ephemeral` | Session end | Yes |
+| `short_term` | Arc completion | Yes |
+| `long_term` | Candidate for archive | No |
+| `permanent` | Never | No |
 
 ## Emotional Context
 

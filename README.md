@@ -241,16 +241,16 @@ foresight curate create   --source-bank-id default   --policy-mode rebalance   -
 Foresight now centers **context block** and **curation** terminology on the
 public surface.
 
-| Legacy name                 | Foresight-native name   |
-| --------------------------- | ----------------------- |
-| `manage_subconscious`       | `manage_context_blocks` |
-| `get_subconscious_block`    | `get_context_block`     |
-| `update_subconscious_block` | `update_context_block`  |
-| `add_subconscious_guidance` | `add_context_guidance`  |
-| `get_subconscious_whisper`  | `get_context_whisper`   |
-| `get_subconscious_context`  | `get_context_snapshot`  |
-| `reset_subconscious_block`  | `reset_context_block`   |
-| `clear_subconscious_block`  | `clear_context_block`   |
+| Legacy name | Foresight-native name |
+| --- | --- |
+| `manage_subconscious` | `manage_context_blocks` |
+| `get_subconscious_block` | `get_context_block` |
+| `update_subconscious_block` | `update_context_block` |
+| `add_subconscious_guidance` | `add_context_guidance` |
+| `get_subconscious_whisper` | `get_context_whisper` |
+| `get_subconscious_context` | `get_context_snapshot` |
+| `reset_subconscious_block` | `reset_context_block` |
+| `clear_subconscious_block` | `clear_context_block` |
 
 Compatibility aliases remain in place for older clients, but new integrations
 should use the Foresight-native names above.

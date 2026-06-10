@@ -79,13 +79,13 @@ client.subscribeToEvents(['memory.stored', 'memory.updated'])
 
 ## Key Features
 
-| Feature                | Description                                                                 |
-| ---------------------- | --------------------------------------------------------------------------- |
-| **Event Sourcing**     | Every operation is an event, stored in SQLite with full audit trail         |
-| **Domain-Agnostic**    | Anomaly detection works for mental health, security, finance, or any domain |
-| **Composable Schemas** | Define custom memory block types with validation                            |
-| **Real-time Sync**     | WebSocket subscriptions for live updates                                    |
-| **Multi-tenant Ready** | User isolation built into the architecture                                  |
+| Feature | Description |
+| --- | --- |
+| **Event Sourcing** | Every operation is an event, stored in SQLite with full audit trail |
+| **Domain-Agnostic** | Anomaly detection works for mental health, security, finance, or any domain |
+| **Composable Schemas** | Define custom memory block types with validation |
+| **Real-time Sync** | WebSocket subscriptions for live updates |
+| **Multi-tenant Ready** | User isolation built into the architecture |
 
 ## Next Steps
 
