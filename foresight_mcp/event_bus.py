@@ -49,6 +49,9 @@ class EventType(str, Enum):
     # Anomaly detection
     ANOMALY_DETECTED = "anomaly.detected"
 
+    # Event publication
+    EVENT_PUBLISHED = "event.published"
+
     # System
     SYSTEM_ERROR = "system.error"
 

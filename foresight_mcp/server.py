@@ -57,15 +57,32 @@ from .document_layer import (
     get_document_store,
 )
 from .enhanced_synthesizer import get_enhanced_synthesizer
-from .entity_extractor import get_entity_extractor
+from .entity_extractor import Entity, get_entity_extractor
+from .clustering import cluster_memories
 from .event_bus import (
-    curation_status_changed,
-    get_event_bus,
-    memory_deleted,
-    memory_retrieved,
-    memory_stored,
-    memory_updated,
+    Event as Event,
+    EventType as EventType,
+    EventBus as EventBus,
+    curation_status_changed as curation_status_changed,
+    get_event_bus as get_event_bus,
+    memory_deleted as memory_deleted,
+    memory_retrieved as memory_retrieved,
+    memory_stored as memory_stored,
+    memory_updated as memory_updated,
 )
+from .hooks import (
+    HookExecutor as HookExecutor,
+    HookRegistration as HookRegistration,
+    HookRegistry as HookRegistry,
+    HookType as HookType,
+    get_hook_executor as get_hook_executor,
+    list_hooks as list_hooks,
+    register_hook as register_hook,
+    unregister_hook as unregister_hook,
+)
+
+# WebSocket imports
+from .websocket.server import WebSocketServer as WebSocketServer
 from .graph_store import get_graph_store
 from .hybrid_retriever import HybridResult, get_hybrid_retriever
 from .memory_components import (
@@ -107,19 +124,25 @@ from .temporal_service import get_temporal_service
 from .tenant_context import get_current_tenant_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 from .websocket.subscriptions import SubscriptionManager
+
 DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
 DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
 DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
 # Global narrative cache instance for metrics (lazy initialization)
 _narrative_cache: NarrativeCache | None = None
+
+
 def get_narrative_cache() -> NarrativeCache:
     """Get or create global narrative cache instance."""
     global _narrative_cache
     if _narrative_cache is None:
         from .config import DB_PATH
+
         cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
         _narrative_cache = NarrativeCache(cache_path)
     return _narrative_cache
+
+
 # Tool argument grouping models
 class MemoryOptions(BaseModel):
     category: str = Field(default="fact", description="Category label")
@@ -166,6 +189,9 @@ class SearchOptions(BaseModel):
     offset: int = Field(default=0, description="Result offset")
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
+    use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
+    cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
+    cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
 
 
 class ContextBlockAction(BaseModel):
@@ -194,6 +220,10 @@ class CurationRunAction(BaseModel):
         description="Whether curated results land in a reviewable output bank or in place",
     )
     instructions: str | None = Field(default=None, description="Optional curator instructions")
+    run_clustering: bool = Field(
+        default=False,
+        description="If True, run memory clustering after curation completes",
+    )
     transcript_bundle: list[dict[str, Any]] | None = Field(
         default=None, description="Optional transcript bundle to incorporate during curation"
     )
@@ -1756,6 +1786,7 @@ def _curation_payload_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "tool_access": row_dict["tool_access"],
         "output_mode": row_dict["output_mode"],
         "instructions": row_dict["instructions"],
+        "run_clustering": row_dict.get("run_clustering", False),
         "transcript_bundle": json.loads(transcript_bundle_json) if transcript_bundle_json else None,
         "session_id": row_dict.get("session_id"),
         "project_path": row_dict.get("project_path"),
@@ -2242,6 +2273,20 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
                 )
                 raise CurationError("Curation canceled after promotion; restored source bank")
 
+        # Run clustering after curation if requested
+        clustering_summary: dict[str, Any] | None = None
+        if payload.get("run_clustering"):
+            try:
+                _raise_if_run_canceled(uid, tenant_id, run_id)
+                cluster_memories_for_run = _fetch_memories_for_clustering(uid, tenant_id)
+                if cluster_memories_for_run:
+                    cluster_result = cluster_memories(cluster_memories_for_run)
+                    if cluster_result.cluster_entities:
+                        clustering_summary = _upsert_cluster_results(cluster_result, uid, tenant_id)
+            except Exception as exc:
+                logger.warning("Clustering post-curation failed for run %s: %s", run_id, exc)
+                clustering_summary = {"error": str(exc)}
+
         summary = {
             "source_memory_count": len(source_rows),
             "output_memory_count": len(created_ids),
@@ -2250,6 +2295,7 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
             "synthesis": synthesis,
             "reflection": reflection,
             "transcript_processed": bool(payload.get("transcript_bundle")),
+            "clustering": clustering_summary,
         }
         summary.update(promotion_summary)
         _raise_if_run_canceled(uid, tenant_id, run_id)
@@ -2369,6 +2415,7 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
                 "tool_access": options.tool_access,
                 "output_mode": options.output_mode,
                 "instructions": options.instructions,
+                "run_clustering": options.run_clustering,
                 "transcript_bundle": options.transcript_bundle,
                 "session_id": options.session_id,
                 "project_path": options.project_path,
@@ -2861,6 +2908,29 @@ def main():
     init_db()
     initialize_stream_producer()
     _resume_pending_curation_runs()
+
+    # Initialize WebSocket server
+    async def websocket_auth_callback(token: str) -> tuple[str, str] | None:
+        """Auth callback for WebSocket connections."""
+        # For now, use the same auth as the main server
+        # In a real implementation, this would check the token against the auth system
+        # and return (user_id, tenant_id) if valid, or None if invalid
+        if not token:
+            return None
+
+        # Simple validation: token must start with "user_" to be considered valid
+        # This is a placeholder for actual authentication logic
+        if token.startswith("user_"):
+            user_id = token
+            tenant_id = "default"
+            return user_id, tenant_id
+
+        return None
+
+    # Create and start WebSocket server
+    websocket_server = WebSocketServer(auth_callback=websocket_auth_callback)
+    websocket_server.start()
+
     mcp.run(show_banner=False)
 
 
@@ -3044,7 +3114,10 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
         except Exception:
             result["cache_metrics"] = {
                 "narrative_cache": {"type": "persistent", "error": "Unable to retrieve narrative cache metrics"},
-                "reflection_narrative_in_process_cache": {"type": "in_process", "size": len(_reflection_narrative_cache)},
+                "reflection_narrative_in_process_cache": {
+                    "type": "in_process",
+                    "size": len(_reflection_narrative_cache),
+                },
             }
         # TF-IDF cache metrics
         try:
@@ -3058,6 +3131,8 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
         except Exception:
             result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
     return json.dumps(result, indent=2)
+
+
 @mcp.tool(output_schema=None)
 def memory_status(
     user_id: str | None = None,
@@ -3442,6 +3517,204 @@ def delete_document(
         return f"Error: {exc}"
     return json.dumps(
         {"document_id": document_id, "deleted": deleted},
+        indent=2,
+    )
+
+
+# =============================================================================
+# Clustering Tools (PIX-3841)
+# =============================================================================
+
+
+def _fetch_memories_for_clustering(
+    uid: str,
+    tenant_id: str,
+    limit: int = 10_000,
+) -> list[dict[str, Any]]:
+    """Fetch non-ghost memories for a user/tenant for clustering.
+
+    Returns dicts with id, content, user_id, tenant_id matching
+    the input format expected by ``cluster_memories()``.
+    """
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            """SELECT id, content, user_id, tenant_id
+               FROM memories
+               WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
+               ORDER BY created_at DESC
+               LIMIT ?""",
+            (uid, tenant_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "content": row["content"],
+                "user_id": row["user_id"],
+                "tenant_id": row["tenant_id"] or tenant_id,
+            }
+            for row in rows
+        ]
+    finally:
+        conn.close()
+
+
+def _upsert_cluster_results(
+    result: ClusterResult,
+    uid: str,
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Upsert cluster entities and link memories into the graph store.
+
+    Returns a summary dict with entity_count and link_count.
+    """
+    store = get_graph_store()
+
+    entity_count = 0
+    for entity_dict in result.cluster_entities:
+        entity = Entity(
+            id=entity_dict["id"],
+            name=entity_dict["name"],
+            entity_type=entity_dict["entity_type"],  # "cluster"
+            description=entity_dict.get("description"),
+            properties=entity_dict.get("properties", {}),
+        )
+        store.upsert_entity(entity, uid, tenant_id=tenant_id)
+        entity_count += 1
+
+    # Group memory links by memory_id for batch linking
+    memory_groups: dict[str, dict[str, Any]] = {}
+    for link in result.memory_links:
+        mid = link["memory_id"]
+        if mid not in memory_groups:
+            memory_groups[mid] = {"entity_ids": [], "scores": {}}
+        memory_groups[mid]["entity_ids"].append(link["entity_id"])
+        memory_groups[mid]["scores"][link["entity_id"]] = link.get("relevance_score", 1.0)
+
+    link_count = 0
+    for mid, group in memory_groups.items():
+        store.link_memory_to_entities(
+            mid,
+            group["entity_ids"],
+            uid,
+            scores=group["scores"],
+            tenant_id=tenant_id,
+        )
+        link_count += len(group["entity_ids"])
+
+    return {
+        "entity_count": entity_count,
+        "link_count": link_count,
+        "cluster_count": entity_count,
+    }
+
+
+@mcp.tool(output_schema=None)
+def run_clustering(
+    user_id: str | None = None,
+    min_similarity: float = 0.25,
+    min_cluster_size: int = 2,
+    max_clusters: int | None = 20,
+) -> str:
+    """Group memories into semantic clusters using token-set Jaccard similarity.
+
+    Clusters are created as entities in the graph store and memories are
+    linked to their respective clusters. Can be called directly or triggered
+    as part of a curation run.
+
+    The implementation uses token-set Jaccard similarity as a cheap
+    stand-in for semantic distance and merges the densest pairs greedily.
+
+    Args:
+        user_id: Optional user ID override.
+        min_similarity: Minimum Jaccard similarity to consider (default 0.25).
+        min_cluster_size: Minimum memories per cluster (default 2).
+        max_clusters: Maximum clusters to create (default 20, None for unlimited).
+
+    Returns:
+        JSON summary of the clustering operation.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+
+    memories = _fetch_memories_for_clustering(uid, tenant_id)
+    if not memories:
+        return json.dumps(
+            {"ok": True, "clusters_created": 0, "memories_processed": 0, "message": "No memories to cluster."},
+            indent=2,
+        )
+
+    result = cluster_memories(
+        memories,
+        min_similarity=min_similarity,
+        min_cluster_size=min_cluster_size,
+        max_clusters=max_clusters,
+    )
+
+    if not result.cluster_entities:
+        return json.dumps(
+            {
+                "ok": True,
+                "clusters_created": 0,
+                "memories_processed": len(memories),
+                "message": "No clusters met the similarity threshold.",
+            },
+            indent=2,
+        )
+
+    summary = _upsert_cluster_results(result, uid, tenant_id)
+    return json.dumps(
+        {
+            "ok": True,
+            "clusters_created": summary["cluster_count"],
+            "memories_processed": len(memories),
+            "memory_links_created": summary["link_count"],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def query_clusters(
+    user_id: str | None = None,
+    limit: int = 50,
+) -> str:
+    """Query cluster entities from the graph store.
+
+    Returns all cluster entities with their member memory count.
+
+    Args:
+        user_id: Optional user ID override.
+        limit: Maximum number of cluster entities to return (default 50).
+
+    Returns:
+        JSON list of cluster entities with member info.
+    """
+    uid = user_id or USER_ID
+    tenant_id = get_current_tenant_id()
+    store = get_graph_store()
+
+    entities = store.get_entities_by_type(uid, "cluster", limit=limit, tenant_id=tenant_id)
+    clusters = []
+    for entity in entities:
+        member_ids = entity.properties.get("member_ids", [])
+        clusters.append(
+            {
+                "cluster_id": entity.id,
+                "name": entity.name,
+                "description": entity.description,
+                "member_count": len(member_ids),
+                "member_ids": member_ids[:20],  # truncate for readability
+                "properties": entity.properties,
+            }
+        )
+
+    return json.dumps(
+        {
+            "ok": True,
+            "cluster_count": len(clusters),
+            "clusters": clusters,
+        },
         indent=2,
     )
 

@@ -1408,6 +1408,7 @@ def test_resume_pending_curation_runs_preserves_transcript_payload():
                 "tool_access": "operate",
                 "output_mode": "in_place",
                 "instructions": "Preserve the transcript context",
+                "run_clustering": False,
                 "transcript_bundle": transcript_bundle,
                 "session_id": "sess-123",
                 "project_path": "/tmp/project",
