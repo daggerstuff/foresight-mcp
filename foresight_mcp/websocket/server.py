@@ -15,7 +15,7 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -72,9 +72,16 @@ class WebSocketHandler:
     - Reconnection support
     """
 
-    def __init__(self, auth_callback: Callable[[str], tuple[str, str] | None] | None = None):
+    def __init__(
+        self,
+        auth_callback: Callable[[str], tuple[str, str] | None] | None = None,
+        heartbeat_interval: float = 30.0,
+        heartbeat_timeout: float = 90.0,
+    ):
         self._connections: dict[str, Connection] = {}
         self._auth_callback = auth_callback
+        self._heartbeat_interval = heartbeat_interval
+        self._heartbeat_timeout = heartbeat_timeout
 
     async def connect(
         self,
@@ -129,7 +136,7 @@ class WebSocketHandler:
             "type": "connection_accepted",
             "connection_id": conn_id,
             "message": "Connected to Foresight WebSocket server",
-            "heartbeat_interval": 30,  # seconds
+            "heartbeat_interval": int(self._heartbeat_interval),
             "user_id": user_id,
             "tenant_id": tenant_id,
         }
@@ -239,7 +246,7 @@ class WebSocketHandler:
                 }
 
         if action == "auth":
-            token = message.get("token")
+            token: str = message.get("token", "")
             return await self.authenticate(connection_id, token)
 
         return {"type": "error", "message": f"Unknown action: {action}"}
@@ -251,9 +258,23 @@ class WebSocketHandler:
 
         for conn_id, conn in list(self._connections.items()):
             if conn.state == ConnectionState.DISCONNECTED:
-                # Clean up disconnected connections after timeout
                 age = (now - conn.connected_at).total_seconds()
                 if age > timeout_seconds:
+                    del self._connections[conn_id]
+                    removed.append(conn_id)
+            elif conn.state in (ConnectionState.CONNECTED, ConnectionState.AUTHENTICATED):
+                heartbeat_age = (now - conn.last_heartbeat).total_seconds()
+                if heartbeat_age > self._heartbeat_timeout:
+                    logger.warning(
+                        "Closing connection %s: no heartbeat for %.0fs (timeout %.0fs)",
+                        conn_id,
+                        heartbeat_age,
+                        self._heartbeat_timeout,
+                    )
+                    try:
+                        conn.close()
+                    except Exception:
+                        logger.debug("Failed to close stale connection %s", conn_id, exc_info=True)
                     del self._connections[conn_id]
                     removed.append(conn_id)
 
@@ -288,7 +309,7 @@ class WebSocketServer:
     def __init__(
         self,
         event_bus=None,
-        auth_callback: Callable[[str], bool] | None = None,
+        auth_callback: Callable[[str], tuple[str, str] | None] | None = None,
         heartbeat_interval: float = 30.0,
         heartbeat_timeout: float = 90.0,
     ):
@@ -301,7 +322,11 @@ class WebSocketServer:
             heartbeat_timeout: Timeout for considering connection dead
         """
 
-        self.handler = WebSocketHandler(auth_callback)
+        self.handler = WebSocketHandler(
+            auth_callback,
+            heartbeat_interval=heartbeat_interval,
+            heartbeat_timeout=heartbeat_timeout,
+        )
         self._event_bus = event_bus
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_timeout = heartbeat_timeout
@@ -364,6 +389,9 @@ class WebSocketServer:
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all event bus events."""
+        if not self._event_bus:
+            logger.warning("No event bus available — skipping event subscriptions")
+            return
 
         def on_event(event):
             """Callback for all events - broadcast to subscribers."""

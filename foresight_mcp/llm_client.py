@@ -26,6 +26,7 @@ import hashlib
 import logging
 import os
 import random
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -147,17 +148,40 @@ class LLMClient(Protocol):
 def _retry_with_backoff(
     fn: Callable[[], str],
     max_retries: int,
-    _timeout_ms: int = 0,  # reserved for future timeout enforcement
+    timeout_ms: int = 0,
 ) -> str:
-    """Call ``fn`` with exponential backoff and jitter on :exc:`LLMProviderError`."""
+    """Call ``fn`` with exponential backoff and jitter on :exc:`LLMProviderError`.
+
+    If *timeout_ms* > 0, each individual call is wrapped in a
+    :class:`socket.timeout` guard so a single hung request cannot
+    block the process indefinitely.
+    """
     last_exc: LLMError | None = None
     for attempt in range(max_retries + 1):
         try:
+            if timeout_ms > 0:
+                original_timeout = socket.getdefaulttimeout()
+                try:
+                    socket.setdefaulttimeout(timeout_ms / 1000.0)
+                    result = fn()
+                finally:
+                    socket.setdefaulttimeout(original_timeout)
+                return result
             return fn()
         except LLMRateLimitError:
             raise  # Do not retry rate limits
         except LLMNotConfiguredError:
             raise  # Config errors propagate immediately without wrapping
+        except (socket.timeout, TimeoutError) as exc:
+            last_exc = LLMProviderError(f"LLM call timed out after {timeout_ms}ms: {exc}")
+            if attempt < max_retries:
+                sleep_s = (2**attempt) + random.random()
+                logger.warning(
+                    "LLM call timed out (attempt %d/%d), retrying in %.2fs", attempt + 1, max_retries + 1, sleep_s
+                )
+                time.sleep(sleep_s)
+            else:
+                break
         except LLMProviderError as exc:
             last_exc = exc
             if attempt < max_retries:
@@ -220,6 +244,7 @@ class TenantLLMClient:
         api_key = self._config.api_key
         model = self._config.model_for_provider()
         provider = self._config.provider
+        timeout_s = self._config.timeout_ms // 1000
 
         if not api_key:
             raise LLMNotConfiguredError(
@@ -229,9 +254,9 @@ class TenantLLMClient:
             )
 
         if provider == "anthropic":
-            return AnthropicClient(api_key=api_key, model=model)
+            return AnthropicClient(api_key=api_key, model=model, timeout=timeout_s)
         if provider == "openai":
-            return OpenAIClient(api_key=api_key, model=model)
+            return OpenAIClient(api_key=api_key, model=model, timeout=timeout_s)
 
         raise LLMProviderError(
             f"Unknown LLM provider '{provider}'. Set FORESIGHT_LLM_PROVIDER to 'anthropic' or 'openai'."
@@ -336,7 +361,7 @@ class TenantLLMClient:
             response = _retry_with_backoff(
                 call,
                 max_retries=self._config.max_retries,
-                _timeout_ms=self._config.timeout_ms,
+                timeout_ms=self._config.timeout_ms,
             )
 
             outcome = "success"

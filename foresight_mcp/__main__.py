@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import sys
-from importlib.metadata import PackageNotFoundError
+from importlib.metadata import PackageNotFoundError, version as pkg_version
 
 from .server import main as run_server
 
@@ -20,7 +20,7 @@ def main() -> None:
 
     if "--version" in sys.argv:
         with contextlib.suppress(PackageNotFoundError):
-            pass
+            print(f"foresight-mcp {pkg_version('foresight-mcp')}")
         return
 
     run_server()

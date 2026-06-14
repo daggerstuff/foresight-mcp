@@ -173,7 +173,7 @@ class EventStore:
                 if cols and "tenant_id" not in cols:
                     conn.execute("ALTER TABLE events ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
             except Exception:
-                pass
+                logger.debug("events table already has tenant_id column")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_entity ON events(entity_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")

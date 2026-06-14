@@ -14,9 +14,10 @@ import json
 import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
+from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
 # Schema version
@@ -119,6 +120,7 @@ class EmotionalContext(BaseModel):
                 return None
         if not raw:
             return None
+        raw = cast(dict, raw)
         # Support both snake_case (legacy) and camelCase (unified)
         return cls.from_camel_dict(raw)
 
@@ -156,7 +158,26 @@ class EmpathyMetrics(BaseModel):
                 return None
         if not raw:
             return None
+        raw = cast(dict, raw)
         return cls.from_camel_dict(raw)
+
+
+@dataclass
+class MemoryCreateOptions:
+    """Options for creating a UnifiedMemory instance."""
+
+    tenant_id: str = "default"
+    bank_id: str = "default"
+    scope: MemoryScope = MemoryScope.SESSION
+    retention: RetentionPolicy = RetentionPolicy.SHORT_TERM
+    category: str = "general"
+    tags: list[str] | None = None
+    importance: float = 0.5
+    source_service: SourceService = SourceService.FORESIGHT
+    emotional_context: EmotionalContext | None = None
+    empathy_metrics: EmpathyMetrics | None = None
+    relation_type: str | None = None
+    related_memory_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -238,40 +259,30 @@ class UnifiedMemory(BaseModel):
     # -------------------------------------------------------------------------
 
     @classmethod
-    def create(  # noqa: PLR0913
+    def create(
         cls,
         content: str,
         user_id: str,
-        *,
-        tenant_id: str = "default",
-        bank_id: str = "default",
-        scope: MemoryScope = MemoryScope.SESSION,
-        retention: RetentionPolicy = RetentionPolicy.SHORT_TERM,
-        category: str = "general",
-        tags: list[str] | None = None,
-        importance: float = 0.5,
-        source_service: SourceService = SourceService.FORESIGHT,
-        emotional_context: EmotionalContext | None = None,
-        empathy_metrics: EmpathyMetrics | None = None,
-        relation_type: str | None = None,
-        related_memory_id: str | None = None,
+        options: MemoryCreateOptions | None = None,
     ) -> UnifiedMemory:
         """Factory — creates a new UnifiedMemory with auto-generated id and timestamp."""
-        return cls(
+        if options is None:
+            options = MemoryCreateOptions()
+        return cls.model_construct(
             content=content,
             user_id=user_id,
-            tenant_id=tenant_id,
-            bank_id=bank_id,
-            scope=scope,
-            retention=retention,
-            category=category,
-            tags=tags or [],
-            importance=importance,
-            source_service=source_service,
-            emotional_context=emotional_context,
-            empathy_metrics=empathy_metrics,
-            relation_type=relation_type,
-            related_memory_id=related_memory_id,
+            tenant_id=options.tenant_id,
+            bank_id=options.bank_id,
+            scope=options.scope,
+            retention=options.retention,
+            category=options.category,
+            tags=options.tags or [],
+            importance=options.importance,
+            source_service=options.source_service,
+            emotional_context=options.emotional_context,
+            empathy_metrics=options.empathy_metrics,
+            relation_type=options.relation_type,
+            related_memory_id=options.related_memory_id,
         )
 
     # -------------------------------------------------------------------------
@@ -443,6 +454,10 @@ class UnifiedMemory(BaseModel):
             vector_id=doc.get("vectorId", doc.get("vector_id")),
             emotional_context=EmotionalContext.from_camel_dict(emo) if emo else None,
             empathy_metrics=EmpathyMetrics.from_camel_dict(emp) if emp else None,
+            current_strength=doc.get("currentStrength", doc.get("current_strength")),
+            last_decay_at=doc.get("lastDecayAt", doc.get("last_decay_at")),
+            relation_type=doc.get("relationType", doc.get("relation_type")),
+            related_memory_id=doc.get("relatedMemoryId", doc.get("related_memory_id")),
             created_at=str(
                 doc.get("createdAt", doc.get("created_at", doc.get("timestamp", datetime.now(UTC).isoformat())))
             ),
@@ -482,9 +497,7 @@ class CreateMemoryInput(BaseModel):
     empathy_metrics: EmpathyMetrics | None = Field(None)
 
     def to_unified(self) -> UnifiedMemory:
-        return UnifiedMemory.create(
-            content=self.content,
-            user_id=self.user_id,
+        options = MemoryCreateOptions(
             tenant_id=self.tenant_id,
             bank_id=self.bank_id,
             scope=self.scope,
@@ -495,6 +508,11 @@ class CreateMemoryInput(BaseModel):
             source_service=self.source_service,
             emotional_context=self.emotional_context,
             empathy_metrics=self.empathy_metrics,
+        )
+        return UnifiedMemory.create(
+            content=self.content,
+            user_id=self.user_id,
+            options=options,
         )
 
 

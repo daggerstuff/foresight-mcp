@@ -190,6 +190,16 @@ class SemanticSearchResult:
         }
 
 
+@dataclass
+class SemanticSearchOptions:
+    """Options for semantic search."""
+
+    tenant_id: str | None = None
+    limit: int = 10
+    min_score: float = 0.0
+    provider: str | None = None
+
+
 def _validate_user_tenant(user_id: str, tenant_id: str) -> None:
     if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
         raise SemanticSearchError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
@@ -222,7 +232,7 @@ class SemanticSearch:
         self._lock = threading.Lock()
         self._ensure_table()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.row_factory = sqlite3.Row
@@ -352,16 +362,33 @@ class SemanticSearch:
             else:
                 conn.close()
 
-    def search(  # noqa: PLR0913
+    def search(
         self,
         query: str,
         user_id: str,
-        tenant_id: str | None = None,
-        limit: int = 10,
-        min_score: float = 0.0,
-        provider: str | None = None,
+        *,
+        options: SemanticSearchOptions | None = None,
+        **overrides,
     ) -> SemanticSearchResult:
         """Semantic search by cosine similarity over stored vectors."""
+        # Use options if provided, otherwise fall back to individual parameters
+        if options is None:
+            options = SemanticSearchOptions()
+
+        # Apply overrides
+        options_dict = {
+            "tenant_id": options.tenant_id,
+            "limit": options.limit,
+            "min_score": options.min_score,
+            "provider": options.provider,
+        }
+        options_dict.update(overrides)
+
+        tenant_id = options_dict["tenant_id"]
+        limit = options_dict["limit"]
+        min_score = options_dict["min_score"]
+        provider = options_dict["provider"]
+
         if not query or not query.strip():
             raise SemanticSearchError("query must be a non-empty string")
         if limit < 1 or limit > 1000:

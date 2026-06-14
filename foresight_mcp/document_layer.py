@@ -33,6 +33,18 @@ from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
+
+@dataclass
+class DocumentCreateOptions:
+    """Options for creating a document."""
+
+    source: str = "note"
+    tenant_id: str | None = None
+    metadata: dict[str, Any] | None = None
+    char_budget: int = 800
+    memory_id_for_chunk: Any = None
+
+
 logger = logging.getLogger("foresight_document_layer")
 
 DEFAULT_CHUNK_CHAR_BUDGET = 800
@@ -235,7 +247,7 @@ class DocumentStore:
         self._lock = threading.Lock()
         self._ensure_tables()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.row_factory = sqlite3.Row
@@ -291,55 +303,34 @@ class DocumentStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_document_chunks_memory ON document_chunks(memory_id)")
             conn.commit()
         finally:
-            pool = getattr(conn, "_pool", None)
-            if pool is not None:
-                pool.release(conn)
-            else:
-                conn.close()
+            pool = get_pool(self.db_path)
+            pool.release(conn)
+            conn.close()
 
-    def create_document(  # noqa: PLR0913,PLR0912
-        self,
-        title: str,
-        content: str,
-        user_id: str,
-        source: str = "note",
-        tenant_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
-        char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET,
-        memory_id_for_chunk: Any = None,
-    ) -> tuple[Document, list[DocumentChunk]]:
-        """Persist a new document and its extracted chunks.
-
-        `memory_id_for_chunk` is optional: if callable, it is invoked
-        with (chunk_index, text) and must return a memory_id string.
-        If a string, it is used for all chunks. If None, chunks are
-        stored without a memory_id (extraction stub mode).
-        """
+    def _validate_create_params(self, title: str, content: str, options: DocumentCreateOptions) -> None:
+        """Validate parameters for document creation."""
         if not title or len(title) > MAX_TITLE_LENGTH:
             raise DocumentLayerError(f"title must be 1-{MAX_TITLE_LENGTH} chars")
         if not isinstance(content, str) or not content:
             raise DocumentLayerError("content must be a non-empty string")
         if len(content) > MAX_TEXT_LENGTH:
             raise DocumentLayerError(f"content exceeds {MAX_TEXT_LENGTH} chars")
-        _validate_source(source)
-        _validate_budget(char_budget)
-        tid = tenant_id or get_current_tenant_id()
-        _validate_user_tenant(user_id, tid)
-        meta = metadata or {}
+        _validate_source(options.source)
+        _validate_budget(options.char_budget)
 
-        doc_id = str(uuid.uuid4())
-        now = datetime.now(timezone.utc).isoformat()
-        h = content_hash(content)
-
-        raw_chunks = chunk_text(content, char_budget=char_budget)
+    def _create_chunks(
+        self, doc_id: str, content: str, user_id: str, tenant_id: str, now: str, options: DocumentCreateOptions
+    ) -> list[DocumentChunk]:
+        """Create document chunks from content."""
+        raw_chunks = chunk_text(content, char_budget=options.char_budget)
         chunks: list[DocumentChunk] = []
         for i, (start, end, text) in enumerate(raw_chunks):
-            if callable(memory_id_for_chunk):
-                mid = memory_id_for_chunk(i, text)
+            if callable(options.memory_id_for_chunk):
+                mid = options.memory_id_for_chunk(i, text)
                 if mid is not None:
                     _validate_memory_id(str(mid))
-            elif isinstance(memory_id_for_chunk, str):
-                mid = memory_id_for_chunk
+            elif isinstance(options.memory_id_for_chunk, str):
+                mid = options.memory_id_for_chunk
             else:
                 mid = None
             chunks.append(
@@ -352,6 +343,47 @@ class DocumentStore:
                     chunk_index=i,
                 )
             )
+        return chunks
+
+    def create_document(
+        self,
+        title: str,
+        content: str,
+        user_id: str,
+        source: str = "note",
+        tenant_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET,
+        memory_id_for_chunk: Any = None,
+        *,
+        options: DocumentCreateOptions | None = None,
+    ) -> tuple[Document, list[DocumentChunk]]:
+        """Persist a new document and its extracted chunks.
+
+        `memory_id_for_chunk` is optional: if callable, it is invoked
+        with (chunk_index, text) and must return a memory_id string.
+        If a string, it is used for all chunks. If None, chunks are
+        stored without a memory_id (extraction stub mode).
+        """
+        # Backward compatibility: if options is provided, use it; otherwise build from individual parameters
+        if options is None:
+            options = DocumentCreateOptions(
+                source=source,
+                tenant_id=tenant_id,
+                metadata=metadata,
+                char_budget=char_budget,
+                memory_id_for_chunk=memory_id_for_chunk,
+            )
+        self._validate_create_params(title, content, options)
+        tid = options.tenant_id or get_current_tenant_id()
+        _validate_user_tenant(user_id, tid)
+        meta = options.metadata or {}
+
+        doc_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        h = content_hash(content)
+
+        chunks = self._create_chunks(doc_id, content, user_id, tid, now, options)
 
         conn = self._connect()
         try:
@@ -372,14 +404,14 @@ class DocumentStore:
                         id, tenant_id, user_id, title, source,
                         content, content_hash, char_count, chunk_count,
                         created_at, updated_at, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         doc_id,
                         tid,
                         user_id,
                         title,
-                        source,
+                        options.source,
                         content,
                         h,
                         len(content),
@@ -424,7 +456,7 @@ class DocumentStore:
             tenant_id=tid,
             user_id=user_id,
             title=title,
-            source=source,
+            source=options.source,
             content=content,
             content_hash=h,
             char_count=len(content),

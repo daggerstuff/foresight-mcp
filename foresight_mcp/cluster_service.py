@@ -66,7 +66,7 @@ class ClusterResult:
     memory_links: list[dict[str, Any]]
 
 
-def cluster_memories(  # noqa: PLR0912
+def cluster_memories(
     memories: list[dict[str, Any]],
     *,
     min_similarity: float = 0.25,
@@ -82,6 +82,19 @@ def cluster_memories(  # noqa: PLR0912
     if len(memories) < min_cluster_size:
         return ClusterResult(cluster_entities=[], memory_links=[])
 
+    cleaned = _clean_memories(memories)
+    if len(cleaned) < min_cluster_size:
+        return ClusterResult(cluster_entities=[], memory_links=[])
+
+    adjacency = _build_adjacency(cleaned, min_similarity)
+    cluster_entities, memory_links = _form_clusters(cleaned, adjacency, min_cluster_size)
+    cluster_entities, memory_links = _apply_cluster_limit(cluster_entities, memory_links, max_clusters)
+
+    return ClusterResult(cluster_entities=cluster_entities, memory_links=memory_links)
+
+
+def _clean_memories(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Clean and tokenize memories for clustering."""
     cleaned: list[dict[str, Any]] = []
     for memory in memories:
         content = str(memory.get("content") or "")
@@ -97,10 +110,11 @@ def cluster_memories(  # noqa: PLR0912
                 "tokens": set(tokens),
             }
         )
+    return cleaned
 
-    if len(cleaned) < min_cluster_size:
-        return ClusterResult(cluster_entities=[], memory_links=[])
 
+def _build_adjacency(cleaned: list[dict[str, Any]], min_similarity: float) -> list[set[int]]:
+    """Build adjacency list based on Jaccard similarity threshold."""
     adjacency: list[set[int]] = [set() for _ in range(len(cleaned))]
     for i in range(len(cleaned)):
         for j in range(i + 1, len(cleaned)):
@@ -108,7 +122,13 @@ def cluster_memories(  # noqa: PLR0912
             if score >= min_similarity:
                 adjacency[i].add(j)
                 adjacency[j].add(i)
+    return adjacency
 
+
+def _form_clusters(
+    cleaned: list[dict[str, Any]], adjacency: list[set[int]], min_cluster_size: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Form clusters from adjacency list and create cluster entities and memory links."""
     seen: set[int] = set()
     cluster_entities: list[dict[str, Any]] = []
     memory_links: list[dict[str, Any]] = []
@@ -164,12 +184,18 @@ def cluster_memories(  # noqa: PLR0912
                 }
             )
 
+    return cluster_entities, memory_links
+
+
+def _apply_cluster_limit(
+    cluster_entities: list[dict[str, Any]], memory_links: list[dict[str, Any]], max_clusters: int | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply maximum cluster limit if specified."""
     if max_clusters is not None and len(cluster_entities) > max_clusters:
         cluster_entities = cluster_entities[:max_clusters]
         allowed_ids = {cluster["id"] for cluster in cluster_entities}
         memory_links = [link for link in memory_links if link["entity_id"] in allowed_ids]
-
-    return ClusterResult(cluster_entities=cluster_entities, memory_links=memory_links)
+    return cluster_entities, memory_links
 
 
 def _build_cluster_id(cluster_name: str, tenant_id: str) -> str:

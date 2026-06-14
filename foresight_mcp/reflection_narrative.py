@@ -116,8 +116,7 @@ Write a 2-4 paragraph narrative summary suitable for surfacing in a clinical coa
 def _compute_insights_hash(report: ReflectionReport) -> str:
     return hashlib.sha256(
         "|".join(
-            f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}"
-            for i in report.insights
+            f"{i.insight_type}:{i.summary}:{i.confidence:.3f}:{i.recommended_action}" for i in report.insights
         ).encode("utf-8"),
     ).hexdigest()[:16]
 
@@ -230,7 +229,7 @@ def _audit(
                 )
             )
             return
-        except Exception as exc:  # noqa: BLE001 — fall back to logger
+        except OSError as exc:
             logger.warning(
                 "audit_log.record failed; falling back to logger.info: %s",
                 exc,
@@ -313,10 +312,7 @@ def generate_insight_narrative(
             this and fall back to the structured report.
     """
     if not isinstance(reflection_report, ReflectionReport):
-        raise TypeError(
-            f"reflection_report must be a ReflectionReport, "
-            f"got {type(reflection_report).__name__}"
-        )
+        raise TypeError(f"reflection_report must be a ReflectionReport, got {type(reflection_report).__name__}")
     if not tenant_id or not isinstance(tenant_id, str):
         raise ValueError("tenant_id is required and must be a non-empty string")
     if not user_id or not isinstance(user_id, str):
@@ -324,10 +320,7 @@ def generate_insight_narrative(
     if not callable(llm_call):
         raise TypeError("llm_call must be callable")
     if cache is not None and not isinstance(cache, (dict, NarrativeCache)):
-        raise TypeError(
-            f"cache must be a dict or NarrativeCache, "
-            f"got {type(cache).__name__}"
-        )
+        raise TypeError(f"cache must be a dict or NarrativeCache, got {type(cache).__name__}")
 
     if cache is None:
         cache = _default_cache
@@ -381,9 +374,7 @@ def generate_insight_narrative(
             outcome="error",
             audit_log=audit_log,
         )
-        raise ReflectionNarrativeError(
-            f"LLM call failed for report {reflection_report.report_id}: {exc}"
-        ) from exc
+        raise ReflectionNarrativeError(f"LLM call failed for report {reflection_report.report_id}: {exc}") from exc
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     if not isinstance(response, str):

@@ -70,6 +70,20 @@ class ConsumerStats:
         return self.records_processed / uptime
 
 
+@dataclass
+class ConsumerGroupConfig:
+    """Configuration for Kafka consumer group."""
+
+    bootstrap_servers: str = "localhost:9092"
+    group_id: str = "foresight-consumer"
+    topics: list[str] | None = None
+    auto_commit: bool = True
+    auto_commit_interval: int = 5000  # ms
+    max_poll_records: int = 500
+    session_timeout: int = 30000  # ms
+    heartbeat_interval: int = 10000  # ms
+
+
 class ConsumerState:
     """Manages consumer state (offsets, etc.)."""
 
@@ -136,37 +150,42 @@ class KafkaConsumerGroup:
     Consumes events from Kafka topics and processes them.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
-        bootstrap_servers: str = "localhost:9092",
-        group_id: str = "foresight-consumer",
-        topics: list[str] | None = None,
-        auto_commit: bool = True,
-        auto_commit_interval: int = 5000,  # ms
-        max_poll_records: int = 500,
-        session_timeout: int = 30000,  # ms
-        heartbeat_interval: int = 10000,  # ms
+        config: ConsumerGroupConfig | None = None,
+        **overrides,
     ):
         """Initialize Kafka consumer group.
 
         Args:
-            bootstrap_servers: Kafka bootstrap servers (comma-separated)
-            group_id: Consumer group ID
-            topics: List of topics to consume from
-            auto_commit: Auto-commit offsets
-            auto_commit_interval: Auto-commit interval (ms)
-            max_poll_records: Maximum records per poll
-            session_timeout: Session timeout (ms)
-            heartbeat_interval: Heartbeat interval (ms)
+            config: Configuration for the consumer group. If None, uses defaults.
+            **overrides: Override specific configuration fields.
         """
-        self.bootstrap_servers = bootstrap_servers
-        self.group_id = group_id
-        self.topics = topics or []
-        self.auto_commit = auto_commit
-        self.auto_commit_interval = auto_commit_interval
-        self.max_poll_records = max_poll_records
-        self.session_timeout = session_timeout
-        self.heartbeat_interval = heartbeat_interval
+        # Start with default config
+        if config is None:
+            config = ConsumerGroupConfig()
+
+        # Apply overrides
+        config_dict = {
+            "bootstrap_servers": config.bootstrap_servers,
+            "group_id": config.group_id,
+            "topics": config.topics,
+            "auto_commit": config.auto_commit,
+            "auto_commit_interval": config.auto_commit_interval,
+            "max_poll_records": config.max_poll_records,
+            "session_timeout": config.session_timeout,
+            "heartbeat_interval": config.heartbeat_interval,
+        }
+        config_dict.update(overrides)
+
+        self.bootstrap_servers = config_dict["bootstrap_servers"]
+        self.group_id = config_dict["group_id"]
+        self.topics = config_dict["topics"] or []
+        self.auto_commit = config_dict["auto_commit"]
+        self.auto_commit_interval = config_dict["auto_commit_interval"]
+        self.max_poll_records = config_dict["max_poll_records"]
+        self.session_timeout = config_dict["session_timeout"]
+        self.heartbeat_interval = config_dict["heartbeat_interval"]
 
         self._consumer = None
         self._running = False

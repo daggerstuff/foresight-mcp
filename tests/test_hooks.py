@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timezone
 
 from foresight_mcp.event_bus import Event, EventType, get_event_bus, reset_event_bus
-from foresight_mcp.hooks import HookExecutor, HookRegistry
+from foresight_mcp.hooks import HookExecutor, HookRegistry, HttpHookOptions
 
 
 def _make_event() -> Event:
@@ -55,6 +55,7 @@ def test_sync_publish_runs_http_hooks_without_active_loop(tmp_path, monkeypatch)
         name="audit-webhook",
         event_type=EventType.MEMORY_STORED,
         url="https://example.test/hooks",
+        options=HttpHookOptions(),
     )
 
     try:

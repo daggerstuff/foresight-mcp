@@ -66,7 +66,7 @@ class ClusterResult:
     memory_links: list[dict[str, Any]]
 
 
-def cluster_memories(  # noqa: PLR0912,PLR0915
+def cluster_memories(
     memories: list[dict[str, Any]],
     *,
     min_similarity: float = 0.25,
@@ -83,6 +83,23 @@ def cluster_memories(  # noqa: PLR0912,PLR0915
     if len(memories) < min_cluster_size:
         return ClusterResult(cluster_entities=[], memory_links=[])
 
+    cleaned = _clean_memories(memories)
+    if len(cleaned) < min_cluster_size:
+        return ClusterResult(cluster_entities=[], memory_links=[])
+
+    affinity = _find_best_pair_affinity(cleaned, min_similarity)
+    if affinity < min_similarity:
+        return ClusterResult(cluster_entities=[], memory_links=[])
+
+    adjacency = _build_adjacency(cleaned, affinity)
+    cluster_entities, memory_links = _form_clusters(cleaned, adjacency, min_cluster_size, affinity)
+    cluster_entities, memory_links = _apply_cluster_limit(cluster_entities, memory_links, max_clusters)
+
+    return ClusterResult(cluster_entities=cluster_entities, memory_links=memory_links)
+
+
+def _clean_memories(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Clean and tokenize memories for clustering."""
     cleaned: list[dict[str, Any]] = []
     for memory in memories:
         content = str(memory.get("content") or "")
@@ -98,10 +115,11 @@ def cluster_memories(  # noqa: PLR0912,PLR0915
                 "tokens": set(tokens),
             }
         )
+    return cleaned
 
-    if len(cleaned) < min_cluster_size:
-        return ClusterResult(cluster_entities=[], memory_links=[])
 
+def _find_best_pair_affinity(cleaned: list[dict[str, Any]], min_similarity: float) -> float:
+    """Find the highest Jaccard similarity between any pair of memories."""
     n = len(cleaned)
     best = (-1.0, -1, -1)
     for i in range(n):
@@ -109,11 +127,12 @@ def cluster_memories(  # noqa: PLR0912,PLR0915
             score = _jaccard(cleaned[i]["tokens"], cleaned[j]["tokens"])
             if score > best[0]:
                 best = (score, i, j)
+    return best[0]
 
-    affinity = best[0]
-    if affinity < min_similarity:
-        return ClusterResult(cluster_entities=[], memory_links=[])
 
+def _build_adjacency(cleaned: list[dict[str, Any]], affinity: float) -> list[set[int]]:
+    """Build adjacency list based on affinity threshold."""
+    n = len(cleaned)
     adjacency: list[set[int]] = [set() for _ in range(n)]
     for i in range(n):
         for j in range(i + 1, n):
@@ -121,12 +140,18 @@ def cluster_memories(  # noqa: PLR0912,PLR0915
             if score >= affinity:
                 adjacency[i].add(j)
                 adjacency[j].add(i)
+    return adjacency
 
+
+def _form_clusters(
+    cleaned: list[dict[str, Any]], adjacency: list[set[int]], min_cluster_size: int, affinity: float
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Form clusters from adjacency list and create cluster entities and memory links."""
     seen: set[int] = set()
     cluster_entities: list[dict[str, Any]] = []
     memory_links: list[dict[str, Any]] = []
 
-    for i in range(n):
+    for i in range(len(cleaned)):
         if i in seen:
             continue
         component = set()
@@ -186,12 +211,18 @@ def cluster_memories(  # noqa: PLR0912,PLR0915
                 }
             )
 
+    return cluster_entities, memory_links
+
+
+def _apply_cluster_limit(
+    cluster_entities: list[dict[str, Any]], memory_links: list[dict[str, Any]], max_clusters: int | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Apply maximum cluster limit if specified."""
     if max_clusters is not None and len(cluster_entities) > max_clusters:
         cluster_entities = cluster_entities[:max_clusters]
         allowed_ids = {entity["id"] for entity in cluster_entities}
         memory_links = [link for link in memory_links if link["entity_id"] in allowed_ids]
-
-    return ClusterResult(cluster_entities=cluster_entities, memory_links=memory_links)
+    return cluster_entities, memory_links
 
 
 def _build_cluster_id(cluster_name: str, tenant_id: str) -> str:

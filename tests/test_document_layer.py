@@ -15,6 +15,7 @@ from foresight_mcp.document_layer import (
     VALID_DOCUMENT_SOURCES,
     Document,
     DocumentChunk,
+    DocumentCreateOptions,
     DocumentLayerError,
     DocumentStore,
     chunk_text,
@@ -210,8 +211,10 @@ def test_create_document_persists_doc_and_chunks():
             title="My Notes",
             content=text,
             user_id="u1",
-            source="note",
-            char_budget=220,
+            options=DocumentCreateOptions(
+                source="note",
+                char_budget=220,
+            ),
         )
     assert isinstance(doc, Document)
     assert doc.title == "My Notes"
@@ -234,7 +237,9 @@ def test_create_document_with_string_memory_id_for_chunk():
             title="t",
             content="a\n\n" + "b" * 300,
             user_id="u1",
-            memory_id_for_chunk="mem_1",
+            options=DocumentCreateOptions(
+                memory_id_for_chunk="mem_1",
+            ),
         )
     assert all(c.memory_id == "mem_1" for c in chunks)
 
@@ -250,8 +255,10 @@ def test_create_document_with_callable_memory_id_for_chunk():
             title="t",
             content="alpha\n\n" + "b" * 300 + "\n\ngamma",
             user_id="u1",
-            memory_id_for_chunk=_id_fn,
-            char_budget=310,
+            options=DocumentCreateOptions(
+                memory_id_for_chunk=_id_fn,
+                char_budget=310,
+            ),
         )
     assert len(chunks) == 2
     assert chunks[0].memory_id == "mem_0_307"
@@ -263,7 +270,12 @@ def test_create_document_rejects_duplicate_content():
     with _patched_store(db) as store:
         store.create_document(title="t", content="same content", user_id="u1")
         with pytest.raises(DocumentLayerError, match="already exists"):
-            store.create_document(title="t2", content="same content", user_id="u1")
+            store.create_document(
+                title="t2",
+                content="same content",
+                user_id="u1",
+                options=DocumentCreateOptions(),
+            )
 
 
 def test_create_document_rejects_invalid_source():

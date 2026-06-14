@@ -179,8 +179,6 @@ class NarrativeCache:
                     created_at = excluded.created_at,
                     last_accessed_at = excluded.last_accessed_at,
                     access_count = 0
-                WHERE narrative_cache.tenant_id = excluded.tenant_id
-                    AND narrative_cache.user_id = excluded.user_id
                 """,
                 (
                     cache_key,
@@ -264,6 +262,12 @@ class NarrativeCache:
                 """
                 CREATE INDEX IF NOT EXISTS idx_narrative_cache_created
                 ON narrative_cache(created_at)
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_narrative_cache_last_accessed
+                ON narrative_cache(last_accessed_at)
                 """
             )
             self._harden_file_permissions()

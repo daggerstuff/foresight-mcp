@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from fastmcp import FastMCP
@@ -33,6 +33,26 @@ from .circuit_breaker import (
 from .connection_pool import get_pool
 from .event_bus import Event, EventType, get_event_bus
 from .tenant_context import get_current_tenant_id
+
+
+@dataclass
+class HttpHookOptions:
+    """Options for HTTP hook registration."""
+
+    retry_count: int = 3
+    timeout: int = 30
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass
+class HookRegistrationParams:
+    """Parameters for hook registration (used in MCP tool for backward compatibility)."""
+
+    hook_type: str = "http"
+    url: str | None = None
+    retry_count: int = 3
+    timeout: int = 30
+
 
 logger = logging.getLogger("foresight_hooks")
 
@@ -153,7 +173,7 @@ class HookRegistry:
             if cols and "tenant_id" not in cols:
                 conn.execute("ALTER TABLE hooks ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
         except sqlite3.OperationalError:
-            pass
+            logger.debug("hooks table already has tenant_id column")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_hooks_tenant ON hooks(tenant_id)")
         conn.commit()
         pool.release(conn)
@@ -217,7 +237,7 @@ class HookRegistry:
         pool.release(conn)
         return [self._row_to_hook(row) for row in rows]
 
-    def _row_to_hook(self, row: tuple) -> HookRegistration:
+    def _row_to_hook(self, row: Any) -> HookRegistration:
         """Convert database row to HookRegistration."""
         # Columns: 0=id, 1=tenant_id, 2=name, 3=event_type, 4=hook_type,
         # 5=handler, 6=condition_name, 7=retry_count, 8=timeout,
@@ -428,7 +448,7 @@ class HookExecutor:
     async def _execute_http(self, hook: HookRegistration, event: Event) -> None:
         """Execute an HTTP webhook hook with retry and circuit breaker."""
         # hook.handler is a str (URL) for HTTP hooks
-        url: str = hook.handler  # type: ignore
+        url: str = cast(str, hook.handler)  # HTTP hooks store URL string in handler field
         payload = {
             "event_id": event.id,
             "event_type": event.event_type.value,
@@ -476,16 +496,17 @@ class HookExecutor:
             self._async_handlers[event_type] = []
         self._async_handlers[event_type].append(handler)
 
-    def register_http_hook(  # noqa: PLR0913
+    def register_http_hook(
         self,
         name: str,
         event_type: EventType,
         url: str,
-        retry_count: int = 3,
-        timeout: int = 30,
-        metadata: dict[str, Any] | None = None,
+        *,
+        options: HttpHookOptions | None = None,
     ) -> HookRegistration:
         """Register an HTTP webhook hook."""
+        if options is None:
+            options = HttpHookOptions()
         hook_id = hashlib.sha256(f"{name}:{url}".encode()).hexdigest()[:16]
         hook = HookRegistration(
             id=hook_id,
@@ -493,9 +514,9 @@ class HookExecutor:
             event_type=event_type,
             hook_type=HookType.HTTP,
             handler=url,
-            retry_count=retry_count,
-            timeout=timeout,
-            metadata=metadata or {},
+            retry_count=options.retry_count,
+            timeout=options.timeout,
+            metadata=options.metadata or {},
         )
         self._registry.register(hook)
         return hook
@@ -566,8 +587,15 @@ def list_hooks() -> str:
 
 
 @mcp.tool()
-def register_hook(  # noqa: PLR0913
-    name: str, event_type: str, hook_type: str = "http", url: str | None = None, retry_count: int = 3, timeout: int = 30
+def register_hook(
+    name: str,
+    event_type: str,
+    *,
+    params: HookRegistrationParams | None = None,
+    hook_type: str = "http",
+    url: str | None = None,
+    retry_count: int = 3,
+    timeout: int = 30,
 ) -> str:
     """
     Register a new hook.
@@ -585,12 +613,21 @@ def register_hook(  # noqa: PLR0913
     except ValueError:
         return f"Invalid event type: {event_type}. Valid types: {', '.join(e.value for e in EventType)}"
 
+    # Use params if provided, otherwise fall back to individual parameters
+    if params is not None:
+        hook_type = params.hook_type
+        url = params.url
+        retry_count = params.retry_count
+        timeout = params.timeout
+
     executor = get_hook_executor()
 
     if hook_type == "http":
         if not url:
             return "URL required for HTTP hooks"
-        hook = executor.register_http_hook(name=name, event_type=et, url=url, retry_count=retry_count, timeout=timeout)
+        # Create options for the new register_http_hook signature
+        options = HttpHookOptions(retry_count=retry_count, timeout=timeout)
+        hook = executor.register_http_hook(name=name, event_type=et, url=url, options=options)
         return f"Registered HTTP hook '{name}' (ID: {hook.id}) for event {et.value}"
 
     return f"Hook type '{hook_type}' not yet supported via MCP"

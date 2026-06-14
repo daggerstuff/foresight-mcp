@@ -30,12 +30,26 @@ import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import ClassVar
+from typing import Any, ClassVar, Optional
 
 from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_hybrid_retriever")
+
+
+@dataclass
+class HybridSearchOptions:
+    """Options for hybrid search configuration."""
+
+    tenant_id: str = "default"
+    limit: int = 10
+    min_importance: float = 0.1
+    use_keyword: bool = True
+    use_tfidf_cosine: bool = True
+    use_semantic: Optional[bool] = None
+    use_graph: bool = True
+    use_temporal: bool = True
 
 
 MAX_QUERY_LENGTH = 500
@@ -158,26 +172,21 @@ class HybridRetriever:
         # Invalidated when doc_count changes (new/deleted memories).
         self._tfidf_cache: dict[tuple[str, str], dict] = {}
         self._tfidf_cache_lock = threading.Lock()
+        self._schema_cache: dict[str, set[str]] = {}
 
-    def _get_connection(self) -> sqlite3.Connection:
+    def _get_connection(self) -> Any:
         """Get a database connection with WAL mode for concurrent safety."""
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    def search(  # noqa: PLR0913,PLR0912,PLR0915
+    def search(
         self,
         query: str,
         user_id: str,
-        tenant_id: str = "default",
-        limit: int = 10,
-        min_importance: float = 0.1,
-        use_keyword: bool = True,
-        use_tfidf_cosine: bool = True,
-        use_semantic: bool | None = None,
-        use_graph: bool = True,
-        use_temporal: bool = True,
+        options: HybridSearchOptions | None = None,
+        **kwargs: Any,
     ) -> HybridSearchResult:
         """
         Execute hybrid search combining all enabled signals.
@@ -185,108 +194,78 @@ class HybridRetriever:
         Args:
             query: Search query string
             user_id: User ID
-            tenant_id: Tenant ID for isolation
-            limit: Maximum results to return
-            min_importance: Minimum importance filter
-            use_keyword: Enable keyword signal
-            use_tfidf_cosine: Enable tf-idf cosine similarity signal
-            use_semantic: Backward-compatible alias for tf-idf cosine
-            use_graph: Enable graph signal
-            use_temporal: Enable temporal signal
+            options: Hybrid search options (if None, uses defaults)
+            **kwargs: Backward-compatible keyword arguments (limit, use_keyword, etc.)
 
         Returns:
             HybridSearchResult with merged, ranked results
         """
-        semantic_label = "tfidf_cosine"
-        if use_semantic is not None:
-            use_tfidf_cosine = use_semantic
-            semantic_label = "semantic"
+        # Handle default options + backward compat kwargs
+        if options is None:
+            options = HybridSearchOptions(**kwargs)
 
+        # Validate input
         _validate_input(query, user_id)
 
-        keyword_ranking: dict[str, int] = {}
-        tfidf_cosine_ranking: dict[str, int] = {}
-        graph_ranking: dict[str, int] = {}
-        temporal_ranking: dict[str, int] = {}
-        all_ids: set[str] = set()
+        # Handle use_semantic as backward-compatible alias for use_tfidf_cosine
+        use_tfidf_cosine = options.use_tfidf_cosine
+        semantic_label = "tfidf_cosine"
+        if options.use_semantic is not None:
+            use_tfidf_cosine = options.use_semantic
+            semantic_label = "semantic"
 
-        # Single connection for all sub-searches
-        conn = self._get_connection()
-        try:
-            if use_keyword:
-                keyword_ranking = self._keyword_search(conn, query, user_id, tenant_id, limit * 3)
-                all_ids.update(keyword_ranking.keys())
+        # Extract search parameters from options
+        tenant_id = options.tenant_id
+        limit = options.limit
+        min_importance = options.min_importance
+        use_keyword = options.use_keyword
+        use_graph = options.use_graph
+        use_temporal = options.use_temporal
 
-            if use_tfidf_cosine:
-                tfidf_cosine_ranking = self._tfidf_cosine_search(conn, query, user_id, tenant_id, limit * 3)
-                all_ids.update(tfidf_cosine_ranking.keys())
+        # Run searches
+        keyword_ranking = self._run_keyword_search(query, user_id, tenant_id, limit) if use_keyword else {}
+        tfidf_cosine_ranking = self._run_tfidf_search(query, user_id, tenant_id, limit) if use_tfidf_cosine else {}
+        graph_ranking = self._run_graph_search(query, user_id, tenant_id, limit) if use_graph else {}
+        temporal_ranking = self._run_temporal_search(user_id, tenant_id, limit, min_importance) if use_temporal else {}
 
-            if use_graph:
-                graph_ranking = self._graph_search(conn, query, user_id, tenant_id, limit * 3)
-                all_ids.update(graph_ranking.keys())
+        # Collect all IDs
+        all_ids = set()
+        all_ids.update(keyword_ranking.keys())
+        all_ids.update(tfidf_cosine_ranking.keys())
+        all_ids.update(graph_ranking.keys())
+        all_ids.update(temporal_ranking.keys())
 
-            if use_temporal:
-                temporal_ranking = self._temporal_search(conn, user_id, tenant_id, limit * 3, min_importance)
-                all_ids.update(temporal_ranking.keys())
-
-            if not all_ids:
-                return HybridSearchResult(
-                    results=[],
-                    total_candidates=0,
-                    signal_counts={
-                        "keyword": len(keyword_ranking),
-                        "tfidf_cosine": len(tfidf_cosine_ranking),
-                        "graph": len(graph_ranking),
-                        "temporal": len(temporal_ranking),
-                    },
-                )
-
-            # Merge using RRF
-            merged = self._reciprocal_rank_fusion(
-                keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking
+        # Handle empty results
+        if not all_ids:
+            return HybridSearchResult(
+                results=[],
+                total_candidates=0,
+                signal_counts={
+                    "keyword": len(keyword_ranking),
+                    "tfidf_cosine": len(tfidf_cosine_ranking),
+                    "graph": len(graph_ranking),
+                    "temporal": len(temporal_ranking),
+                },
             )
 
-            # Fetch full memory data for top candidates (same connection)
-            top_ids = [mid for mid, _ in merged[:limit]]
-            memories = self._fetch_memories(conn, top_ids, user_id, tenant_id)
-        finally:
-            conn.close()
+        # Merge using RRF
+        merged = self._reciprocal_rank_fusion(keyword_ranking, tfidf_cosine_ranking, graph_ranking, temporal_ranking)
+
+        # Fetch full memory data for top candidates
+        top_ids = [mid for mid, _ in merged[:limit]]
+        memories = self._fetch_memories_for_top_ids(top_ids, user_id, tenant_id)
 
         # Build results with scores
-        results = []
-        for memory_id, rrf_score in merged[:limit]:
-            mem = memories.get(memory_id)
-            if not mem:
-                continue
-
-            result = HybridResult(
-                memory_id=memory_id,
-                content=mem["content"],
-                category=mem.get("category"),
-                importance=mem.get("importance", 0.5),
-                strength_trend=mem.get("strength_trend"),
-                created_at=mem["created_at"],
-                combined_score=rrf_score,
-                source_signals=[],
-            )
-
-            if memory_id in keyword_ranking:
-                result.keyword_score = self._rank_to_score(keyword_ranking[memory_id], len(keyword_ranking))
-                result.source_signals.append("keyword")
-            if memory_id in tfidf_cosine_ranking:
-                result.semantic_score = self._rank_to_score(tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking))
-                result.tfidf_cosine_score = self._rank_to_score(
-                    tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
-                )
-                result.source_signals.append(semantic_label)
-            if memory_id in graph_ranking:
-                result.graph_score = self._rank_to_score(graph_ranking[memory_id], len(graph_ranking))
-                result.source_signals.append("graph")
-            if memory_id in temporal_ranking:
-                result.temporal_score = self._rank_to_score(temporal_ranking[memory_id], len(temporal_ranking))
-                result.source_signals.append("temporal")
-
-            results.append(result)
+        results = self._build_results(
+            merged,
+            memories,
+            limit,
+            keyword_ranking,
+            tfidf_cosine_ranking,
+            graph_ranking,
+            temporal_ranking,
+            semantic_label,
+        )
 
         return HybridSearchResult(
             results=results,
@@ -370,20 +349,20 @@ class HybridRetriever:
         """
         cache_key = (user_id, tenant_id)
 
-        # Check current doc count first (cheap query)
-        count_row = conn.execute(
-            "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-            (user_id, tenant_id),
-        ).fetchone()
-        current_count: int = count_row[0] if count_row else 0
-
         with self._tfidf_cache_lock:
             cached = self._tfidf_cache.get(cache_key)
-            if cached is not None and cached["doc_count"] == current_count:
+
+        if cached is not None:
+            current_count = (
+                conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+                    (user_id, tenant_id),
+                ).fetchone()[0]
+                or 0
+            )
+            if cached["doc_count"] == current_count:
                 return cached
 
-        # Cache miss or stale — rebuild outside the lock to avoid blocking
-        # other threads during the DB fetch.
         rows = conn.execute(
             "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
             (user_id, tenant_id),
@@ -398,6 +377,14 @@ class HybridRetriever:
                 doc_freq[token] = doc_freq.get(token, 0) + 1
 
         idf: dict[str, float] = {term: math.log(n_docs / df) if df > 0 else 0.0 for term, df in doc_freq.items()}
+
+        current_count = (
+            conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+                (user_id, tenant_id),
+            ).fetchone()[0]
+            or 0
+        )
 
         entry = {"idf": idf, "docs": docs, "doc_count": current_count}
         with self._tfidf_cache_lock:
@@ -510,7 +497,10 @@ class HybridRetriever:
 
         # Find entities whose name matches query terms
         like_clauses = " OR ".join(["e.name LIKE ? ESCAPE '!'" for _ in terms])
-        entity_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entities)").fetchall()}
+        entity_cols = self._schema_cache.get("memory_entities")
+        if entity_cols is None:
+            entity_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entities)").fetchall()}
+            self._schema_cache["memory_entities"] = entity_cols
         if "tenant_id" in entity_cols:
             sql = f"""
                 SELECT DISTINCT e.id
@@ -693,6 +683,103 @@ class HybridRetriever:
             }
             for row in cursor.fetchall()
         }
+
+    def _run_keyword_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+        """Run keyword search and return ranking dict."""
+        conn = self._get_connection()
+        try:
+            return self._keyword_search(conn, query, user_id, tenant_id, limit * 3)
+        finally:
+            conn.close()
+
+    def _run_tfidf_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+        """Run TF-IDF search and return ranking dict."""
+        conn = self._get_connection()
+        try:
+            return self._tfidf_cosine_search(conn, query, user_id, tenant_id, limit * 3)
+        finally:
+            conn.close()
+
+    def _run_graph_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
+        """Run graph search and return ranking dict."""
+        conn = self._get_connection()
+        try:
+            return self._graph_search(conn, query, user_id, tenant_id, limit * 3)
+        finally:
+            conn.close()
+
+    def _run_temporal_search(self, user_id: str, tenant_id: str, limit: int, min_importance: float) -> dict[str, int]:
+        """Run temporal search and return ranking dict."""
+        conn = self._get_connection()
+        try:
+            return self._temporal_search(conn, user_id, tenant_id, limit * 3, min_importance)
+        finally:
+            conn.close()
+
+    def _build_results(
+        self,
+        merged: list[tuple],
+        memories: dict[str, dict],
+        limit: int,
+        keyword_ranking: dict[str, int],
+        tfidf_cosine_ranking: dict[str, int],
+        graph_ranking: dict[str, int],
+        temporal_ranking: dict[str, int],
+        semantic_label: str,
+    ) -> list[HybridResult]:
+        """Build HybridResult objects from merged rankings."""
+        # Build results with scores
+        results = []
+        for memory_id, rrf_score in merged[:limit]:
+            mem = memories.get(memory_id)
+            if not mem:
+                continue
+
+            result = HybridResult(
+                memory_id=memory_id,
+                content=mem["content"],
+                category=mem.get("category"),
+                importance=mem.get("importance", 0.5),
+                strength_trend=mem.get("strength_trend"),
+                created_at=mem["created_at"],
+                combined_score=rrf_score,
+                source_signals=[],
+            )
+
+            if memory_id in keyword_ranking:
+                result.keyword_score = self._rank_to_score(keyword_ranking[memory_id], len(keyword_ranking))
+                result.source_signals.append("keyword")
+            if memory_id in tfidf_cosine_ranking:
+                result.semantic_score = self._rank_to_score(tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking))
+                result.tfidf_cosine_score = self._rank_to_score(
+                    tfidf_cosine_ranking[memory_id], len(tfidf_cosine_ranking)
+                )
+                result.source_signals.append(semantic_label)
+            if memory_id in graph_ranking:
+                result.graph_score = self._rank_to_score(graph_ranking[memory_id], len(graph_ranking))
+                result.source_signals.append("graph")
+            if memory_id in temporal_ranking:
+                result.temporal_score = self._rank_to_score(temporal_ranking[memory_id], len(temporal_ranking))
+                result.source_signals.append("temporal")
+
+            results.append(result)
+        return results
+
+    def _fetch_memories_for_top_ids(
+        self,
+        top_ids: list[str],
+        user_id: str,
+        tenant_id: str,
+    ) -> dict[str, dict]:
+        """Fetch memory data for top IDs using a temporary connection."""
+        if not top_ids:
+            return {}
+
+        conn = self._get_connection()
+        try:
+            return self._fetch_memories(conn, top_ids, user_id, tenant_id)
+        finally:
+            conn.close()
 
 
 # Global instance management (thread-safe)

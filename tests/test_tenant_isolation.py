@@ -43,6 +43,8 @@ def test_tenant_isolation():
     tenant_db2 = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tenant_db1.close()
     tenant_db2.close()
+    _make_temp_db(tenant_db1.name)
+    _make_temp_db(tenant_db2.name)
 
     # Simulate Tenant A
     set_current_tenant_id("tenant_a")

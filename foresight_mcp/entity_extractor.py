@@ -32,7 +32,7 @@ import os
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 logger = logging.getLogger("foresight_entity_extractor")
 
@@ -82,7 +82,7 @@ class Entity:
         return cls(
             id=data["id"],
             name=data["name"],
-            entity_type=data["entity_type"],  # type: ignore[arg-type]
+            entity_type=cast(EntityType, data["entity_type"]),
             description=data.get("description"),
             properties=data.get("properties", {}),
             confidence=data.get("confidence", 1.0),
@@ -118,7 +118,7 @@ class Relationship:
         return cls(
             source_entity_id=data["source_entity_id"],
             target_entity_id=data["target_entity_id"],
-            relationship_type=data["relationship_type"],  # type: ignore[arg-type]
+            relationship_type=cast(RelationshipType, data["relationship_type"]),
             confidence=data.get("confidence", 1.0),
             metadata=data.get("metadata", {}),
         )
@@ -419,7 +419,7 @@ Output (raw JSON only, no markdown):
                 Entity(
                     id=self._generate_entity_id(e["name"], e["type"]),
                     name=e["name"],
-                    entity_type=e["type"],  # type: ignore[arg-type]
+                    entity_type=cast(EntityType, e["type"]),
                     description=e.get("description"),
                     properties=e.get("properties", {}),
                     confidence=1.0,
@@ -437,7 +437,7 @@ Output (raw JSON only, no markdown):
                     Relationship(
                         source_entity_id=src_id,
                         target_entity_id=tgt_id,
-                        relationship_type=r["type"],  # type: ignore[arg-type]
+                        relationship_type=cast(RelationshipType, r["type"]),
                         confidence=r.get("confidence", 1.0),
                     )
                 )

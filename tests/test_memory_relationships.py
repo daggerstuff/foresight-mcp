@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from foresight_mcp import memory_relationships as rel_mod
 from foresight_mcp.memory_relationships import (
+    LinkMemoriesOptions,
     VALID_RELATIONSHIP_TYPES,
     MemoryGraphTraversal,
     MemoryRelationship,
@@ -173,7 +174,9 @@ def test_link_memories_creates_relationship():
             target_memory_id="dst",
             relationship_type="extends",
             user_id="u1",
-            metadata={"reason": "additional detail"},
+            options=LinkMemoriesOptions(
+                metadata={"reason": "additional detail"},
+            ),
         )
     assert isinstance(rel, MemoryRelationship)
     assert rel.source_memory_id == "src"
@@ -193,15 +196,19 @@ def test_link_memories_upserts_on_conflict():
             target_memory_id="dst",
             relationship_type="updates",
             user_id="u1",
-            confidence=0.5,
+            options=LinkMemoriesOptions(
+                confidence=0.5,
+            ),
         )
         rel2 = store.link_memories(
             source_memory_id="src",
             target_memory_id="dst",
             relationship_type="updates",
             user_id="u1",
-            confidence=0.9,
-            metadata={"v": 2},
+            options=LinkMemoriesOptions(
+                confidence=0.9,
+                metadata={"v": 2},
+            ),
         )
     rels = store.get_relationships_for_memory(
         memory_id="src", user_id="u1", direction="out", relationship_type="updates"
@@ -335,9 +342,10 @@ def test_singleton_returns_same_instance(monkeypatch):
 
 
 def test_unified_memory_round_trips_relationship_fields():
-    from foresight_mcp.schema import UnifiedMemory
+    from foresight_mcp.schema import UnifiedMemory, MemoryCreateOptions
 
-    m = UnifiedMemory.create(content="x", user_id="u1", relation_type="extends", related_memory_id="abc")
+    options = MemoryCreateOptions(relation_type="extends", related_memory_id="abc")
+    m = UnifiedMemory.create(content="x", user_id="u1", options=options)
     assert m.relation_type == "extends"
     assert m.related_memory_id == "abc"
 
@@ -351,8 +359,8 @@ def test_unified_memory_round_trips_relationship_fields():
 
 
 def test_unified_memory_defaults_relationship_fields_to_none():
-    from foresight_mcp.schema import UnifiedMemory
+    from foresight_mcp.schema import UnifiedMemory, MemoryCreateOptions
 
-    m = UnifiedMemory.create(content="x", user_id="u1")
+    m = UnifiedMemory.create(content="x", user_id="u1", options=MemoryCreateOptions())
     assert m.relation_type is None
     assert m.related_memory_id is None

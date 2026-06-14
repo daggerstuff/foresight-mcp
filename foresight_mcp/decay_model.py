@@ -135,6 +135,44 @@ class DecayStats:
         }
 
 
+@dataclass
+class DecayConfigOptions:
+    """Options for decay configuration updates."""
+
+    half_life_hours: float | None = None
+    min_importance: float | None = None
+    activation_boost: float | None = None
+    strengthening_threshold: int | None = None
+    stale_threshold: float | None = None
+
+
+@dataclass
+class DecayRowContext:
+    """Context for applying decay to a single memory row."""
+
+    conn: sqlite3.Connection
+    row: sqlite3.Row
+    user_id: str
+    tenant_id: str
+    now: datetime
+    now_iso: str
+    stats: DecayStats
+
+
+@dataclass
+class DecayEventParams:
+    """Parameters for recording a decay/reinforce event."""
+
+    tenant_id: str
+    user_id: str
+    memory_id: str
+    event_type: str
+    old_strength: float | None
+    new_strength: float | None
+    decay_factor: float | None
+    reason: str
+
+
 class MemoryDecayService:
     """Per-memory strength decay operations.
 
@@ -153,7 +191,7 @@ class MemoryDecayService:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.row_factory = sqlite3.Row
@@ -267,18 +305,28 @@ class MemoryDecayService:
             pool = get_pool(self.db_path)
             pool.release(conn)
 
-    def set_decay_config(  # noqa: PLR0913
+    def set_decay_config(
         self,
         user_id: str,
         tenant_id: str | None = None,
         category: str = "general",
+        *,
         half_life_hours: float | None = None,
         min_importance: float | None = None,
         activation_boost: float | None = None,
         strengthening_threshold: int | None = None,
         stale_threshold: float | None = None,
+        options: DecayConfigOptions | None = None,
     ) -> DecayConfig:
         """Upsert a decay config. None values fall back to defaults."""
+        # Backward compatibility: if options is provided, use it; otherwise build from individual params
+        if options is not None:
+            half_life_hours = options.half_life_hours
+            min_importance = options.min_importance
+            activation_boost = options.activation_boost
+            strengthening_threshold = options.strengthening_threshold
+            stale_threshold = options.stale_threshold
+
         tid = tenant_id or get_current_tenant_id()
         self._validate_ids(user_id, tid)
         cfg = DecayConfig(
@@ -440,14 +488,16 @@ class MemoryDecayService:
             )
             self._insert_event(
                 conn,
-                tenant_id=tid,
-                user_id=user_id,
-                memory_id=memory_id,
-                event_type="reinforce",
-                old_strength=old_strength,
-                new_strength=new_strength,
-                decay_factor=boost,
-                reason=f"reinforce (boost={boost:.3f})",
+                params=DecayEventParams(
+                    tenant_id=tid,
+                    user_id=user_id,
+                    memory_id=memory_id,
+                    event_type="reinforce",
+                    old_strength=old_strength,
+                    new_strength=new_strength,
+                    decay_factor=boost,
+                    reason=f"reinforce (boost={boost:.3f})",
+                ),
             )
             conn.commit()
             return {
@@ -497,7 +547,17 @@ class MemoryDecayService:
                 if not rows:
                     break
                 for row in rows:
-                    self._apply_decay_to_row(conn, row, user_id, tid, now, now_iso, stats)
+                    self._apply_decay_to_row(
+                        DecayRowContext(
+                            conn=conn,
+                            row=row,
+                            user_id=user_id,
+                            tenant_id=tid,
+                            now=now,
+                            now_iso=now_iso,
+                            stats=stats,
+                        )
+                    )
                 conn.commit()
                 offset += batch_size
                 if len(rows) < batch_size:
@@ -509,40 +569,31 @@ class MemoryDecayService:
             pool = get_pool(self.db_path)
             pool.release(conn)
 
-    def _apply_decay_to_row(  # noqa: PLR0913
-        self,
-        conn: sqlite3.Connection,
-        row: sqlite3.Row,
-        user_id: str,
-        tenant_id: str,
-        now: datetime,
-        now_iso: str,
-        stats: DecayStats,
-    ) -> None:
-        stats.processed += 1
-        config = self.get_decay_config(user_id=user_id, tenant_id=tenant_id, category=row["category"])
-        last_decay_at = row["last_decay_at"]
+    def _apply_decay_to_row(self, ctx: DecayRowContext) -> None:
+        ctx.stats.processed += 1
+        config = self.get_decay_config(user_id=ctx.user_id, tenant_id=ctx.tenant_id, category=ctx.row["category"])
+        last_decay_at = ctx.row["last_decay_at"]
         if last_decay_at:
             try:
-                hours_elapsed = (now - self._parse_iso(last_decay_at)).total_seconds() / 3600
+                hours_elapsed = (ctx.now - self._parse_iso(last_decay_at)).total_seconds() / 3600
             except ValueError:
                 hours_elapsed = 0.0
         else:
             hours_elapsed = 0.0
         if hours_elapsed <= FRESHNESS_EPSILON_HOURS:
-            stats.skipped += 1
+            ctx.stats.skipped += 1
             return
 
         decay_factor = self._compute_decay_factor(hours_elapsed, config.half_life_hours)
-        old_strength = row["current_strength"] if row["current_strength"] is not None else row["importance"]
+        old_strength = ctx.row["current_strength"] if ctx.row["current_strength"] is not None else ctx.row["importance"]
         new_strength = max(config.min_importance, old_strength * decay_factor)
         trend = self._compute_trend(
             new_strength=new_strength,
-            activation_count=row["activation_count"],
+            activation_count=ctx.row["activation_count"],
             hours_since_decay=hours_elapsed,
             config=config,
         )
-        conn.execute(
+        ctx.conn.execute(
             """
             UPDATE memories
             SET current_strength = ?,
@@ -553,40 +604,31 @@ class MemoryDecayService:
             (
                 new_strength,
                 trend,
-                now_iso,
-                row["id"],
-                user_id,
-                tenant_id,
+                ctx.now_iso,
+                ctx.row["id"],
+                ctx.user_id,
+                ctx.tenant_id,
             ),
         )
         self._insert_event(
-            conn,
-            tenant_id=tenant_id,
-            user_id=user_id,
-            memory_id=row["id"],
-            event_type="decay",
-            old_strength=old_strength,
-            new_strength=new_strength,
-            decay_factor=decay_factor,
-            reason=(f"decay (hours={hours_elapsed:.2f}, half_life={config.half_life_hours:.1f})"),
+            ctx.conn,
+            params=DecayEventParams(
+                tenant_id=ctx.tenant_id,
+                user_id=ctx.user_id,
+                memory_id=ctx.row["id"],
+                event_type="decay",
+                old_strength=old_strength,
+                new_strength=new_strength,
+                decay_factor=decay_factor,
+                reason=(f"decay (hours={hours_elapsed:.2f}, half_life={config.half_life_hours:.1f})"),
+            ),
         )
-        stats.updated += 1
-        stats.avg_decay_factor += decay_factor
-        stats.trend_counts[trend] = stats.trend_counts.get(trend, 0) + 1
+        ctx.stats.updated += 1
+        ctx.stats.avg_decay_factor += decay_factor
+        ctx.stats.trend_counts[trend] = ctx.stats.trend_counts.get(trend, 0) + 1
 
     @staticmethod
-    def _insert_event(  # noqa: PLR0913
-        conn: sqlite3.Connection,
-        *,
-        tenant_id: str,
-        user_id: str,
-        memory_id: str,
-        event_type: str,
-        old_strength: float | None,
-        new_strength: float | None,
-        decay_factor: float | None,
-        reason: str,
-    ) -> None:
+    def _insert_event(conn: sqlite3.Connection, *, params: DecayEventParams) -> None:
         conn.execute(
             """
             INSERT INTO memory_decay_events (
@@ -595,14 +637,14 @@ class MemoryDecayService:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                tenant_id,
-                user_id,
-                memory_id,
-                event_type,
-                old_strength,
-                new_strength,
-                decay_factor,
-                reason,
+                params.tenant_id,
+                params.user_id,
+                params.memory_id,
+                params.event_type,
+                params.old_strength,
+                params.new_strength,
+                params.decay_factor,
+                params.reason,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )

@@ -419,7 +419,7 @@ class TestUpsertClusterResults:
         ]
 
         result = ClusterResult(cluster_entities=cluster_entities, memory_links=memory_links)
-        summary = _upsert_cluster_results(result, "test_user", "default")
+        summary = _upsert_cluster_results(result, "test_user", "_test_")
         assert summary["entity_count"] == 1
         assert summary["link_count"] == 2
 

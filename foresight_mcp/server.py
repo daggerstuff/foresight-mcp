@@ -50,9 +50,10 @@ from .context_blocks import (
     get_context_block_agent,
 )
 from .crisis_detection import get_crisis_service
-from .decay_model import get_decay_model
+from .decay_model import get_decay_model, DecayConfigOptions
 from .document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
+    DocumentCreateOptions,
     DocumentLayerError,
     content_hash as _content_hash,
     get_document_store,
@@ -68,7 +69,7 @@ from .event_bus import (
     memory_updated,
 )
 from .graph_store import get_graph_store
-from .hybrid_retriever import HybridResult, get_hybrid_retriever
+from .hybrid_retriever import HybridResult, HybridSearchOptions, get_hybrid_retriever
 from .memory_components import (
     MemoryCrisisTagger,
     MemoryLinker,
@@ -76,6 +77,7 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_relationships import (
+    LinkMemoriesOptions,
     MemoryRelationshipError,
     get_memory_relationship_store,
 )
@@ -971,7 +973,7 @@ class InputValidationMiddleware(_Middleware):
                     meta={"isError": True},
                 )
         except Exception:
-            pass
+            logger.debug("Input validation check failed; proceeding to tool call")
         return await call_next(context)
 
 
@@ -1109,7 +1111,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
                 target_memory_id=opts.related_memory_id,
                 relationship_type=opts.relation_type,
                 user_id=uid,
-                tenant_id=tenant_id,
+                options=LinkMemoriesOptions(
+                    tenant_id=tenant_id,
+                ),
             )
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
@@ -1289,8 +1293,6 @@ def manage_memories(
 
     return f"Unknown action: {options.action}"
 
-    return f"Unknown action: {options.action}"
-
 
 @mcp.tool(output_schema=None)
 def search_memories(
@@ -1339,7 +1341,18 @@ def search_memories(
         try:
             retriever = get_hybrid_retriever()
             hybrid_result = retriever.search(
-                options.query, uid, tenant_id=tenant_id, limit=options.limit, min_importance=options.min_importance
+                options.query,
+                uid,
+                HybridSearchOptions(
+                    tenant_id=tenant_id,
+                    limit=options.limit,
+                    min_importance=options.min_importance,
+                    use_keyword=True,
+                    use_tfidf_cosine=True,
+                    use_semantic=None,  # Let the search method handle the semantic/tfidf_cosine alias
+                    use_graph=True,
+                    use_temporal=True,
+                ),
             )
             if hybrid_result.results:
                 results = []
@@ -2678,20 +2691,20 @@ def inject_context(
     for grounding the AI's responses in prior context. Uses HybridRetriever
     (keyword + TF-IDF + graph + temporal signals via RRF) for ranking.
 
-    Args:
-        conversation_text: The current conversation text to analyze for context
-        user_id: Optional user ID override
-        max_memories: Maximum number of memories to return (default: 5)
-        min_relevance: Minimum relevance score threshold (default: 0.3)
-        include_details: If True, return JSON with formatted text plus structured
-            memories and context blocks grouped by InjectionPoint (default: False)
+     Args:
+         conversation_text: The current conversation text to analyze for context
+         user_id: Optional user ID override
+         max_memories: Maximum number of memories to return (default: 5)
+         min_relevance: Minimum relevance score threshold (default: 0.3)
+         include_details: If True, return JSON with formatted text plus structured
+             memories and context blocks grouped by InjectionPoint (default: False)
 
-    Returns:
-        Formatted string with relevant memories and context block signals.
-        If include_details=True, returns a JSON string with keys:
-        - formatted: the formatted text
-        - memories: list of dicts with memory_id, content, score, signals
-        - context_blocks: dict grouped by InjectionPoint
+     Returns:
+         Formatted string with relevant memories and context block signals.
+         If include_details=True, returns a JSON string with keys:
+         - formatted: the formatted text
+         - memories: list of dicts with memory_id, content, score, signals
+         - context_blocks: dict grouped by InjectionPoint
     """
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
@@ -2702,9 +2715,16 @@ def inject_context(
     hybrid_result = retriever.search(
         query=query_text,
         user_id=uid,
-        tenant_id=tenant_id,
-        limit=max(50, max_memories * 3),
-        min_importance=0.1,
+        options=HybridSearchOptions(
+            tenant_id=tenant_id,
+            limit=max(50, max_memories * 3),
+            min_importance=0.1,
+            use_keyword=True,
+            use_tfidf_cosine=True,
+            use_semantic=None,  # Let the search method handle the semantic/tfidf_cosine alias
+            use_graph=True,
+            use_temporal=True,
+        ),
     )
 
     memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
@@ -2862,9 +2882,11 @@ def get_relevant_memories(
     result = retriever.search(
         query=query,
         user_id=uid,
-        tenant_id=tenant_id,
-        limit=max(limit * 2, 20),
-        min_importance=0.0,
+        options=HybridSearchOptions(
+            tenant_id=tenant_id,
+            limit=max(limit * 2, 20),
+            min_importance=0.0,
+        ),
     )
 
     memories = [m.to_dict() for m in result.results if m.combined_score >= min_relevance][:limit]
@@ -2927,8 +2949,8 @@ def main():
         return None
 
     # Create and start WebSocket server
-    websocket_server = WebSocketServer(auth_callback=websocket_auth_callback)
-    websocket_server.start()
+    websocket_server = WebSocketServer(auth_callback=cast(Any, websocket_auth_callback))
+    _run_async(websocket_server.start())
 
     mcp.run(show_banner=False)
 
@@ -3433,10 +3455,13 @@ def create_document(
             title=title,
             content=content,
             user_id=uid,
-            source=source,
-            metadata=metadata,
-            char_budget=char_budget,
-            memory_id_for_chunk=memory_id_for_chunk,
+            options=DocumentCreateOptions(
+                source=source,
+                tenant_id=None,  # server.py doesn't handle tenant_id, so use None
+                metadata=metadata,
+                char_budget=char_budget,
+                memory_id_for_chunk=memory_id_for_chunk,
+            ),
         )
     except DocumentLayerError as exc:
         return f"Error: {exc}"
@@ -3920,7 +3945,16 @@ def semantic_search_memories(
     prov = provider or _SEMANTIC_DEFAULT_PROVIDER
     try:
         store = get_semantic_search(provider=prov)
-        result = store.search(query=query, user_id=uid, limit=limit, min_score=min_score)
+        from .semantic_search import SemanticSearchOptions
+
+        result = store.search(
+            query=query,
+            user_id=uid,
+            options=SemanticSearchOptions(
+                limit=limit,
+                min_score=min_score,
+            ),
+        )
     except _SemanticSearchError as exc:
         return f"Error: {exc}"
     return json.dumps(result.to_dict(), indent=2)
@@ -4165,11 +4199,13 @@ def set_decay_config(
         user_id=uid,
         tenant_id=tid,
         category=category,
-        half_life_hours=half_life_hours,
-        min_importance=min_importance,
-        activation_boost=activation_boost,
-        strengthening_threshold=strengthening_threshold,
-        stale_threshold=stale_threshold,
+        options=DecayConfigOptions(
+            half_life_hours=half_life_hours,
+            min_importance=min_importance,
+            activation_boost=activation_boost,
+            strengthening_threshold=strengthening_threshold,
+            stale_threshold=stale_threshold,
+        ),
     )
     return json.dumps({"ok": True, "action": "set_decay_config", **cfg.to_dict()}, indent=2)
 

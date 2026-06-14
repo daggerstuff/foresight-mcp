@@ -184,47 +184,63 @@ class AuthManager:
         ).hex()
         return f"pbkdf2_sha256${iterations}${salt}${hash_bytes}"
 
-    def _verify_password(self, password: str, password_hash: str) -> bool:  # noqa: PLR0911
+    def _verify_password(self, password: str, password_hash: str) -> bool:
         """Verify a password against its stored Argon2, bcrypt, PBKDF2, or legacy hash."""
-        # Use optional dependencies if available
-        if HAS_ARGON2 and PasswordHasher:
-            try:
-                ph = PasswordHasher()
-                return ph.verify(password_hash, password)
-            except Exception:
-                # Continue to next fallback
-                pass
+        result = (
+            self._verify_argon2(password, password_hash)
+            or self._verify_bcrypt(password, password_hash)
+            or self._verify_pbkdf2(password, password_hash)
+            or self._verify_legacy_sha256(password, password_hash)
+        )
+        return result if result is not None else False
 
-        if HAS_BCRYPT and bcrypt:
-            try:
-                return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
-            except Exception:
-                # Continue to next fallback
-                pass
+    def _verify_argon2(self, password: str, password_hash: str) -> bool | None:
+        """Try Argon2 verification. Returns None if argon2 unavailable or hash incompatible."""
+        if not (HAS_ARGON2 and PasswordHasher):
+            return None
+        try:
+            ph = PasswordHasher()
+            return ph.verify(password_hash, password)
+        except Exception:
+            logger.debug("argon2 verification failed; trying next fallback")
+            return None
 
-        # Fallback to PBKDF2 verification
-        if password_hash.startswith("pbkdf2_sha256$"):
-            try:
-                _, iteration_str, salt, stored_hash = password_hash.split("$", 3)
-                calc_hash = hashlib.pbkdf2_hmac(
-                    "sha256",
-                    password.encode("utf-8"),
-                    salt.encode("utf-8"),
-                    int(iteration_str),
-                ).hex()
-                return secrets.compare_digest(calc_hash, stored_hash)
-            except Exception:
-                return False
+    def _verify_bcrypt(self, password: str, password_hash: str) -> bool | None:
+        """Try bcrypt verification. Returns None if bcrypt unavailable or hash incompatible."""
+        if not (HAS_BCRYPT and bcrypt):
+            return None
+        try:
+            return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+        except Exception:
+            logger.debug("bcrypt verification failed; trying next fallback")
+            return None
 
-        # Legacy fallback for pre-hardening hashes
-        if password_hash.startswith("sha256$"):
-            try:
-                _, salt, stored_hash = password_hash.split("$")
-                calc_hash = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-                return secrets.compare_digest(calc_hash, stored_hash)
-            except Exception:
-                return False
-        return False
+    def _verify_pbkdf2(self, password: str, password_hash: str) -> bool | None:
+        """Try PBKDF2 verification. Returns None if hash format doesn't match."""
+        if not password_hash.startswith("pbkdf2_sha256$"):
+            return None
+        try:
+            _, iteration_str, salt, stored_hash = password_hash.split("$", 3)
+            calc_hash = hashlib.pbkdf2_hmac(
+                "sha256",
+                password.encode("utf-8"),
+                salt.encode("utf-8"),
+                int(iteration_str),
+            ).hex()
+            return secrets.compare_digest(calc_hash, stored_hash)
+        except Exception:
+            return False
+
+    def _verify_legacy_sha256(self, password: str, password_hash: str) -> bool | None:
+        """Try legacy SHA256 verification. Returns None if hash format doesn't match."""
+        if not password_hash.startswith("sha256$"):
+            return None
+        try:
+            _, salt, stored_hash = password_hash.split("$")
+            calc_hash = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+            return secrets.compare_digest(calc_hash, stored_hash)
+        except Exception:
+            return False
 
     def create_user(
         self,
@@ -534,7 +550,9 @@ _auth_manager = _AuthManagerSingleton()
 
 def get_auth_manager() -> AuthManager:
     """Get the global auth manager instance."""
-    return _auth_manager.get()
+    if isinstance(_auth_manager, _AuthManagerSingleton):
+        return _auth_manager.get()
+    return _auth_manager  # Direct AuthManager instance (e.g., test monkeypatch)
 
 
 def initialize_default_users() -> None:

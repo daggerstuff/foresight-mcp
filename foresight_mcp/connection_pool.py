@@ -6,14 +6,18 @@ and automatic cleanup of stale connections.
 
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
 import time
 from collections import deque
 from contextlib import suppress
+from typing import Any
 
 from .config import DB_PATH
+
+logger = logging.getLogger("foresight_connection_pool")
 
 
 class ConnectionPool:
@@ -74,7 +78,7 @@ class ConnectionPool:
                     self._pool.append((raw, time.time()))
                     return
                 except Exception:
-                    pass
+                    logger.debug("Connection health check failed on release; closing connection")
             with suppress(Exception):
                 raw.close()
 
@@ -146,6 +150,14 @@ class PooledConnection:
 
     def __getattr__(self, name):
         return getattr(self._conn, name)
+
+    @property
+    def row_factory(self) -> Any:
+        return self._conn.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value: Any) -> None:
+        self._conn.row_factory = value
 
     def close(self):
         if self._released:

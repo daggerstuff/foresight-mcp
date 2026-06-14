@@ -67,6 +67,7 @@ from .document_layer import (
     VALID_DOCUMENT_SOURCES as VALID_DOCUMENT_SOURCES,
     Document as Document,
     DocumentChunk as DocumentChunk,
+    DocumentCreateOptions as DocumentCreateOptions,
     DocumentLayerError as DocumentLayerError,
     DocumentStore as DocumentStore,
     chunk_text as chunk_text,
@@ -121,6 +122,7 @@ from .hybrid_retriever import (
     reset_hybrid_retriever as reset_hybrid_retriever,
 )
 from .memory_relationships import (
+    LinkMemoriesOptions as LinkMemoriesOptions,
     VALID_RELATIONSHIP_TYPES as VALID_RELATIONSHIP_TYPES,
     MemoryGraphTraversal as MemoryGraphTraversal,
     MemoryRelationship as MemoryRelationship,

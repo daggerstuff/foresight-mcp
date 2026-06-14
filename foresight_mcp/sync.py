@@ -162,7 +162,7 @@ class OperationQueue:
             if cols and "tenant_id" not in cols:
                 conn.execute("ALTER TABLE operations ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
         except sqlite3.OperationalError:
-            pass
+            logger.debug("operations table tenant_id column already exists")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ops_tenant ON operations(tenant_id)")
         conn.commit()
         pool.release(conn)
@@ -317,11 +317,36 @@ class SyncManager:
 
     def enqueue_operation(
         self,
-        type_: OperationType,
-        entity_type: str,
-        entity_id: str,
-        payload: dict[str, Any],
+        type_: OperationType | None = None,
+        entity_type: str | None = None,
+        entity_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> str:
+        """
+        Queue an operation for sync.
+
+        Args:
+            type_: Operation type (create, update, delete)
+            entity_type: Type of entity
+            entity_id: Entity identifier
+            payload: Operation payload
+            **kwargs: Backward compat — accepts 'type' as alias for 'type_'
+
+        Returns:
+            Operation ID
+        """
+        # Backward compat: accept 'type' (without underscore)
+        if type_ is None and "type" in kwargs:
+            type_ = kwargs.pop("type")
+        if type_ is None:
+            raise ValueError("type_ is required")
+        if entity_type is None:
+            raise ValueError("entity_type is required")
+        if entity_id is None:
+            raise ValueError("entity_id is required")
+        if payload is None:
+            payload = {}
         """
         Queue an operation for sync.
 

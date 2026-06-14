@@ -17,6 +17,8 @@ Dynamic sources:
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 from dataclasses import dataclass
@@ -46,6 +48,14 @@ class ProfileConfig:
     include_synthesis: bool = True
     max_static_lines: int = 30
     max_dynamic_lines: int = 20
+
+
+@dataclass
+class ScopeQueryOptions:
+    """Options for querying memories by scope."""
+
+    limit: int = 20
+    order_by: str = "importance DESC, created_at DESC"
 
 
 # Block labels used for each profile layer
@@ -97,16 +107,17 @@ def _extract_block_lines(
     return lines
 
 
-def _query_memories_by_scope(  # noqa: PLR0913
+def _query_memories_by_scope(
     user_id: str,
     tenant_id: str,
     scopes: tuple[str, ...],
     retentions: tuple[str, ...] | None = None,
     *,
-    limit: int = 20,
-    order_by: str = "importance DESC, created_at DESC",
+    options: ScopeQueryOptions | None = None,
 ) -> list[dict[str, Any]]:
     """Query memories filtered by scope and optionally retention."""
+    if options is None:
+        options = ScopeQueryOptions()
     pool = get_pool(DB_PATH)
     conn = pool.acquire()
     try:
@@ -122,14 +133,14 @@ def _query_memories_by_scope(  # noqa: PLR0913
 
         rows = conn.execute(
             f"""SELECT content, category, tags, importance, strength_trend, scope,
-                       retention, created_at
-                FROM memories
-                WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
-                  AND scope IN ({scope_placeholders})
-                  {retention_clause}
-                ORDER BY {order_by}
-                LIMIT ?""",
-            (*params, limit),
+                        retention, created_at
+                 FROM memories
+                 WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0
+                   AND scope IN ({scope_placeholders})
+                   {retention_clause}
+                 ORDER BY {options.order_by}
+                 LIMIT ?""",
+            (*params, options.limit),
         ).fetchall()
     finally:
         conn.close()
@@ -169,6 +180,23 @@ def _deduplicate_lines(lines: list[str]) -> list[str]:
     return unique
 
 
+def _run_async(coro):
+    """Run an async coroutine safely, handling existing event loops.
+
+    When an event loop is already running (e.g. inside an MCP server),
+    asyncio.run() raises RuntimeError. This helper offloads the coroutine
+    to a fresh loop in a background thread instead.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            return pool.submit(asyncio.run, coro).result()
+    return asyncio.run(coro)
+
+
 def synthesize_profile(
     user_id: str,
     tenant_id: str = "default",
@@ -203,7 +231,7 @@ def synthesize_profile(
             tenant_id,
             scopes=("trait", "fact"),
             retentions=("long_term", "permanent"),
-            limit=cfg.max_static_memories,
+            options=ScopeQueryOptions(limit=cfg.max_static_memories),
         )
         for m in static_mems:
             tag_str = f" [{', '.join(m['tags'][:3])}]" if m.get("tags") else ""
@@ -220,8 +248,7 @@ def synthesize_profile(
             user_id,
             tenant_id,
             scopes=("session", "arc"),
-            limit=cfg.max_dynamic_memories,
-            order_by="created_at DESC",
+            options=ScopeQueryOptions(limit=cfg.max_dynamic_memories, order_by="created_at DESC"),
         )
         for m in dyn_mems:
             dynamic_lines.append(m["content"])
@@ -243,7 +270,7 @@ def synthesize_profile(
                             emotional_context=emo,
                         )
                     )
-                synth_result = get_enhanced_synthesizer().synthesize(memories_objs, user_id=user_id)
+                synth_result = _run_async(get_enhanced_synthesizer().synthesize(memories_objs, user_id=user_id))
                 # If contradictions found, note them
                 if synth_result and synth_result.contradictions:
                     for c in synth_result.contradictions[:3]:

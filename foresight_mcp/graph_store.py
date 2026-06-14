@@ -15,11 +15,11 @@ import logging
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, cast
 
 from .config import DB_PATH
 from .connection_pool import get_pool
-from .entity_extractor import Entity, ExtractionResult, Relationship
+from .entity_extractor import Entity, EntityType, ExtractionResult, Relationship, RelationshipType
 from .sql_helpers import build_type_filter
 from .tenant_context import get_current_tenant_id
 
@@ -184,7 +184,7 @@ class GraphStore:
             """)
 
             # Migrate existing tables that lack tenant_id before creating indexes
-            self._migrate_add_tenant_id(conn)
+            self._migrate_add_tenant_id(cast(sqlite3.Connection, conn))
 
             conn.commit()
 
@@ -364,7 +364,7 @@ class GraphStore:
             return Entity(
                 id=row[0],
                 name=row[2],
-                entity_type=row[3],  # type: ignore
+                entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row[3]),
                 description=row[4],
                 properties=json.loads(row[5] or "{}"),
             )
@@ -401,7 +401,7 @@ class GraphStore:
                 Entity(
                     id=row[0],
                     name=row[2],
-                    entity_type=row[3],  # type: ignore
+                    entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row[3]),
                     description=row[4],
                     properties=json.loads(row[5] or "{}"),
                 )
@@ -440,7 +440,7 @@ class GraphStore:
                 Entity(
                     id=row[0],
                     name=row[2],
-                    entity_type=row[3],  # type: ignore
+                    entity_type=cast(Literal["person", "place", "concept", "event", "emotion", "object"], row[3]),
                     description=row[4],
                     properties=json.loads(row[5] or "{}"),
                 )
@@ -530,7 +530,7 @@ class GraphStore:
                 Relationship(
                     source_entity_id=row[0],
                     target_entity_id=row[1],
-                    relationship_type=row[2],  # type: ignore
+                    relationship_type=cast(RelationshipType, row[2]),
                     confidence=row[3],
                     metadata=json.loads(row[4] or "{}"),
                 )
@@ -555,14 +555,14 @@ class GraphStore:
         """Traverse graph from a starting entity, scoped to tenant."""
         max_depth = kwargs.get("max_depth", args[0] if len(args) > 0 else 2)
         max_results = kwargs.get("max_results", args[1] if len(args) > 1 else 50)
-        relationship_types = kwargs.get("relationship_types", args[2] if len(args) > 2 else None)
+        relationship_types: list[str] | None = kwargs.get("relationship_types", args[2] if len(args) > 2 else None)
         tid = tenant_id or kwargs.get("tenant_id", args[3] if len(args) > 3 else None) or get_current_tenant_id()
         _validate_input(user_id, tid)
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         try:
-            type_filter, type_params = build_type_filter(relationship_types)
+            type_filter, type_params = build_type_filter(relationship_types or [])
 
             query = f"""
             WITH RECURSIVE graph_traversal AS (
@@ -627,7 +627,7 @@ class GraphStore:
                 Entity(
                     id=row[0],
                     name=row[2],
-                    entity_type=row[1],  # type: ignore
+                    entity_type=cast(EntityType, row[1]),
                     description=row[3],
                     properties=json.loads(row[4] or "{}"),
                 )
@@ -671,7 +671,7 @@ class GraphStore:
                     Relationship(
                         source_entity_id=row[0],
                         target_entity_id=row[1],
-                        relationship_type=row[2],  # type: ignore
+                        relationship_type=cast(RelationshipType, row[2]),
                         confidence=row[3],
                         metadata=json.loads(row[4] or "{}"),
                     )

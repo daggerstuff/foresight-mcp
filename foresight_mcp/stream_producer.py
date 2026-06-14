@@ -62,9 +62,6 @@ class StreamEvent:
     timestamp: str
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self):
-        pass
-
     def to_dict(self) -> dict:
         return {
             "event_type": self.event_type,

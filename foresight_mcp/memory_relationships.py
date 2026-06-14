@@ -27,6 +27,16 @@ from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
+
+@dataclass
+class LinkMemoriesOptions:
+    """Options for linking memories."""
+
+    tenant_id: str | None = None
+    confidence: float = 1.0
+    metadata: dict[str, Any] | None = None
+
+
 logger = logging.getLogger("foresight_memory_relationships")
 
 VALID_RELATIONSHIP_TYPES: frozenset[str] = frozenset(
@@ -119,7 +129,7 @@ class MemoryRelationshipStore:
         self.db_path = db_path
         self._ensure_table()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> Any:
         pool = get_pool(self.db_path)
         conn = pool.acquire()
         conn.row_factory = sqlite3.Row
@@ -168,7 +178,7 @@ class MemoryRelationshipStore:
             else:
                 conn.close()
 
-    def link_memories(  # noqa: PLR0913
+    def link_memories(
         self,
         source_memory_id: str,
         target_memory_id: str,
@@ -177,17 +187,26 @@ class MemoryRelationshipStore:
         tenant_id: str | None = None,
         confidence: float = 1.0,
         metadata: dict[str, Any] | None = None,
+        *,
+        options: LinkMemoriesOptions | None = None,
     ) -> MemoryRelationship:
         """Create or update a relationship edge between two memories."""
+        # Backward compatibility: if options is None, build from individual parameters
+        if options is None:
+            options = LinkMemoriesOptions(
+                tenant_id=tenant_id,
+                confidence=confidence,
+                metadata=metadata,
+            )
         _validate_memory_id(source_memory_id, "source_memory_id")
         _validate_memory_id(target_memory_id, "target_memory_id")
         if source_memory_id == target_memory_id:
             raise MemoryRelationshipError("source_memory_id and target_memory_id must differ")
         _validate_relationship_type(relationship_type)
-        _validate_confidence(confidence)
-        tid = tenant_id or get_current_tenant_id()
+        _validate_confidence(options.confidence)
+        tid = options.tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
-        meta = _validate_metadata(metadata)
+        meta = _validate_metadata(options.metadata)
 
         rel_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
@@ -213,8 +232,8 @@ class MemoryRelationshipStore:
                     source_memory_id,
                     target_memory_id,
                     relationship_type,
-                    float(confidence),
-                    json.dumps(meta, ensure_ascii=False),
+                    float(options.confidence),
+                    json.dumps(options.metadata, ensure_ascii=False),
                     now,
                 ),
             )
