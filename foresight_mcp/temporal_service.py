@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
+from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_temporal")
@@ -461,25 +462,34 @@ class TemporalService:
 
 
 # Global instance management (thread-safe)
-_temporal_service: TemporalService | None = None
-_temporal_service_lock = threading.Lock()
+class _TemporalServiceSingleton:
+    """Module-level singleton for TemporalService."""
+
+    _instance: TemporalService | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, db_path: str | None = None) -> TemporalService:
+        """Get or create global temporal service instance (thread-safe)."""
+        with cls._lock:
+            if cls._instance is None:
+                if db_path is None:
+                    db_path = DB_PATH
+                cls._instance = TemporalService(db_path)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset global temporal service (for testing)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_temporal_service(db_path: str | None = None) -> TemporalService:
     """Get or create global temporal service instance (thread-safe)."""
-    global _temporal_service
-    with _temporal_service_lock:
-        if _temporal_service is None:
-            if db_path is None:
-                from .config import DB_PATH
-
-                db_path = DB_PATH
-            _temporal_service = TemporalService(db_path)
-    return _temporal_service
+    return _TemporalServiceSingleton.get_instance(db_path)
 
 
 def reset_temporal_service() -> None:
     """Reset global temporal service (for testing)."""
-    global _temporal_service
-    with _temporal_service_lock:
-        _temporal_service = None
+    _TemporalServiceSingleton.reset()

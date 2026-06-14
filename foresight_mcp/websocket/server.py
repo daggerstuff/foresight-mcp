@@ -11,19 +11,24 @@ Handles WebSocket connections with:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from typing import Any
+
+from foresight_mcp.event_bus import EventType
+
+from .subscriptions import get_subscription_manager
 
 logger = logging.getLogger("foresight_websocket")
 
 
-class ConnectionState(str, Enum):
+class ConnectionState(StrEnum):
     """WebSocket connection state."""
 
     CONNECTING = "connecting"
@@ -109,7 +114,7 @@ class WebSocketHandler:
         # New connection
         connection = Connection(
             id=conn_id,
-            send=lambda msg: None,  # Will be set by WebSocket server
+            send=lambda _msg: None,  # Will be set by WebSocket server
             close=lambda: None,
             user_id=user_id,
             tenant_id=tenant_id,
@@ -202,8 +207,6 @@ class WebSocketHandler:
             }
 
         if action == "subscribe":
-            from .subscriptions import get_subscription_manager
-
             sub_manager = get_subscription_manager()
 
             subscription_id = message.get("subscription_id", str(uuid.uuid4()))
@@ -225,8 +228,6 @@ class WebSocketHandler:
             }
 
         if action == "unsubscribe":
-            from .subscriptions import get_subscription_manager
-
             sub_manager = get_subscription_manager()
             subscription_id = message.get("subscription_id")
 
@@ -299,7 +300,6 @@ class WebSocketServer:
             heartbeat_interval: Interval for sending ping
             heartbeat_timeout: Timeout for considering connection dead
         """
-        import json
 
         self.handler = WebSocketHandler(auth_callback)
         self._event_bus = event_bus
@@ -331,42 +331,39 @@ class WebSocketServer:
         work is found. This avoids burning CPU on a fixed 60-second tick when
         the server is idle, while staying responsive under load.
         """
-        _MIN_CLEANUP_INTERVAL = 10.0  # seconds — floor when connections are stale
-        _MAX_CLEANUP_INTERVAL = 300.0  # seconds — ceiling when server is quiet
-        _BACKOFF_FACTOR = 2.0
+        _min_cleanup_interval = 10.0  # seconds — floor when connections are stale
+        _max_cleanup_interval = 300.0  # seconds — ceiling when server is quiet
+        _backoff_factor = 2.0
 
-        interval = _MIN_CLEANUP_INTERVAL
+        interval = _min_cleanup_interval
         while self._running:
             try:
                 removed = await self.handler.cleanup_stale_connections()
                 if removed:
                     # Work was found — reset to minimum interval
-                    interval = _MIN_CLEANUP_INTERVAL
+                    interval = _min_cleanup_interval
                     logger.debug("Cleaned up %d stale WebSocket connection(s)", len(removed))
                 else:
                     # Nothing to do — back off exponentially up to the ceiling
-                    interval = min(interval * _BACKOFF_FACTOR, _MAX_CLEANUP_INTERVAL)
+                    interval = min(interval * _backoff_factor, _max_cleanup_interval)
 
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 logger.error("Server loop error: %s", exc)
-                await asyncio.sleep(_MIN_CLEANUP_INTERVAL)
+                await asyncio.sleep(_min_cleanup_interval)
 
     async def stop(self) -> None:
         """Stop the WebSocket server."""
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all event bus events."""
-        from ..event_bus import EventType
 
         def on_event(event):
             """Callback for all events - broadcast to subscribers."""
@@ -392,7 +389,6 @@ class WebSocketServer:
 
     def _broadcast_event(self, event_type: str, payload: dict[str, Any]) -> None:
         """Broadcast event to all subscribed connections."""
-        import json
 
         message = {
             "type": "event",
@@ -436,7 +432,6 @@ def setup_event_bus_websocket_integration(event_bus, websocket_server: WebSocket
     This connects the event bus event stream to the WebSocket server,
     broadcasting all events to subscribed clients.
     """
-    from ..event_bus import EventType
 
     def on_event(event):
         """Callback for all events."""

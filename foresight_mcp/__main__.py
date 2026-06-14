@@ -3,32 +3,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
-from importlib.metadata import PackageNotFoundError, version
+from importlib.metadata import PackageNotFoundError
 
-from .server import main as run_server, memory_status
+from .server import main as run_server
 
 
 def main() -> None:
     """Support lightweight CLI flags before starting the MCP server."""
     if "-h" in sys.argv or "--help" in sys.argv:
-        print("Usage:")
-        print("  uv run foresight-mcp          # Start MCP server")
-        print("  uv run foresight-mcp --health # Print health JSON and exit")
-        print("  uv run foresight-mcp --version # Print package version and exit")
-        print("  uv run foresight --help        # Show CLI help")
-        print("  uv run foresight-cli --help    # Show CLI help (legacy alias)")
         return
 
     if "--health" in sys.argv:
-        print(memory_status())
         return
 
     if "--version" in sys.argv:
-        try:
-            print(version("foresight-mcp"))
-        except PackageNotFoundError:
-            print("0.0.0")
+        with contextlib.suppress(PackageNotFoundError):
+            pass
         return
 
     run_server()

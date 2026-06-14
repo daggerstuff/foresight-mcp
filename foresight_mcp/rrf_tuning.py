@@ -11,6 +11,8 @@ Current default weights (subject to tuning):
 - RRF k: 60 (standard smoothing constant)
 """
 
+import hashlib
+import itertools
 import json
 import logging
 import math
@@ -146,10 +148,8 @@ def grid_search_weights(
 
     Note:
         evaluate_fn should be provided for actual tuning.
-        Without it, returns placeholder results.
+    Without it, returns placeholder results.
     """
-    import itertools
-
     keyword_values = list(frange(keyword_range[0], keyword_range[1] + 0.001, keyword_range[2]))
     tfidf_values = list(frange(tfidf_range[0], tfidf_range[1] + 0.001, tfidf_range[2]))
     graph_values = list(frange(graph_range[0], graph_range[1] + 0.001, graph_range[2]))
@@ -169,11 +169,7 @@ def grid_search_weights(
             "temporal": temporal,
         }
 
-        if evaluate_fn:
-            score = evaluate_fn(weights)
-        else:
-            # Placeholder - would need actual evaluation data
-            score = 0.0
+        score = evaluate_fn(weights) if evaluate_fn else 0.0  # Placeholder - would need actual evaluation data
 
         all_results.append({"weights": weights, "score": score})
 
@@ -228,8 +224,6 @@ def select_variant(
     Returns:
         Tuple of (variant_name, RRFConfig)
     """
-    import hashlib
-
     # Hash user ID to get consistent assignment
     hash_value = int(hashlib.sha256(user_id.encode()).hexdigest(), 16)
     roll = (hash_value % 100) + 1

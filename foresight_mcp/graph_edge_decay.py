@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_graph_decay")
@@ -83,7 +84,7 @@ class GraphEdgeDecay:
     def update_edge_decay(
         self,
         tenant_id: str = "default",
-        batch_size: int = 1000,
+        _batch_size: int = 1000,
     ) -> EdgeDecayStats:
         """
         Update decay factors for all edges.
@@ -261,8 +262,21 @@ class GraphEdgeDecay:
 
 
 # Global instance
-_decay: GraphEdgeDecay | None = None
-_decay_lock = __import__("threading").RLock()
+class _GraphEdgeDecaySingleton:
+    """Module-level singleton for GraphEdgeDecay."""
+
+    _instance: GraphEdgeDecay | None = None
+    _lock = __import__("threading").RLock()
+
+    @classmethod
+    def get_instance(cls, db_path: str | None = None, half_life_hours: float | None = None) -> GraphEdgeDecay:
+        """Get or create global graph edge decay service."""
+        with cls._lock:
+            if cls._instance is None:
+                if db_path is None:
+                    db_path = DB_PATH
+                cls._instance = GraphEdgeDecay(db_path, half_life_hours)
+            return cls._instance
 
 
 def get_graph_edge_decay(
@@ -270,15 +284,7 @@ def get_graph_edge_decay(
     half_life_hours: float | None = None,
 ) -> GraphEdgeDecay:
     """Get or create global graph edge decay service."""
-    global _decay
-    with _decay_lock:
-        if _decay is None:
-            if db_path is None:
-                from .config import DB_PATH
-
-                db_path = DB_PATH
-            _decay = GraphEdgeDecay(db_path, half_life_hours)
-        return _decay
+    return _GraphEdgeDecaySingleton.get_instance(db_path, half_life_hours)
 
 
 def run_edge_decay_update(tenant_id: str = "default") -> EdgeDecayStats:

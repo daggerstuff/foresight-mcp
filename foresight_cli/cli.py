@@ -149,7 +149,7 @@ def callback(
         init_db()
     except Exception as exc:
         console.print(Text(f"Failed to initialize Foresight database: {exc}", style="red"))
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     ctx.obj = {"user_id": user_id, "json": _json}
 
@@ -351,9 +351,7 @@ def cmd_profile(
         console.print(result)
     else:
         try:
-            import json as _json_mod
-
-            parsed = _json_mod.loads(result)
+            parsed = json.loads(result)
             static_count = len(parsed.get("static", []))
             dynamic_count = len(parsed.get("dynamic", []))
             console.print(f"[bold]User Profile[/bold] ({static_count} static, {dynamic_count} dynamic items)")
@@ -504,14 +502,14 @@ def cmd_blocks_clear(
 
 
 @curate_app.command("create")
-def cmd_curate_create(
+def cmd_curate_create(  # noqa: PLR0913
     source_bank_id: str = typer.Option(..., "--source-bank-id", help="Source bank to curate"),
     output_bank_id: str | None = typer.Option(None, "--output-bank-id", help="Optional reviewable output bank"),
     policy_mode: str = typer.Option("rebalance", "--policy-mode", help="preserve, rebalance, or rebuild"),
     tool_access: str = typer.Option("observe", "--tool-access", help="disabled, observe, or operate"),
     output_mode: str = typer.Option("reviewable_output", "--output-mode", help="reviewable_output or in_place"),
     instructions: str | None = typer.Option(None, "--instructions", help="Optional curator instructions"),
-    transcript_bundle_file: Path | None = typer.Option(
+    transcript_bundle_file: Path | None = typer.Option(  # noqa: B008
         None,
         "--transcript-bundle-file",
         help="Optional JSON file containing transcript messages",

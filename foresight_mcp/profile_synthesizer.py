@@ -97,7 +97,7 @@ def _extract_block_lines(
     return lines
 
 
-def _query_memories_by_scope(
+def _query_memories_by_scope(  # noqa: PLR0913
     user_id: str,
     tenant_id: str,
     scopes: tuple[str, ...],

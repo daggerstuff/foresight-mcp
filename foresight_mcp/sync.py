@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,7 @@ from .tenant_context import get_current_tenant_id
 logger = logging.getLogger("foresight_sync")
 
 
-class SyncStatus(str, Enum):
+class SyncStatus(StrEnum):
     """Sync status."""
 
     IDLE = "idle"
@@ -36,7 +38,7 @@ class SyncStatus(str, Enum):
     ERROR = "error"
 
 
-class OperationType(str, Enum):
+class OperationType(StrEnum):
     """Types of operations."""
 
     CREATE = "create"
@@ -315,7 +317,7 @@ class SyncManager:
 
     def enqueue_operation(
         self,
-        type: OperationType,
+        type_: OperationType,
         entity_type: str,
         entity_id: str,
         payload: dict[str, Any],
@@ -332,11 +334,9 @@ class SyncManager:
         Returns:
             Operation ID
         """
-        import uuid
-
         operation = Operation(
             id=str(uuid.uuid4()),
-            type=type,
+            type=type_,
             entity_type=entity_type,
             entity_id=entity_id,
             payload=payload,
@@ -344,7 +344,7 @@ class SyncManager:
         operation.vector_clock.increment(self.node_id)
 
         self._queue.enqueue(operation)
-        logger.info(f"Enqueued operation {operation.id}: {type.value} {entity_type}:{entity_id}")
+        logger.info(f"Enqueued operation {operation.id}: {type_.value} {entity_type}:{entity_id}")
 
         self._notify_progress()
         return operation.id
@@ -436,18 +436,30 @@ class SyncManager:
 # Global Sync Manager
 # =============================================================================
 
-_sync_manager: SyncManager | None = None
+
+class _SyncManagerSingleton:
+    """Module-level singleton for SyncManager."""
+
+    _instance: SyncManager | None = None
+
+    @classmethod
+    def get_instance(cls, node_id: str = "default") -> SyncManager:
+        """Get the global sync manager instance."""
+        if cls._instance is None:
+            cls._instance = SyncManager(node_id=node_id)
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the global sync manager (for testing)."""
+        cls._instance = None
 
 
 def get_sync_manager(node_id: str = "default") -> SyncManager:
     """Get the global sync manager instance."""
-    global _sync_manager
-    if _sync_manager is None:
-        _sync_manager = SyncManager(node_id=node_id)
-    return _sync_manager
+    return _SyncManagerSingleton.get_instance(node_id)
 
 
 def reset_sync_manager() -> None:
     """Reset the global sync manager (for testing)."""
-    global _sync_manager
-    _sync_manager = None
+    _SyncManagerSingleton.reset()

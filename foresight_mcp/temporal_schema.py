@@ -67,10 +67,10 @@ def run_temporal_migrations(db_path: str) -> None:
     try:
         # Run schema alterations (ignore errors for existing columns)
         for statement in TEMPORAL_SCHEMA_SQL.split(";"):
-            statement = statement.strip()
-            if statement:
+            stmt = statement.strip()
+            if stmt:
                 try:
-                    cursor.execute(statement)
+                    cursor.execute(stmt)
                 except sqlite3.OperationalError as e:
                     # Ignore "duplicate column" errors - column already exists
                     if "duplicate column" not in str(e).lower():
@@ -78,17 +78,16 @@ def run_temporal_migrations(db_path: str) -> None:
 
         # Run decay config schema
         for statement in DECAY_CONFIG_SCHEMA.split(";"):
-            statement = statement.strip()
-            if statement:
+            stmt = statement.strip()
+            if stmt:
                 try:
-                    cursor.execute(statement)
+                    cursor.execute(stmt)
                 except sqlite3.OperationalError as e:
                     # Ignore errors for existing tables
                     if "already exists" not in str(e).lower():
                         raise
 
         conn.commit()
-        print("Temporal schema migrations completed successfully")
 
     except sqlite3.Error as e:
         conn.rollback()
@@ -124,4 +123,3 @@ if __name__ == "__main__":
     from .config import DB_PATH
 
     run_temporal_migrations(DB_PATH)
-    print(f"Migrations applied to {DB_PATH}")

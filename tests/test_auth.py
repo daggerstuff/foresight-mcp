@@ -11,7 +11,7 @@ def _tool_result_is_error(result) -> bool:
     return bool((result.meta or {}).get("isError"))
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 def temp_db_path(tmp_path):
     # Create a temporary SQLite DB file
     db_file = tmp_path / "test_memory.db"

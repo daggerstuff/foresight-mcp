@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import DB_PATH as DB_PATH
+from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
@@ -80,27 +80,20 @@ class MemoryGraphTraversal:
 
 def _validate_user_tenant(user_id: str, tenant_id: str) -> None:
     if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
-        raise MemoryRelationshipError(
-            f"user_id must be 1-{MAX_USER_ID_LENGTH} chars"
-        )
+        raise MemoryRelationshipError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
     if not tenant_id or len(tenant_id) > MAX_TENANT_ID_LENGTH:
-        raise MemoryRelationshipError(
-            f"tenant_id must be 1-{MAX_TENANT_ID_LENGTH} chars"
-        )
+        raise MemoryRelationshipError(f"tenant_id must be 1-{MAX_TENANT_ID_LENGTH} chars")
 
 
 def _validate_memory_id(value: str, field_name: str) -> None:
     if not value or len(value) > MAX_MEMORY_ID_LENGTH:
-        raise MemoryRelationshipError(
-            f"{field_name} must be 1-{MAX_MEMORY_ID_LENGTH} chars"
-        )
+        raise MemoryRelationshipError(f"{field_name} must be 1-{MAX_MEMORY_ID_LENGTH} chars")
 
 
 def _validate_relationship_type(rel_type: str) -> None:
     if rel_type not in VALID_RELATIONSHIP_TYPES:
         raise MemoryRelationshipError(
-            f"relationship_type must be one of "
-            f"{sorted(VALID_RELATIONSHIP_TYPES)}, got {rel_type!r}"
+            f"relationship_type must be one of {sorted(VALID_RELATIONSHIP_TYPES)}, got {rel_type!r}"
         )
 
 
@@ -115,9 +108,7 @@ def _validate_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
     metadata = metadata or {}
     serialized = json.dumps(metadata, ensure_ascii=False)
     if len(serialized.encode("utf-8")) > MAX_METADATA_BYTES:
-        raise MemoryRelationshipError(
-            f"metadata exceeds {MAX_METADATA_BYTES} bytes"
-        )
+        raise MemoryRelationshipError(f"metadata exceeds {MAX_METADATA_BYTES} bytes")
     return metadata
 
 
@@ -177,7 +168,7 @@ class MemoryRelationshipStore:
             else:
                 conn.close()
 
-    def link_memories(
+    def link_memories(  # noqa: PLR0913
         self,
         source_memory_id: str,
         target_memory_id: str,
@@ -191,9 +182,7 @@ class MemoryRelationshipStore:
         _validate_memory_id(source_memory_id, "source_memory_id")
         _validate_memory_id(target_memory_id, "target_memory_id")
         if source_memory_id == target_memory_id:
-            raise MemoryRelationshipError(
-                "source_memory_id and target_memory_id must differ"
-            )
+            raise MemoryRelationshipError("source_memory_id and target_memory_id must differ")
         _validate_relationship_type(relationship_type)
         _validate_confidence(confidence)
         tid = tenant_id or get_current_tenant_id()
@@ -272,9 +261,7 @@ class MemoryRelationshipStore:
         """Return relationships touching a memory (direction: out, in, both)."""
         _validate_memory_id(memory_id, "memory_id")
         if direction not in {"out", "in", "both"}:
-            raise MemoryRelationshipError(
-                "direction must be one of 'out', 'in', 'both'"
-            )
+            raise MemoryRelationshipError("direction must be one of 'out', 'in', 'both'")
         if relationship_type is not None:
             _validate_relationship_type(relationship_type)
         tid = tenant_id or get_current_tenant_id()
@@ -415,11 +402,7 @@ class MemoryRelationshipStore:
                         target_memory_id=r["target_memory_id"],
                         relationship_type=r["relationship_type"],
                         confidence=float(r["confidence"]),
-                        metadata=(
-                            json.loads(r["metadata"])
-                            if r["metadata"]
-                            else {}
-                        ),
+                        metadata=(json.loads(r["metadata"]) if r["metadata"] else {}),
                         created_at=r["created_at"],
                     )
                     for r in edge_cur.fetchall()
@@ -439,20 +422,29 @@ class MemoryRelationshipStore:
         )
 
 
-_store: MemoryRelationshipStore | None = None
+class _MemoryRelationshipStoreSingleton:
+    """Module-level singleton for MemoryRelationshipStore."""
+
+    _instance: MemoryRelationshipStore | None = None
+
+    @classmethod
+    def get_instance(cls) -> MemoryRelationshipStore:
+        """Return the process-singleton store, initializing lazily on first call."""
+        if cls._instance is None:
+            cls._instance = MemoryRelationshipStore(DB_PATH)
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton (test-only helper)."""
+        cls._instance = None
 
 
 def get_memory_relationship_store() -> MemoryRelationshipStore:
     """Return the process-singleton store, initializing lazily on first call."""
-    global _store
-    if _store is None:
-        from .config import DB_PATH
-
-        _store = MemoryRelationshipStore(DB_PATH)
-    return _store
+    return _MemoryRelationshipStoreSingleton.get_instance()
 
 
 def reset_memory_relationship_store() -> None:
     """Reset the singleton (test-only helper)."""
-    global _store
-    _store = None
+    _MemoryRelationshipStoreSingleton.reset()

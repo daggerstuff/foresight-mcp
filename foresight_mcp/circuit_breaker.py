@@ -72,20 +72,18 @@ class CircuitBreaker:
                 self.total_rejected += 1
                 raise CircuitBreakerOpenError("Circuit breaker is OPEN")
 
-            if current_state == CircuitState.HALF_OPEN:
-                if self._success_count >= self.config.half_open_max_calls:
-                    pass  # Continue but track
+            if current_state == CircuitState.HALF_OPEN and self._success_count >= self.config.half_open_max_calls:
+                pass  # Continue but track
 
             # Execute inside lock to prevent race conditions
             try:
                 result = func(*args, **kwargs)
                 # Success - update state atomically
                 self._success_count += 1
-                if current_state == CircuitState.HALF_OPEN:
-                    if self._success_count >= self.config.half_open_max_calls:
-                        self._state = CircuitState.CLOSED
-                        self._failure_count = 0
-                        self._success_count = 0
+                if current_state == CircuitState.HALF_OPEN and self._success_count >= self.config.half_open_max_calls:
+                    self._state = CircuitState.CLOSED
+                    self._failure_count = 0
+                    self._success_count = 0
                 return result
             except self.config.expected_exceptions:
                 # Failure - update state atomically

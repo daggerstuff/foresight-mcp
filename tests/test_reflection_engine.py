@@ -264,14 +264,12 @@ class TestReflectionEngine:
         # At least one insight should contain content from actual memories
         has_content_evidence = False
         for insight in report.insights:
-            if insight.insight_type == "trend":
-                # Content-anchored insights should have "Progress in" prefix
-                if insight.summary.startswith("Progress in"):
-                    has_content_evidence = True
-                    # The summary should contain an excerpt from actual memory content
-                    assert len(insight.summary) > len("Progress in general: ")
-                    # evidence_ids should reference specific memories, not generic first-5
-                    assert len(insight.evidence_ids) >= 1
+            if insight.insight_type == "trend" and insight.summary.startswith("Progress in"):
+                has_content_evidence = True
+                # The summary should contain an excerpt from actual memory content
+                assert len(insight.summary) > len("Progress in general: ")
+                # evidence_ids should reference specific memories, not generic first-5
+                assert len(insight.evidence_ids) >= 1
 
         assert has_content_evidence, "Expected at least one content-anchored trend insight"
 
@@ -309,7 +307,3 @@ class TestReflectionEngine:
         # Should contain semicolons if multiple insights
         if len(report.insights) > 1:
             assert ";" in gist
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

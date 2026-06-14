@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -29,7 +29,7 @@ MEMORY_SCHEMA_VERSION = "1.0.0"
 # ---------------------------------------------------------------------------
 
 
-class MemoryScope(str, Enum):
+class MemoryScope(StrEnum):
     """Logical lifecycle boundary of a memory."""
 
     SESSION = "session"  # Current conversation only
@@ -38,16 +38,16 @@ class MemoryScope(str, Enum):
     FACT = "fact"  # Ground-truth factual knowledge
 
 
-class RetentionPolicy(str, Enum):
+class RetentionPolicy(StrEnum):
     """Controls how long a memory stays in active vector space."""
 
     EPHEMERAL = "ephemeral"  # < 1 hour
-    SHORT_TERM = "short_term"  # 1 day – 1 week
-    LONG_TERM = "long_term"  # 1 week – 6 months
+    SHORT_TERM = "short_term"  # 1 day - 1 week
+    LONG_TERM = "long_term"  # 1 week - 6 months
     PERMANENT = "permanent"  # Never evicted
 
 
-class StrengthTrend(str, Enum):
+class StrengthTrend(StrEnum):
     """Memory strength trend — set by temporal decay scheduler."""
 
     STABLE = "stable"
@@ -56,7 +56,7 @@ class StrengthTrend(str, Enum):
     STALE = "stale"
 
 
-class GateDecision(str, Enum):
+class GateDecision(StrEnum):
     """Socratic Gate evaluation decision."""
 
     AUTO = "auto"
@@ -65,7 +65,7 @@ class GateDecision(str, Enum):
     BLOCK = "block"
 
 
-class SourceService(str, Enum):
+class SourceService(StrEnum):
     """Which service originally wrote this memory."""
 
     FORESIGHT = "foresight"
@@ -238,7 +238,7 @@ class UnifiedMemory(BaseModel):
     # -------------------------------------------------------------------------
 
     @classmethod
-    def create(
+    def create(  # noqa: PLR0913
         cls,
         content: str,
         user_id: str,

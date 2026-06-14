@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import math
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -67,7 +66,7 @@ class ClusterResult:
     memory_links: list[dict[str, Any]]
 
 
-def cluster_memories(
+def cluster_memories(  # noqa: PLR0912
     memories: list[dict[str, Any]],
     *,
     min_similarity: float = 0.25,

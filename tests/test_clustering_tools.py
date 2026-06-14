@@ -298,7 +298,8 @@ def seed_memories(server_env):
 class TestRunClusteringTool:
     """Tests for the run_clustering MCP tool."""
 
-    def test_run_clustering_no_memories(self, server_env) -> None:
+    @pytest.mark.usefixtures("server_env")
+    def test_run_clustering_no_memories(self) -> None:
         """run_clustering with no memories returns zero clusters."""
         from foresight_mcp.server import run_clustering
 
@@ -308,7 +309,8 @@ class TestRunClusteringTool:
         assert data["clusters_created"] == 0
         assert data["memories_processed"] == 0
 
-    def test_run_clustering_creates_clusters(self, seed_memories) -> None:
+    @pytest.mark.usefixtures("seed_memories")
+    def test_run_clustering_creates_clusters(self) -> None:
         """run_clustering should create clusters from related memories."""
         from foresight_mcp.server import run_clustering
 
@@ -318,7 +320,8 @@ class TestRunClusteringTool:
         assert data["clusters_created"] >= 0  # May or may not cluster depending on content
         assert data["memories_processed"] >= 6
 
-    def test_run_clustering_high_threshold(self, seed_memories) -> None:
+    @pytest.mark.usefixtures("seed_memories")
+    def test_run_clustering_high_threshold(self) -> None:
         """High min_similarity should produce no clusters."""
         from foresight_mcp.server import run_clustering
 
@@ -331,7 +334,8 @@ class TestRunClusteringTool:
 class TestQueryClustersTool:
     """Tests for the query_clusters MCP tool."""
 
-    def test_query_clusters_empty(self, server_env) -> None:
+    @pytest.mark.usefixtures("server_env")
+    def test_query_clusters_empty(self) -> None:
         """query_clusters with no cluster entities returns empty list."""
         from foresight_mcp.server import query_clusters
 
@@ -341,7 +345,8 @@ class TestQueryClustersTool:
         assert data["cluster_count"] == 0
         assert data["clusters"] == []
 
-    def test_query_clusters_after_run(self, seed_memories) -> None:
+    @pytest.mark.usefixtures("seed_memories")
+    def test_query_clusters_after_run(self) -> None:
         """query_clusters should return cluster entities after run_clustering."""
         from foresight_mcp.server import query_clusters, run_clustering
 
@@ -363,7 +368,8 @@ class TestQueryClustersTool:
 class TestUpsertClusterResults:
     """Tests for the _upsert_cluster_results helper."""
 
-    def test_upsert_empty_result(self, server_env) -> None:
+    @pytest.mark.usefixtures("server_env")
+    def test_upsert_empty_result(self) -> None:
         """Empty ClusterResult should upsert nothing."""
         from foresight_mcp.clustering import ClusterResult
         from foresight_mcp.server import _upsert_cluster_results
@@ -374,7 +380,8 @@ class TestUpsertClusterResults:
         assert summary["entity_count"] == 0
         assert summary["link_count"] == 0
 
-    def test_upsert_and_query_round_trip(self, server_env) -> None:
+    @pytest.mark.usefixtures("server_env")
+    def test_upsert_and_query_round_trip(self) -> None:
         """Entities upserted via _upsert_cluster_results should be queryable."""
         from foresight_mcp.clustering import ClusterResult
         from foresight_mcp.graph_store import get_graph_store
@@ -422,7 +429,8 @@ class TestUpsertClusterResults:
         assert entities[0].id == "cluster:test123abc"
         assert entities[0].properties.get("size") == 3
 
-    def test_upsert_then_memory_linking(self, server_env) -> None:
+    @pytest.mark.usefixtures("server_env")
+    def test_upsert_then_memory_linking(self) -> None:
         """After upsert, memories should be linkable to cluster entities."""
         from foresight_mcp.clustering import ClusterResult
         from foresight_mcp.server import _upsert_cluster_results

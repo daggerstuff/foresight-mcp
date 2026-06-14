@@ -315,8 +315,29 @@ class CrisisDetectionService(MentalHealthAnomalyDetector):
 # Global Instance Management
 # =============================================================================
 
-_anomaly_detector: AnomalyDetector | None = None
-_detector_type: str = "mental_health"
+
+class _AnomalyDetectorSingleton:
+    """Module-level singleton for anomaly detector."""
+
+    _instance: AnomalyDetector | None = None
+    _detector_type: str = "mental_health"
+
+    @classmethod
+    def get_instance(cls, detector_type: str = "mental_health", **kwargs) -> AnomalyDetector:
+        """Get or create an anomaly detector instance."""
+        # Return existing if same type
+        if cls._instance is not None and cls._detector_type == detector_type:
+            return cls._instance
+
+        # Create new detector
+        if detector_type == "mental_health":
+            sensitivity = kwargs.get("sensitivity", "medium")
+            cls._instance = MentalHealthAnomalyDetector(sensitivity_level=sensitivity)
+        else:
+            raise ValueError(f"Unknown detector type: {detector_type}")
+
+        cls._detector_type = detector_type
+        return cls._instance
 
 
 def get_anomaly_detector(detector_type: str = "mental_health", **kwargs) -> AnomalyDetector:
@@ -330,21 +351,7 @@ def get_anomaly_detector(detector_type: str = "mental_health", **kwargs) -> Anom
     Returns:
         Configured AnomalyDetector instance
     """
-    global _anomaly_detector, _detector_type
-
-    # Return existing if same type
-    if _anomaly_detector is not None and _detector_type == detector_type:
-        return _anomaly_detector
-
-    # Create new detector
-    if detector_type == "mental_health":
-        sensitivity = kwargs.get("sensitivity", "medium")
-        _anomaly_detector = MentalHealthAnomalyDetector(sensitivity_level=sensitivity)
-    else:
-        raise ValueError(f"Unknown detector type: {detector_type}")
-
-    _detector_type = detector_type
-    return _anomaly_detector
+    return _AnomalyDetectorSingleton.get_instance(detector_type, **kwargs)
 
 
 # Legacy function for backward compatibility

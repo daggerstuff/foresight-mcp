@@ -1,17 +1,16 @@
 """Tests for tenant isolation in Foresight memory system using store_memory and query_memories."""
 
-import tempfile
+import contextlib
 import os
 import sqlite3
-from datetime import datetime, timezone
+import tempfile
 from unittest.mock import patch
 
+from foresight_mcp.server import query_memories, store_memory
 from foresight_mcp.tenant_context import (
-    set_current_tenant_id,
-    get_current_tenant_id,
     reset_tenant_context,
+    set_current_tenant_id,
 )
-from foresight_mcp.server import store_memory, query_memories
 
 
 def _make_temp_db(db_path: str) -> None:
@@ -20,10 +19,10 @@ def _make_temp_db(db_path: str) -> None:
     conn = sqlite3.connect(db_path)
     conn.close()
     # Patch environment to point to this DB and run init_db.
-    from foresight_mcp.server import init_db
     import foresight_mcp.config as config_mod
     import foresight_mcp.connection_pool as pool_mod
     from foresight_mcp.connection_pool import reset_pool
+    from foresight_mcp.server import init_db
 
     # Temporarily set DB_PATH for init_db
     original_db_path = config_mod.DB_PATH
@@ -82,13 +81,9 @@ def test_tenant_isolation():
         assert "tenant a" not in results.lower(), "Tenant B should NOT see Tenant A's memories"
 
     # Cleanup
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(tenant_db1.name)
-    except OSError:
-        pass
-    try:
+    with contextlib.suppress(OSError):
         os.unlink(tenant_db2.name)
-    except OSError:
-        pass
 
     reset_tenant_context()

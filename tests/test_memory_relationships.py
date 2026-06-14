@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import tempfile
 from collections.abc import Iterator
@@ -11,7 +10,6 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
-
 from foresight_mcp import memory_relationships as rel_mod
 from foresight_mcp.memory_relationships import (
     VALID_RELATIONSHIP_TYPES,
@@ -22,7 +20,6 @@ from foresight_mcp.memory_relationships import (
     get_memory_relationship_store,
     reset_memory_relationship_store,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -71,8 +68,7 @@ def _seed_memories(db_path: str, ids: list[str], tenant_id: str = "t1", user_id:
     now = datetime.now(timezone.utc).isoformat()
     for mid in ids:
         conn.execute(
-            "INSERT OR IGNORE INTO memories (id, content, tenant_id, user_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO memories (id, content, tenant_id, user_id, created_at) VALUES (?, ?, ?, ?, ?)",
             (mid, f"content-{mid}", tenant_id, user_id, now),
         )
     conn.commit()
@@ -83,9 +79,11 @@ def _seed_memories(db_path: str, ids: list[str], tenant_id: str = "t1", user_id:
 def _patched_db(db_path: str) -> Iterator[MemoryRelationshipStore]:
     """Patch DB_PATH for get_pool + reset singleton, yield a fresh store."""
     reset_memory_relationship_store()
-    with patch.object(rel_mod, "DB_PATH", db_path), \
-         patch("foresight_mcp.config.DB_PATH", db_path), \
-         patch("foresight_mcp.memory_relationships.DB_PATH", db_path):
+    with (
+        patch.object(rel_mod, "DB_PATH", db_path),
+        patch("foresight_mcp.config.DB_PATH", db_path),
+        patch("foresight_mcp.memory_relationships.DB_PATH", db_path),
+    ):
         store = MemoryRelationshipStore(db_path)
         try:
             yield store
@@ -99,54 +97,53 @@ def _patched_db(db_path: str) -> Iterator[MemoryRelationshipStore]:
 
 
 def test_valid_relationship_types_contains_expected_set():
-    assert VALID_RELATIONSHIP_TYPES == frozenset(
-        {"updates", "extends", "derives", "contradicts", "supports", "related"}
+    assert (
+        frozenset({"updates", "extends", "derives", "contradicts", "supports", "related"}) == VALID_RELATIONSHIP_TYPES
     )
 
 
 def test_link_rejects_invalid_relationship_type():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="relationship_type must be one of"):
-            store.link_memories(
-                source_memory_id="a",
-                target_memory_id="b",
-                relationship_type="bogus",
-                user_id="u1",
-            )
+    with (
+        _patched_db(_make_test_db()) as store,
+        pytest.raises(MemoryRelationshipError, match="relationship_type must be one of"),
+    ):
+        store.link_memories(
+            source_memory_id="a",
+            target_memory_id="b",
+            relationship_type="bogus",
+            user_id="u1",
+        )
 
 
 def test_link_rejects_self_loop():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="must differ"):
-            store.link_memories(
-                source_memory_id="same",
-                target_memory_id="same",
-                relationship_type="updates",
-                user_id="u1",
-            )
+    with _patched_db(_make_test_db()) as store, pytest.raises(MemoryRelationshipError, match="must differ"):
+        store.link_memories(
+            source_memory_id="same",
+            target_memory_id="same",
+            relationship_type="updates",
+            user_id="u1",
+        )
 
 
 def test_link_rejects_out_of_range_confidence():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="confidence must be in"):
-            store.link_memories(
-                source_memory_id="a",
-                target_memory_id="b",
-                relationship_type="updates",
-                user_id="u1",
-                confidence=1.5,
-            )
+    with _patched_db(_make_test_db()) as store, pytest.raises(MemoryRelationshipError, match="confidence must be in"):
+        store.link_memories(
+            source_memory_id="a",
+            target_memory_id="b",
+            relationship_type="updates",
+            user_id="u1",
+            confidence=1.5,
+        )
 
 
 def test_link_rejects_empty_user_id():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="user_id must be"):
-            store.link_memories(
-                source_memory_id="a",
-                target_memory_id="b",
-                relationship_type="updates",
-                user_id="",
-            )
+    with _patched_db(_make_test_db()) as store, pytest.raises(MemoryRelationshipError, match="user_id must be"):
+        store.link_memories(
+            source_memory_id="a",
+            target_memory_id="b",
+            relationship_type="updates",
+            user_id="",
+        )
 
 
 def test_link_rejects_oversized_metadata():
@@ -226,15 +223,16 @@ def test_get_relationships_filters_by_direction():
         inc = store.get_relationships_for_memory("a", "u1", direction="in")
         both = store.get_relationships_for_memory("a", "u1", direction="both")
 
-    assert len(out) == 1 and out[0].target_memory_id == "b"
-    assert len(inc) == 1 and inc[0].source_memory_id == "c"
+    assert len(out) == 1
+    assert out[0].target_memory_id == "b"
+    assert len(inc) == 1
+    assert inc[0].source_memory_id == "c"
     assert len(both) == 2
 
 
 def test_get_relationships_rejects_bad_direction():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="direction must be"):
-            store.get_relationships_for_memory("a", "u1", direction="sideways")
+    with _patched_db(_make_test_db()) as store, pytest.raises(MemoryRelationshipError, match="direction must be"):
+        store.get_relationships_for_memory("a", "u1", direction="sideways")
 
 
 # ---------------------------------------------------------------------------
@@ -249,12 +247,8 @@ def test_relationships_are_tenant_isolated():
     with _patched_db(db) as store:
         store.link_memories("m1", "m2", "extends", user_id="u1", tenant_id="tA")
 
-        a_rels = store.get_relationships_for_memory(
-            "m1", "u1", tenant_id="tA", direction="out"
-        )
-        b_rels = store.get_relationships_for_memory(
-            "m1", "u1", tenant_id="tB", direction="out"
-        )
+        a_rels = store.get_relationships_for_memory("m1", "u1", tenant_id="tA", direction="out")
+        b_rels = store.get_relationships_for_memory("m1", "u1", tenant_id="tB", direction="out")
 
     assert len(a_rels) == 1
     assert b_rels == []
@@ -308,15 +302,13 @@ def test_traverse_depth_zero_returns_only_root():
 
 
 def test_traverse_rejects_out_of_range_depth():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="max_depth"):
-            store.traverse_memory_graph("a", "u1", max_depth=10)
+    with _patched_db(_make_test_db()) as store, pytest.raises(MemoryRelationshipError, match="max_depth"):
+        store.traverse_memory_graph("a", "u1", max_depth=10)
 
 
 def test_traverse_rejects_oversized_limit():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(MemoryRelationshipError, match="limit must be"):
-            store.traverse_memory_graph("a", "u1", limit=10_000)
+    with _patched_db(_make_test_db()) as store, pytest.raises(MemoryRelationshipError, match="limit must be"):
+        store.traverse_memory_graph("a", "u1", limit=10_000)
 
 
 # ---------------------------------------------------------------------------

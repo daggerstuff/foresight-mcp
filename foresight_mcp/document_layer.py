@@ -22,7 +22,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import sqlite3
 import threading
 import uuid
@@ -30,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import DB_PATH as DB_PATH
+from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_context import get_current_tenant_id
 
@@ -46,9 +45,7 @@ MAX_TENANT_ID_LENGTH = 64
 MAX_MEMORY_ID_LENGTH = 128
 MAX_DOCUMENT_ID_LENGTH = 128
 
-VALID_DOCUMENT_SOURCES: frozenset[str] = frozenset(
-    {"transcript", "article", "journal", "note", "email", "other"}
-)
+VALID_DOCUMENT_SOURCES: frozenset[str] = frozenset({"transcript", "article", "journal", "note", "email", "other"})
 
 
 class DocumentLayerError(ValueError):
@@ -64,25 +61,17 @@ def _validate_user_tenant(user_id: str, tenant_id: str) -> None:
 
 def _validate_memory_id(memory_id: str) -> None:
     if not memory_id or len(memory_id) > MAX_MEMORY_ID_LENGTH:
-        raise DocumentLayerError(
-            f"memory_id must be 1-{MAX_MEMORY_ID_LENGTH} chars"
-        )
+        raise DocumentLayerError(f"memory_id must be 1-{MAX_MEMORY_ID_LENGTH} chars")
 
 
 def _validate_source(source: str) -> None:
     if source not in VALID_DOCUMENT_SOURCES:
-        raise DocumentLayerError(
-            f"source must be one of {sorted(VALID_DOCUMENT_SOURCES)}, "
-            f"got {source!r}"
-        )
+        raise DocumentLayerError(f"source must be one of {sorted(VALID_DOCUMENT_SOURCES)}, got {source!r}")
 
 
 def _validate_budget(budget: int) -> None:
     if budget < MIN_CHUNK_CHAR_BUDGET or budget > MAX_CHUNK_CHAR_BUDGET:
-        raise DocumentLayerError(
-            f"chunk_char_budget must be in "
-            f"[{MIN_CHUNK_CHAR_BUDGET}, {MAX_CHUNK_CHAR_BUDGET}]"
-        )
+        raise DocumentLayerError(f"chunk_char_budget must be in [{MIN_CHUNK_CHAR_BUDGET}, {MAX_CHUNK_CHAR_BUDGET}]")
 
 
 def content_hash(text: str) -> str:
@@ -145,9 +134,7 @@ class Document:
         }
 
 
-def chunk_text(
-    text: str, char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET
-) -> list[tuple[int, int, str]]:
+def chunk_text(text: str, char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET) -> list[tuple[int, int, str]]:
     """Paragraph-based chunking with a soft character budget.
 
     Splits on blank lines, then greedily packs paragraphs into chunks
@@ -295,21 +282,13 @@ class DocumentStore:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documents_user "
-                "ON documents(tenant_id, user_id, created_at DESC)"
+                "CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(tenant_id, user_id, created_at DESC)"
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(tenant_id, user_id, content_hash)")
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documents_hash "
-                "ON documents(tenant_id, user_id, content_hash)"
+                "CREATE INDEX IF NOT EXISTS idx_document_chunks_doc ON document_chunks(document_id, chunk_index)"
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_document_chunks_doc "
-                "ON document_chunks(document_id, chunk_index)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_document_chunks_memory "
-                "ON document_chunks(memory_id)"
-            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_chunks_memory ON document_chunks(memory_id)")
             conn.commit()
         finally:
             pool = getattr(conn, "_pool", None)
@@ -318,7 +297,7 @@ class DocumentStore:
             else:
                 conn.close()
 
-    def create_document(
+    def create_document(  # noqa: PLR0913,PLR0912
         self,
         title: str,
         content: str,
@@ -337,15 +316,11 @@ class DocumentStore:
         stored without a memory_id (extraction stub mode).
         """
         if not title or len(title) > MAX_TITLE_LENGTH:
-            raise DocumentLayerError(
-                f"title must be 1-{MAX_TITLE_LENGTH} chars"
-            )
+            raise DocumentLayerError(f"title must be 1-{MAX_TITLE_LENGTH} chars")
         if not isinstance(content, str) or not content:
             raise DocumentLayerError("content must be a non-empty string")
         if len(content) > MAX_TEXT_LENGTH:
-            raise DocumentLayerError(
-                f"content exceeds {MAX_TEXT_LENGTH} chars"
-            )
+            raise DocumentLayerError(f"content exceeds {MAX_TEXT_LENGTH} chars")
         _validate_source(source)
         _validate_budget(char_budget)
         tid = tenant_id or get_current_tenant_id()
@@ -389,10 +364,7 @@ class DocumentStore:
                     (tid, user_id, h),
                 ).fetchone()
                 if existing is not None:
-                    raise DocumentLayerError(
-                        f"document with identical content already exists: "
-                        f"{existing['id']}"
-                    )
+                    raise DocumentLayerError(f"document with identical content already exists: {existing['id']}")
 
                 conn.execute(
                     """
@@ -472,9 +444,7 @@ class DocumentStore:
         tid = tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
         if not document_id or len(document_id) > MAX_DOCUMENT_ID_LENGTH:
-            raise DocumentLayerError(
-                f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars"
-            )
+            raise DocumentLayerError(f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars")
         conn = self._connect()
         try:
             row = conn.execute(
@@ -524,9 +494,7 @@ class DocumentStore:
         tid = tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
         if not document_id or len(document_id) > MAX_DOCUMENT_ID_LENGTH:
-            raise DocumentLayerError(
-                f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars"
-            )
+            raise DocumentLayerError(f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars")
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -628,9 +596,7 @@ class DocumentStore:
         tid = tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
         if not document_id or len(document_id) > MAX_DOCUMENT_ID_LENGTH:
-            raise DocumentLayerError(
-                f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars"
-            )
+            raise DocumentLayerError(f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars")
         conn = self._connect()
         try:
             with self._lock:
@@ -651,21 +617,32 @@ class DocumentStore:
                 conn.close()
 
 
-_store: DocumentStore | None = None
-_store_lock = threading.Lock()
+class _DocumentStoreSingleton:
+    """Module-level singleton for DocumentStore."""
+
+    _instance: DocumentStore | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls) -> DocumentStore:
+        """Return the process-singleton DocumentStore, initializing lazily."""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = DocumentStore(DB_PATH)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton (test-only helper)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_document_store() -> DocumentStore:
     """Return the process-singleton DocumentStore, initializing lazily."""
-    global _store
-    with _store_lock:
-        if _store is None:
-            _store = DocumentStore(DB_PATH)
-        return _store
+    return _DocumentStoreSingleton.get_instance()
 
 
 def reset_document_store() -> None:
     """Reset the singleton (test-only helper)."""
-    global _store
-    with _store_lock:
-        _store = None
+    _DocumentStoreSingleton.reset()

@@ -195,7 +195,7 @@ class AuditLog:
                 self._conn = None
                 self._closed = True
 
-    def __enter__(self) -> "AuditLog":
+    def __enter__(self) -> AuditLog:
         return self
 
     def __exit__(self, *exc_info: Any) -> None:
@@ -345,8 +345,7 @@ class AuditLog:
             (tenant_id,),
         ).fetchone()
         type_rows = conn.execute(
-            "SELECT event_type, COUNT(*) AS n FROM audit_events "
-            "WHERE tenant_id = ? GROUP BY event_type",
+            "SELECT event_type, COUNT(*) AS n FROM audit_events WHERE tenant_id = ? GROUP BY event_type",
             (tenant_id,),
         ).fetchall()
         return {
@@ -358,11 +357,11 @@ class AuditLog:
 
 
 __all__ = [
-    "NARRATIVE_GENERATED",
-    "NARRATIVE_FAILED",
-    "NARRATIVE_CACHE_HIT",
-    "LLM_CALL_SUCCEEDED",
     "LLM_CALL_FAILED",
+    "LLM_CALL_SUCCEEDED",
+    "NARRATIVE_CACHE_HIT",
+    "NARRATIVE_FAILED",
+    "NARRATIVE_GENERATED",
     "AuditEvent",
     "AuditLog",
 ]

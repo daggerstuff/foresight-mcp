@@ -12,6 +12,7 @@ stored as memories themselves for continuity across sessions.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import sqlite3
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .config import DB_PATH
 from .connection_pool import PooledConnection, get_pool
 
 logger = logging.getLogger("foresight_reflection_engine")
@@ -128,7 +130,7 @@ class ReflectionEngine:
 
         conn = self._get_connection()
         try:
-            # Fetch memories for the period — cap at 10× min_memories to avoid
+            # Fetch memories for the period - cap at 10x min_memories to avoid
             # loading unbounded result sets for users with large memory stores.
             fetch_limit = max(min_memories * 10, 200)
             rows = conn.execute(
@@ -311,7 +313,7 @@ class ReflectionEngine:
         total = trend_summary.get("total_memories", 1)
         if stale_count / max(total, 1) > 0.5:
             stale_rows = [r for r in rows if (r[4] or "stable") == "stale"]
-            stale_categories = set(r[2] or "general" for r in stale_rows)
+            stale_categories = {r[2] or "general" for r in stale_rows}
             insights.append(
                 ReflectionInsight(
                     insight_type="warning",
@@ -412,7 +414,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _detect_causal_relationships(self, rows: list, trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
+    def _detect_causal_relationships(self, rows: list, _trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
         """
         Infer potential causal relationships from temporal patterns.
 
@@ -480,7 +482,7 @@ class ReflectionEngine:
         - Fragility indicators (high variance, low resilience)
         """
         insights: list[ReflectionInsight] = []
-        counts = trend_summary.get("trend_counts", {})
+        trend_summary.get("trend_counts", {})
 
         # Group by category
         by_category: dict[str, list] = {}
@@ -538,7 +540,7 @@ class ReflectionEngine:
 
         return insights
 
-    def _detect_opportunities(self, rows: list, trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
+    def _detect_opportunities(self, rows: list, _trend_summary: dict[str, Any]) -> list[ReflectionInsight]:
         """
         Identify underutilized strengths and opportunities.
 
@@ -693,7 +695,7 @@ class ReflectionEngine:
                     json.dumps({}),
                     json.dumps({"insights": len(report.insights)}),
                     gist,
-                    json.dumps([r for r in []]),
+                    json.dumps([]),
                     now,
                     now,
                     "reflection",
@@ -703,32 +705,39 @@ class ReflectionEngine:
             conn.commit()
         except Exception as e:
             logger.error(f"Failed to store reflection report {report.report_id}: {e}", exc_info=True)
-            try:
+            with contextlib.suppress(Exception):
                 conn.rollback()
-            except Exception:
-                pass
 
 
 # Global instance management
-_reflection_engine: ReflectionEngine | None = None
-_engine_lock = threading.Lock()
+class _ReflectionEngineSingleton:
+    """Module-level singleton for ReflectionEngine."""
+
+    _instance: ReflectionEngine | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, db_path: str | None = None) -> ReflectionEngine:
+        """Get or create global reflection engine instance (thread-safe)."""
+        with cls._lock:
+            if cls._instance is None:
+                if db_path is None:
+                    db_path = DB_PATH
+                cls._instance = ReflectionEngine(db_path)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset global reflection engine (for testing)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_reflection_engine(db_path: str | None = None) -> ReflectionEngine:
     """Get or create global reflection engine instance (thread-safe)."""
-    global _reflection_engine
-    with _engine_lock:
-        if _reflection_engine is None:
-            if db_path is None:
-                from .config import DB_PATH
-
-                db_path = DB_PATH
-            _reflection_engine = ReflectionEngine(db_path)
-        return _reflection_engine
+    return _ReflectionEngineSingleton.get_instance(db_path)
 
 
 def reset_reflection_engine() -> None:
     """Reset global reflection engine (for testing)."""
-    global _reflection_engine
-    with _engine_lock:
-        _reflection_engine = None
+    _ReflectionEngineSingleton.reset()

@@ -3,7 +3,7 @@
 import pytest
 from foresight_mcp.rate_limiter import (
     RateLimiter,
-    RateLimitExceeded,
+    RateLimitExceededError,
     get_rate_limiter,
     reset_rate_limiter,
 )
@@ -63,11 +63,11 @@ class TestTokenBucket:
         assert limiter1 is limiter2
 
 
-class TestRateLimitExceeded:
+class TestRateLimitExceededError:
     """Test exception structure."""
 
     def test_exception_attributes(self):
-        exc = RateLimitExceeded(remaining=0, reset_time=123.45)
+        exc = RateLimitExceededError(remaining=0, reset_time=123.45)
         assert exc.remaining == 0
         assert exc.reset_time == 123.45
         assert "Rate limit exceeded" in str(exc)

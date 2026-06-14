@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_MAX_ENTRIES = 10_000
 DEFAULT_TTL_SECONDS = 604_800
 
@@ -120,7 +119,7 @@ class NarrativeCache:
             self._hits += 1
             return str(row["narrative"])
 
-    def put(
+    def put(  # noqa: PLR0913
         self,
         report_id: str,
         narrative: str,

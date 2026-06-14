@@ -32,9 +32,18 @@ import os
 import re
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 logger = logging.getLogger("foresight_entity_extractor")
+
+# Optional httpx dependency for external API calls
+try:
+    import httpx
+
+    HAS_HTTPX = True
+except Exception:
+    httpx = None
+    HAS_HTTPX = False
 
 EntityType = Literal["person", "place", "concept", "event", "emotion", "object"]
 RelationshipType = Literal[
@@ -185,7 +194,7 @@ Output (raw JSON only, no markdown):
     # Class-level pre-compiled patterns
     # ---------------------------------------------------------------------------
 
-    _EMOTION_PATTERNS: dict[str, dict] = {
+    _EMOTION_PATTERNS: ClassVar[dict[str, dict]] = {
         "anxiety": {"intensity": "moderate"},
         "anxious": {"intensity": "moderate"},
         "stress": {"intensity": "moderate"},
@@ -198,7 +207,7 @@ Output (raw JSON only, no markdown):
         "anger": {"intensity": "negative"},
         "excitement": {"intensity": "positive"},
     }
-    _CONCEPT_PATTERNS: dict[str, dict] = {
+    _CONCEPT_PATTERNS: ClassVar[dict[str, dict]] = {
         "therapy": {"category": "treatment"},
         "CBT": {"category": "technique"},
         "meditation": {"category": "practice"},
@@ -210,10 +219,10 @@ Output (raw JSON only, no markdown):
     }
 
     # {term: compiled pattern} — built once at class definition time
-    _EMOTION_RE: dict[str, re.Pattern[str]] = {
+    _EMOTION_RE: ClassVar[dict[str, re.Pattern[str]]] = {
         term: re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE) for term in _EMOTION_PATTERNS
     }
-    _CONCEPT_RE: dict[str, re.Pattern[str]] = {
+    _CONCEPT_RE: ClassVar[dict[str, re.Pattern[str]]] = {
         term: re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE) for term in _CONCEPT_PATTERNS
     }
 
@@ -372,7 +381,8 @@ Output (raw JSON only, no markdown):
         Returns:
             ExtractionResult with entities and relationships.
         """
-        import httpx
+        if not HAS_HTTPX or httpx is None:
+            raise RuntimeError("httpx is not installed. Install it with 'pip install httpx'")
 
         try:
             prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:3000])
@@ -453,8 +463,26 @@ Output (raw JSON only, no markdown):
 # Global instance management (thread-safe)
 # ---------------------------------------------------------------------------
 
-_entity_extractor: EntityExtractor | None = None
-_entity_extractor_lock = threading.Lock()
+
+class _EntityExtractorSingleton:
+    """Module-level singleton for EntityExtractor."""
+
+    _instance: EntityExtractor | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, api_key: str | None = None, model: str = "claude-3-haiku-20240307") -> EntityExtractor:
+        """Get or create the global entity extractor instance (thread-safe)."""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = EntityExtractor(api_key=api_key, model=model)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the global entity extractor (for testing)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_entity_extractor(
@@ -462,15 +490,9 @@ def get_entity_extractor(
     model: str = "claude-3-haiku-20240307",
 ) -> EntityExtractor:
     """Get or create the global entity extractor instance (thread-safe)."""
-    global _entity_extractor
-    with _entity_extractor_lock:
-        if _entity_extractor is None:
-            _entity_extractor = EntityExtractor(api_key=api_key, model=model)
-    return _entity_extractor
+    return _EntityExtractorSingleton.get_instance(api_key, model)
 
 
 def reset_entity_extractor() -> None:
     """Reset the global entity extractor (for testing)."""
-    global _entity_extractor
-    with _entity_extractor_lock:
-        _entity_extractor = None
+    _EntityExtractorSingleton.reset()

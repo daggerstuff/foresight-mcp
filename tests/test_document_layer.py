@@ -9,22 +9,20 @@ from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
-
 from foresight_mcp import document_layer as doc_mod
 from foresight_mcp.document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET,
+    VALID_DOCUMENT_SOURCES,
     Document,
     DocumentChunk,
     DocumentLayerError,
     DocumentStore,
-    VALID_DOCUMENT_SOURCES,
     chunk_text,
     content_hash,
     extract_memories_from_text,
     get_document_store,
     reset_document_store,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,9 +76,11 @@ def _make_test_db() -> str:
 @contextmanager
 def _patched_store(db_path: str) -> Iterator[DocumentStore]:
     reset_document_store()
-    with patch.object(doc_mod, "DB_PATH", db_path), \
-         patch("foresight_mcp.config.DB_PATH", db_path), \
-         patch("foresight_mcp.document_layer.DB_PATH", db_path):
+    with (
+        patch.object(doc_mod, "DB_PATH", db_path),
+        patch("foresight_mcp.config.DB_PATH", db_path),
+        patch("foresight_mcp.document_layer.DB_PATH", db_path),
+    ):
         store = DocumentStore(db_path)
         try:
             yield store
@@ -99,9 +99,7 @@ def test_default_chunk_budget_in_range():
 
 
 def test_valid_sources_contains_expected_set():
-    assert VALID_DOCUMENT_SOURCES == frozenset(
-        {"transcript", "article", "journal", "note", "email", "other"}
-    )
+    assert frozenset({"transcript", "article", "journal", "note", "email", "other"}) == VALID_DOCUMENT_SOURCES
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +230,7 @@ def test_create_document_persists_doc_and_chunks():
 def test_create_document_with_string_memory_id_for_chunk():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc, chunks = store.create_document(
+        _doc, chunks = store.create_document(
             title="t",
             content="a\n\n" + "b" * 300,
             user_id="u1",
@@ -244,9 +242,11 @@ def test_create_document_with_string_memory_id_for_chunk():
 def test_create_document_with_callable_memory_id_for_chunk():
     db = _make_test_db()
     with _patched_store(db) as store:
+
         def _id_fn(idx: int, text: str) -> str:
             return f"mem_{idx}_{len(text)}"
-        doc, chunks = store.create_document(
+
+        _doc, chunks = store.create_document(
             title="t",
             content="alpha\n\n" + "b" * 300 + "\n\ngamma",
             user_id="u1",
@@ -267,45 +267,33 @@ def test_create_document_rejects_duplicate_content():
 
 
 def test_create_document_rejects_invalid_source():
-    with _patched_store(_make_test_db()) as store:
-        with pytest.raises(DocumentLayerError, match="source must be"):
-            store.create_document(
-                title="t", content="x", user_id="u1", source="bogus"
-            )
+    with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="source must be"):
+        store.create_document(title="t", content="x", user_id="u1", source="bogus")
 
 
 def test_create_document_rejects_empty_title():
-    with _patched_store(_make_test_db()) as store:
-        with pytest.raises(DocumentLayerError, match="title"):
-            store.create_document(title="", content="x", user_id="u1")
+    with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="title"):
+        store.create_document(title="", content="x", user_id="u1")
 
 
 def test_create_document_rejects_empty_content():
-    with _patched_store(_make_test_db()) as store:
-        with pytest.raises(DocumentLayerError, match="content"):
-            store.create_document(title="t", content="", user_id="u1")
+    with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="content"):
+        store.create_document(title="t", content="", user_id="u1")
 
 
 def test_create_document_rejects_oversized_content():
-    with _patched_store(_make_test_db()) as store:
-        with pytest.raises(DocumentLayerError, match="exceeds"):
-            store.create_document(
-                title="t", content="a" * 300_000, user_id="u1"
-            )
+    with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="exceeds"):
+        store.create_document(title="t", content="a" * 300_000, user_id="u1")
 
 
 def test_create_document_rejects_empty_user_id():
-    with _patched_store(_make_test_db()) as store:
-        with pytest.raises(DocumentLayerError, match="user_id"):
-            store.create_document(title="t", content="x", user_id="")
+    with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="user_id"):
+        store.create_document(title="t", content="x", user_id="")
 
 
 def test_create_document_rejects_out_of_range_budget():
-    with _patched_store(_make_test_db()) as store:
-        with pytest.raises(DocumentLayerError, match="chunk_char_budget"):
-            store.create_document(
-                title="t", content="x", user_id="u1", char_budget=10
-            )
+    with _patched_store(_make_test_db()) as store, pytest.raises(DocumentLayerError, match="chunk_char_budget"):
+        store.create_document(title="t", content="x", user_id="u1", char_budget=10)
 
 
 # ---------------------------------------------------------------------------
@@ -321,9 +309,7 @@ def test_get_document_returns_none_for_missing():
 def test_get_document_round_trip():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc, _ = store.create_document(
-            title="t", content="hello", user_id="u1", metadata={"k": "v"}
-        )
+        doc, _ = store.create_document(title="t", content="hello", user_id="u1", metadata={"k": "v"})
         fetched = store.get_document(document_id=doc.id, user_id="u1")
     assert fetched is not None
     assert fetched.id == doc.id
@@ -350,9 +336,11 @@ def test_list_chunks_returns_ordered_chunks():
 def test_get_memory_source_reverse_lookup():
     db = _make_test_db()
     with _patched_store(db) as store:
+
         def _id_fn(idx: int, text: str) -> str:
             return f"mem_{idx}"
-        doc, chunks = store.create_document(
+
+        doc, _chunks = store.create_document(
             title="t",
             content="alpha content\n\n" + "b" * 500,
             user_id="u1",
@@ -380,32 +368,24 @@ def test_get_memory_source_returns_none_for_unknown_memory():
 def test_documents_are_tenant_isolated():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc_a, _ = store.create_document(
-            title="t", content="hello", user_id="u1", tenant_id="tA"
-        )
-        doc_b, _ = store.create_document(
-            title="t", content="hello", user_id="u1", tenant_id="tB"
-        )
-        same_hash_docs = [
-            d for d in (doc_a, doc_b) if d is not None
-        ]
+        doc_a, _ = store.create_document(title="t", content="hello", user_id="u1", tenant_id="tA")
+        doc_b, _ = store.create_document(title="t", content="hello", user_id="u1", tenant_id="tB")
+        same_hash_docs = [d for d in (doc_a, doc_b) if d is not None]
     assert len(same_hash_docs) == 2
     assert doc_a.id != doc_b.id
     a_again = store.get_document(document_id=doc_a.id, user_id="u1", tenant_id="tA")
-    assert a_again is not None and a_again.tenant_id == "tA"
+    assert a_again is not None
+    assert a_again.tenant_id == "tA"
     b_again = store.get_document(document_id=doc_b.id, user_id="u1", tenant_id="tB")
-    assert b_again is not None and b_again.tenant_id == "tB"
+    assert b_again is not None
+    assert b_again.tenant_id == "tB"
 
 
 def test_documents_are_user_isolated():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc_alice, _ = store.create_document(
-            title="alice notes", content="hello", user_id="alice"
-        )
-        doc_bob, _ = store.create_document(
-            title="bob notes", content="hello", user_id="bob"
-        )
+        doc_alice, _ = store.create_document(title="alice notes", content="hello", user_id="alice")
+        doc_bob, _ = store.create_document(title="bob notes", content="hello", user_id="bob")
         alice_doc = store.get_document(document_id=doc_alice.id, user_id="alice")
         alice_via_bob = store.get_document(document_id=doc_bob.id, user_id="alice")
     assert alice_doc is not None
@@ -416,12 +396,8 @@ def test_documents_are_user_isolated():
 def test_list_chunks_rejects_other_tenant():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc, _ = store.create_document(
-            title="t", content="a\n\nb", user_id="u1", tenant_id="tA"
-        )
-        chunks = store.list_chunks(
-            document_id=doc.id, user_id="u1", tenant_id="tB"
-        )
+        doc, _ = store.create_document(title="t", content="a\n\nb", user_id="u1", tenant_id="tA")
+        chunks = store.list_chunks(document_id=doc.id, user_id="u1", tenant_id="tB")
     assert chunks == []
 
 
@@ -433,9 +409,7 @@ def test_list_chunks_rejects_other_tenant():
 def test_delete_document_cascades_to_chunks():
     db = _make_test_db()
     with _patched_store(db) as store:
-        doc, _ = store.create_document(
-            title="t", content="a\n\nb\n\nc", user_id="u1"
-        )
+        doc, _ = store.create_document(title="t", content="a\n\nb\n\nc", user_id="u1")
         deleted = store.delete_document(document_id=doc.id, user_id="u1")
     assert deleted == 1
     conn = sqlite3.connect(db)
@@ -477,9 +451,17 @@ def test_singleton_returns_same_instance(monkeypatch):
 
 def test_document_to_dict_shape():
     d = Document(
-        id="d1", tenant_id="t1", user_id="u1", title="T", source="note",
-        content="x", content_hash="abc", char_count=1, chunk_count=1,
-        created_at="2024-01-01T00:00:00", updated_at="2024-01-01T00:00:00",
+        id="d1",
+        tenant_id="t1",
+        user_id="u1",
+        title="T",
+        source="note",
+        content="x",
+        content_hash="abc",
+        char_count=1,
+        chunk_count=1,
+        created_at="2024-01-01T00:00:00",
+        updated_at="2024-01-01T00:00:00",
         metadata={"k": "v"},
     )
     out = d.to_dict()
@@ -490,8 +472,12 @@ def test_document_to_dict_shape():
 
 def test_chunk_to_dict_shape():
     c = DocumentChunk(
-        document_id="d1", memory_id="m1",
-        start_offset=0, end_offset=5, text="hello", chunk_index=0,
+        document_id="d1",
+        memory_id="m1",
+        start_offset=0,
+        end_offset=5,
+        text="hello",
+        chunk_index=0,
     )
     out = c.to_dict()
     assert out == {

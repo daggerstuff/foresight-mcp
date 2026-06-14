@@ -18,11 +18,12 @@ import threading
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 import httpx
+from fastmcp import FastMCP
 
 from .circuit_breaker import (
     CircuitBreaker,
@@ -41,7 +42,7 @@ logger = logging.getLogger("foresight_hooks")
 # =============================================================================
 
 
-class HookType(str, Enum):
+class HookType(StrEnum):
     """Types of hooks supported."""
 
     CALLABLE = "callable"  # Python function
@@ -221,10 +222,7 @@ class HookRegistry:
         # Columns: 0=id, 1=tenant_id, 2=name, 3=event_type, 4=hook_type,
         # 5=handler, 6=condition_name, 7=retry_count, 8=timeout,
         # 9=metadata, 10=enabled, 11=created_at
-        if len(row) >= 12:
-            o = 1  # tenant_id at row[1]
-        else:
-            o = 0
+        o = 1 if len(row) >= 12 else 0  # tenant_id at row[1]
         return HookRegistration(
             id=row[0],
             name=row[1 + o],
@@ -478,7 +476,7 @@ class HookExecutor:
             self._async_handlers[event_type] = []
         self._async_handlers[event_type].append(handler)
 
-    def register_http_hook(
+    def register_http_hook(  # noqa: PLR0913
         self,
         name: str,
         event_type: EventType,
@@ -507,30 +505,40 @@ class HookExecutor:
 # Global Hook Executor
 # =============================================================================
 
-_hook_executor: HookExecutor | None = None
+
+class _HookExecutorSingleton:
+    """Module-level singleton for HookExecutor."""
+
+    _instance: HookExecutor | None = None
+
+    @classmethod
+    def get_instance(cls) -> HookExecutor:
+        """Get the global hook executor instance."""
+        if cls._instance is None:
+            cls._instance = HookExecutor()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the global hook executor (for testing)."""
+        if cls._instance is not None:
+            cls._instance.close()
+        cls._instance = None
 
 
 def get_hook_executor() -> HookExecutor:
     """Get the global hook executor instance."""
-    global _hook_executor
-    if _hook_executor is None:
-        _hook_executor = HookExecutor()
-    return _hook_executor
+    return _HookExecutorSingleton.get_instance()
 
 
 def reset_hook_executor() -> None:
     """Reset the global hook executor (for testing)."""
-    global _hook_executor
-    if _hook_executor is not None:
-        _hook_executor.close()
-    _hook_executor = None
+    _HookExecutorSingleton.reset()
 
 
 # =============================================================================
 # MCP Tools
 # =============================================================================
-
-from fastmcp import FastMCP
 
 mcp = FastMCP("Foresight Hooks")
 
@@ -558,7 +566,7 @@ def list_hooks() -> str:
 
 
 @mcp.tool()
-def register_hook(
+def register_hook(  # noqa: PLR0913
     name: str, event_type: str, hook_type: str = "http", url: str | None = None, retry_count: int = 3, timeout: int = 30
 ) -> str:
     """

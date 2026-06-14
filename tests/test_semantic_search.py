@@ -11,17 +11,16 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-
 from foresight_mcp import semantic_search as sem_mod
 from foresight_mcp.semantic_search import (
     DEFAULT_PROVIDER,
     LOCAL_HASH_DIM,
+    VALID_PROVIDERS,
     LocalHashEmbedder,
     SemanticMatch,
     SemanticSearch,
     SemanticSearchError,
     SemanticSearchResult,
-    VALID_PROVIDERS,
     cosine_similarity,
     deserialize_vector,
     get_embedder,
@@ -29,7 +28,6 @@ from foresight_mcp.semantic_search import (
     reset_semantic_search,
     serialize_vector,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -64,9 +62,11 @@ def _make_test_db() -> str:
 def _patched_db(db_path: str) -> Iterator[SemanticSearch]:
     """Patch DB_PATH for the store and reset the singleton."""
     reset_semantic_search()
-    with patch.object(sem_mod, "DB_PATH", db_path), \
-         patch("foresight_mcp.config.DB_PATH", db_path), \
-         patch("foresight_mcp.semantic_search.DB_PATH", db_path):
+    with (
+        patch.object(sem_mod, "DB_PATH", db_path),
+        patch("foresight_mcp.config.DB_PATH", db_path),
+        patch("foresight_mcp.semantic_search.DB_PATH", db_path),
+    ):
         store = SemanticSearch(db_path)
         try:
             yield store
@@ -160,15 +160,12 @@ def test_serialize_deserialize_roundtrip():
 def test_index_memory_persists_vector():
     db = _make_test_db()
     with _patched_db(db) as store:
-        dim = store.index_memory(
-            memory_id="m1", text="user prefers morning meetings", user_id="u1"
-        )
+        dim = store.index_memory(memory_id="m1", text="user prefers morning meetings", user_id="u1")
     assert dim == LOCAL_HASH_DIM
 
     conn = sqlite3.connect(db)
     row = conn.execute(
-        "SELECT memory_id, dimension, length(vector) AS blob_len "
-        "FROM memory_embeddings WHERE memory_id = ?",
+        "SELECT memory_id, dimension, length(vector) AS blob_len FROM memory_embeddings WHERE memory_id = ?",
         ("m1",),
     ).fetchone()
     conn.close()
@@ -189,15 +186,13 @@ def test_index_memory_upserts_on_conflict():
 
 
 def test_index_memory_rejects_empty_text():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(SemanticSearchError, match="non-empty"):
-            store.index_memory(memory_id="m1", text="   ", user_id="u1")
+    with _patched_db(_make_test_db()) as store, pytest.raises(SemanticSearchError, match="non-empty"):
+        store.index_memory(memory_id="m1", text="   ", user_id="u1")
 
 
 def test_index_memory_rejects_empty_user_id():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(SemanticSearchError, match="user_id"):
-            store.index_memory(memory_id="m1", text="x", user_id="")
+    with _patched_db(_make_test_db()) as store, pytest.raises(SemanticSearchError, match="user_id"):
+        store.index_memory(memory_id="m1", text="x", user_id="")
 
 
 def test_delete_memory_embedding_returns_row_count():
@@ -222,15 +217,9 @@ def test_delete_memory_embedding_returns_zero_when_missing():
 def test_search_ranks_relevant_memory_first():
     db = _make_test_db()
     with _patched_db(db) as store:
-        store.index_memory(
-            memory_id="m1", text="cat kitten feline pet animal", user_id="u1"
-        )
-        store.index_memory(
-            memory_id="m2", text="car engine vehicle highway", user_id="u1"
-        )
-        store.index_memory(
-            memory_id="m3", text="dog puppy canine pet animal", user_id="u1"
-        )
+        store.index_memory(memory_id="m1", text="cat kitten feline pet animal", user_id="u1")
+        store.index_memory(memory_id="m2", text="car engine vehicle highway", user_id="u1")
+        store.index_memory(memory_id="m3", text="dog puppy canine pet animal", user_id="u1")
         result = store.search(query="feline pet", user_id="u1", limit=3)
 
     assert isinstance(result, SemanticSearchResult)
@@ -247,16 +236,13 @@ def test_search_respects_min_score_threshold():
     with _patched_db(db) as store:
         store.index_memory(memory_id="m1", text="cat kitten", user_id="u1")
         store.index_memory(memory_id="m2", text="car engine", user_id="u1")
-        result = store.search(
-            query="cat", user_id="u1", limit=10, min_score=0.99
-        )
+        result = store.search(query="cat", user_id="u1", limit=10, min_score=0.99)
     assert all(m.score >= 0.99 for m in result.matches)
 
 
 def test_search_rejects_empty_query():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(SemanticSearchError, match="non-empty"):
-            store.search(query="", user_id="u1")
+    with _patched_db(_make_test_db()) as store, pytest.raises(SemanticSearchError, match="non-empty"):
+        store.search(query="", user_id="u1")
 
 
 def test_search_rejects_bad_limit():
@@ -268,9 +254,8 @@ def test_search_rejects_bad_limit():
 
 
 def test_search_rejects_bad_min_score():
-    with _patched_db(_make_test_db()) as store:
-        with pytest.raises(SemanticSearchError, match="min_score must be"):
-            store.search(query="x", user_id="u1", min_score=2.0)
+    with _patched_db(_make_test_db()) as store, pytest.raises(SemanticSearchError, match="min_score must be"):
+        store.search(query="x", user_id="u1", min_score=2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -281,22 +266,14 @@ def test_search_rejects_bad_min_score():
 def test_search_is_tenant_isolated():
     db = _make_test_db()
     with _patched_db(db) as store:
-        store.index_memory(
-            memory_id="m1", text="cat kitten", user_id="u1", tenant_id="tA"
-        )
-        store.index_memory(
-            memory_id="m1", text="car engine", user_id="u1", tenant_id="tB"
-        )
+        store.index_memory(memory_id="m1", text="cat kitten", user_id="u1", tenant_id="tA")
+        store.index_memory(memory_id="m1", text="car engine", user_id="u1", tenant_id="tB")
         a_result = store.search(query="cat", user_id="u1", tenant_id="tA")
         b_result = store.search(query="cat", user_id="u1", tenant_id="tB")
     assert len(a_result.matches) == 1
     assert len(b_result.matches) == 1
     a_vec = deserialize_vector(
-        sqlite3.connect(db)
-        .execute(
-            "SELECT vector FROM memory_embeddings WHERE tenant_id='tA'"
-        )
-        .fetchone()[0],
+        sqlite3.connect(db).execute("SELECT vector FROM memory_embeddings WHERE tenant_id='tA'").fetchone()[0],
         LOCAL_HASH_DIM,
     )
     assert a_vec[0] != 0.0 or any(v != 0.0 for v in a_vec)
@@ -344,8 +321,7 @@ def test_search_skips_dim_mismatched_rows(monkeypatch):
         store.index_memory(memory_id="m1", text="cat", user_id="u1")
         conn = sqlite3.connect(db)
         conn.execute(
-            "UPDATE memory_embeddings SET dimension = 16, vector = ? "
-            "WHERE memory_id = 'm1'",
+            "UPDATE memory_embeddings SET dimension = 16, vector = ? WHERE memory_id = 'm1'",
             (serialize_vector([0.1] * 16),),
         )
         conn.commit()

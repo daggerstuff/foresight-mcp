@@ -75,7 +75,7 @@ def validate_identifier(name: str, valid_set: frozenset, context: str = "value")
     return name
 
 
-def build_in_clause(values: list[str], valid_set: frozenset = None) -> tuple[str, list[str]]:
+def build_in_clause(values: list[str], valid_set: frozenset | None = None) -> tuple[str, list[str]]:
     """Build a safe IN clause with placeholders.
 
     Args:

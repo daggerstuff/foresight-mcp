@@ -88,7 +88,7 @@ from .memory_types import (
 )
 from .narrative_cache import NarrativeCache
 from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
-from .rate_limiter import RateLimitExceeded, get_rate_limiter
+from .rate_limiter import RateLimitExceededError, get_rate_limiter
 from .reflection_engine import get_reflection_engine
 from .reflection_narrative import _default_cache as _reflection_narrative_cache
 from .semantic_search import (
@@ -115,19 +115,26 @@ from .websocket.subscriptions import SubscriptionManager
 DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
 DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
 DEFAULT_MAX_TFIDF_CACHE_SIZE = 10_000
+
+
 # Global narrative cache instance for metrics (lazy initialization)
-_narrative_cache: NarrativeCache | None = None
+class _NarrativeCacheSingleton:
+    """Module-level singleton for NarrativeCache."""
+
+    _instance: NarrativeCache | None = None
+
+    @classmethod
+    def get_instance(cls) -> NarrativeCache:
+        """Get or create global narrative cache instance."""
+        if cls._instance is None:
+            cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
+            cls._instance = NarrativeCache(cache_path)
+        return cls._instance
 
 
 def get_narrative_cache() -> NarrativeCache:
     """Get or create global narrative cache instance."""
-    global _narrative_cache
-    if _narrative_cache is None:
-        from .config import DB_PATH
-
-        cache_path = Path(DB_PATH).parent / "narrative_cache.sqlite"
-        _narrative_cache = NarrativeCache(cache_path)
-    return _narrative_cache
+    return _NarrativeCacheSingleton.get_instance()
 
 
 # Tool argument grouping models
@@ -304,7 +311,7 @@ def _run_async(coro):
 
 
 def _check_rate_limit(tenant_id: str | None = None) -> None:
-    """Check rate limit for tenant, raising RateLimitExceeded if exceeded."""
+    """Check rate limit for tenant, raising RateLimitExceededError if exceeded."""
     tid = tenant_id or get_current_tenant_id()
     # Look up tenant-specific limits from DB
     rate_limit = DEFAULT_RATE_LIMIT
@@ -323,7 +330,7 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
     if not limiter.acquire(tid, rate_limit=rate_limit, burst_limit=burst_limit):
         remaining = limiter.get_remaining(tid)
         reset_time = time.time() + 60 / rate_limit
-        raise RateLimitExceeded(remaining=remaining, reset_time=reset_time)
+        raise RateLimitExceededError(remaining=remaining, reset_time=reset_time)
 
 
 def get_db_connection():
@@ -861,7 +868,7 @@ class RateLimitMiddleware(_Middleware):
     async def on_call_tool(self, context, call_next):
         try:
             _check_rate_limit()
-        except RateLimitExceeded as e:
+        except RateLimitExceededError as e:
             return ToolResult(
                 content=[TextContent(type="text", text=str(e))],
                 meta={"isError": True},
@@ -4199,3 +4206,6 @@ def get_decay_events(
         },
         indent=2,
     )
+
+
+# test

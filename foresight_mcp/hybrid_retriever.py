@@ -30,7 +30,9 @@ import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import ClassVar
 
+from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_hybrid_retriever")
@@ -129,7 +131,7 @@ class HybridRetriever:
     # keyword=1.0 (primary relevance), graph=0.8 (indirect expansion),
     # semantic=0.7 (topical similarity beyond exact match),
     # temporal=0.6 (recency context, not relevance by itself)
-    DEFAULT_WEIGHTS = {
+    DEFAULT_WEIGHTS: ClassVar[dict[str, float]] = {
         "keyword": 1.0,
         "semantic": 0.7,
         "graph": 0.8,
@@ -164,7 +166,7 @@ class HybridRetriever:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
-    def search(
+    def search(  # noqa: PLR0913,PLR0912,PLR0915
         self,
         query: str,
         user_id: str,
@@ -330,7 +332,7 @@ class HybridRetriever:
             ORDER BY importance DESC, created_at DESC
             LIMIT ?
         """,
-            params + [limit],
+            [*params, limit],
         )
 
         rows = cursor.fetchall()
@@ -362,9 +364,9 @@ class HybridRetriever:
         inserts and deletes without requiring explicit invalidation calls.
 
         Returns a dict with keys:
-            "idf"       – {term: float}
-            "docs"      – {memory_id: list[str]}  (tokenized)
-            "doc_count" – int
+            "idf"       - {term: float}
+            "docs"      - {memory_id: list[str]}  (tokenized)
+            "doc_count" - int
         """
         cache_key = (user_id, tenant_id)
 
@@ -548,7 +550,7 @@ class HybridRetriever:
             ORDER BY entity_hits DESC
             LIMIT ?
         """,
-            [tenant_id, user_id] + entity_ids + [user_id, limit],
+            [tenant_id, user_id, *entity_ids, user_id, limit],
         )
 
         rows = cursor.fetchall()
@@ -678,7 +680,7 @@ class HybridRetriever:
             WHERE id IN ({placeholders})
             AND user_id = ? AND tenant_id = ?
         """,
-            memory_ids + [user_id, tenant_id],
+            [*memory_ids, user_id, tenant_id],
         )
 
         return {
@@ -694,8 +696,27 @@ class HybridRetriever:
 
 
 # Global instance management (thread-safe)
-_hybrid_retriever: HybridRetriever | None = None
-_retriever_lock = threading.Lock()
+class _HybridRetrieverSingleton:
+    """Module-level singleton for HybridRetriever."""
+
+    _instance: HybridRetriever | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, db_path: str | None = None, weights: dict[str, float] | None = None) -> HybridRetriever:
+        """Get or create global hybrid retriever instance (thread-safe)."""
+        with cls._lock:
+            if cls._instance is None:
+                if db_path is None:
+                    db_path = DB_PATH
+                cls._instance = HybridRetriever(db_path, weights)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset global hybrid retriever (for testing)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_hybrid_retriever(
@@ -703,19 +724,9 @@ def get_hybrid_retriever(
     weights: dict[str, float] | None = None,
 ) -> HybridRetriever:
     """Get or create global hybrid retriever instance (thread-safe)."""
-    global _hybrid_retriever
-    with _retriever_lock:
-        if _hybrid_retriever is None:
-            if db_path is None:
-                from .config import DB_PATH
-
-                db_path = DB_PATH
-            _hybrid_retriever = HybridRetriever(db_path, weights)
-        return _hybrid_retriever
+    return _HybridRetrieverSingleton.get_instance(db_path, weights)
 
 
 def reset_hybrid_retriever() -> None:
     """Reset global hybrid retriever (for testing)."""
-    global _hybrid_retriever
-    with _retriever_lock:
-        _hybrid_retriever = None
+    _HybridRetrieverSingleton.reset()

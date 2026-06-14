@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import sqlite3
-import time
 from typing import Any
 
 import pytest
-
 from foresight_mcp.audit import (
     LLM_CALL_FAILED,
     LLM_CALL_SUCCEEDED,
@@ -17,7 +15,6 @@ from foresight_mcp.audit import (
     AuditEvent,
     AuditLog,
 )
-
 
 # --------------------------------------------------------------------
 # AuditEvent validation
@@ -83,31 +80,16 @@ def test_audit_log_creates_schema_on_first_use(tmp_path: Any) -> None:
     # Inspect the on-disk schema directly to verify table + indexes + triggers.
     conn = sqlite3.connect(str(db_path))
     try:
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-        }
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "audit_events" in tables
 
-        indexes = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='index'"
-            )
-        }
+        indexes = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
         assert "idx_audit_events_tenant_time" in indexes
         assert "idx_audit_events_type" in indexes
         assert "idx_audit_events_resource" in indexes
         assert "idx_audit_events_tenant_type" in indexes
 
-        triggers = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='trigger'"
-            )
-        }
+        triggers = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
         assert "audit_events_no_update" in triggers
         assert "audit_events_no_delete" in triggers
     finally:
@@ -162,15 +144,9 @@ def test_audit_log_record_and_query(tmp_path: Any) -> None:
 def test_audit_log_tenant_isolation(tmp_path: Any) -> None:
     log = AuditLog(str(tmp_path / "audit.db"))
     try:
-        log.record(
-            AuditEvent(tenant_id="t1", user_id="u1", event_type="x", resource_id="r1")
-        )
-        log.record(
-            AuditEvent(tenant_id="t2", user_id="u1", event_type="x", resource_id="r2")
-        )
-        log.record(
-            AuditEvent(tenant_id="t2", user_id="u2", event_type="x", resource_id="r3")
-        )
+        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"))
+        log.record(AuditEvent(tenant_id="t2", user_id="u1", event_type="x", resource_id="r2"))
+        log.record(AuditEvent(tenant_id="t2", user_id="u2", event_type="x", resource_id="r3"))
 
         assert [ev.resource_id for ev in log.query("t1")] == ["r1"]
         assert sorted(ev.resource_id for ev in log.query("t2")) == ["r2", "r3"]
@@ -182,21 +158,9 @@ def test_audit_log_tenant_isolation(tmp_path: Any) -> None:
 def test_audit_log_query_by_event_type(tmp_path: Any) -> None:
     log = AuditLog(str(tmp_path / "audit.db"))
     try:
-        log.record(
-            AuditEvent(
-                tenant_id="t1", user_id="u1", event_type=NARRATIVE_GENERATED, resource_id="r1"
-            )
-        )
-        log.record(
-            AuditEvent(
-                tenant_id="t1", user_id="u1", event_type=NARRATIVE_FAILED, resource_id="r2"
-            )
-        )
-        log.record(
-            AuditEvent(
-                tenant_id="t1", user_id="u1", event_type=NARRATIVE_CACHE_HIT, resource_id="r3"
-            )
-        )
+        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type=NARRATIVE_GENERATED, resource_id="r1"))
+        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type=NARRATIVE_FAILED, resource_id="r2"))
+        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type=NARRATIVE_CACHE_HIT, resource_id="r3"))
 
         only_generated = log.query("t1", event_type=NARRATIVE_GENERATED)
         assert [ev.resource_id for ev in only_generated] == ["r1"]
@@ -352,9 +316,7 @@ def test_audit_log_count(tmp_path: Any) -> None:
                     resource_id=f"f{i}",
                 )
             )
-        log.record(
-            AuditEvent(tenant_id="t2", user_id="u1", event_type="x", resource_id="x")
-        )
+        log.record(AuditEvent(tenant_id="t2", user_id="u1", event_type="x", resource_id="x"))
 
         assert log.count("t1") == 5
         assert log.count("t1", event_type=NARRATIVE_GENERATED) == 3
@@ -420,15 +382,9 @@ def test_audit_log_stats(tmp_path: Any) -> None:
 def test_audit_log_append_only_blocks_update(tmp_path: Any) -> None:
     log = AuditLog(str(tmp_path / "audit.db"))
     try:
-        log.record(
-            AuditEvent(
-                tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"
-            )
-        )
+        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"))
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            log._get_conn().execute(
-                "UPDATE audit_events SET event_type = 'tampered' WHERE tenant_id = 't1'"
-            )
+            log._get_conn().execute("UPDATE audit_events SET event_type = 'tampered' WHERE tenant_id = 't1'")
     finally:
         log.close()
 
@@ -436,15 +392,9 @@ def test_audit_log_append_only_blocks_update(tmp_path: Any) -> None:
 def test_audit_log_append_only_blocks_delete(tmp_path: Any) -> None:
     log = AuditLog(str(tmp_path / "audit.db"))
     try:
-        log.record(
-            AuditEvent(
-                tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"
-            )
-        )
+        log.record(AuditEvent(tenant_id="t1", user_id="u1", event_type="x", resource_id="r1"))
         with pytest.raises(sqlite3.IntegrityError, match="append-only"):
-            log._get_conn().execute(
-                "DELETE FROM audit_events WHERE tenant_id = 't1'"
-            )
+            log._get_conn().execute("DELETE FROM audit_events WHERE tenant_id = 't1'")
     finally:
         log.close()
 
@@ -473,9 +423,7 @@ def test_audit_log_thread_safe_writes(tmp_path: Any) -> None:
                     )
                 )
 
-        threads = [
-            threading.Thread(target=worker, args=(idx,)) for idx in range(n_threads)
-        ]
+        threads = [threading.Thread(target=worker, args=(idx,)) for idx in range(n_threads)]
         for t in threads:
             t.start()
         for t in threads:

@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from .config import DB_PATH
 from .connection_pool import get_pool
 
 logger = logging.getLogger("foresight_ghost_cleanup")
@@ -225,8 +226,21 @@ class GhostMemoryCleanup:
 
 
 # Global cleanup instance
-_cleanup: GhostMemoryCleanup | None = None
-_cleanup_lock = __import__("threading").Lock()
+class _GhostCleanupSingleton:
+    """Module-level singleton for GhostMemoryCleanup."""
+
+    _instance: GhostMemoryCleanup | None = None
+    _lock = __import__("threading").Lock()
+
+    @classmethod
+    def get_instance(cls, db_path: str | None = None, ghost_ttl_days: int | None = None) -> GhostMemoryCleanup:
+        """Get or create global ghost cleanup instance."""
+        with cls._lock:
+            if cls._instance is None:
+                if db_path is None:
+                    db_path = DB_PATH
+                cls._instance = GhostMemoryCleanup(db_path, ghost_ttl_days)
+            return cls._instance
 
 
 def get_ghost_cleanup(
@@ -234,15 +248,7 @@ def get_ghost_cleanup(
     ghost_ttl_days: int | None = None,
 ) -> GhostMemoryCleanup:
     """Get or create global ghost cleanup instance."""
-    global _cleanup
-    with _cleanup_lock:
-        if _cleanup is None:
-            if db_path is None:
-                from .config import DB_PATH
-
-                db_path = DB_PATH
-            _cleanup = GhostMemoryCleanup(db_path, ghost_ttl_days)
-        return _cleanup
+    return _GhostCleanupSingleton.get_instance(db_path, ghost_ttl_days)
 
 
 def run_ghost_cleanup(tenant_id: str = "default") -> CleanupStats:

@@ -17,7 +17,6 @@ that swapping in a real model (e.g. all-MiniLM-L6-v2) is a drop-in change.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import math
 import re
@@ -28,11 +27,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from .config import DB_PATH as DB_PATH
+from .config import DB_PATH
 from .connection_pool import get_pool
 from .embedding_validation import (
-    DEFAULT_EMBEDDING_DIMENSION,
-    EmbeddingConfig,
     EmbeddingDimensionError,
     validate_embedding_dimension,
 )
@@ -62,8 +59,7 @@ class Embedder(Protocol):
     provider_name: str
     dimension: int
 
-    def embed(self, text: str) -> list[float]:
-        ...
+    def embed(self, text: str) -> list[float]: ...
 
 
 class LocalHashEmbedder:
@@ -88,9 +84,7 @@ class LocalHashEmbedder:
         if not isinstance(text, str):
             raise SemanticSearchError("text must be a string")
         if len(text) > MAX_TEXT_LENGTH:
-            raise SemanticSearchError(
-                f"text exceeds {MAX_TEXT_LENGTH} chars"
-            )
+            raise SemanticSearchError(f"text exceeds {MAX_TEXT_LENGTH} chars")
 
         vec = [0.0] * self.dimension
         for token, count in self._token_counts(text).items():
@@ -126,23 +120,18 @@ class LocalHashEmbedder:
 def get_embedder(provider: str = DEFAULT_PROVIDER) -> Embedder:
     """Return an embedder instance for the given provider name."""
     if provider != DEFAULT_PROVIDER:
-        raise SemanticSearchError(
-            f"unknown embedder provider {provider!r}; "
-            f"valid: {sorted(VALID_PROVIDERS)}"
-        )
+        raise SemanticSearchError(f"unknown embedder provider {provider!r}; valid: {sorted(VALID_PROVIDERS)}")
     return LocalHashEmbedder()
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity for two equal-length vectors."""
     if len(a) != len(b):
-        raise SemanticSearchError(
-            f"vector length mismatch: {len(a)} vs {len(b)}"
-        )
+        raise SemanticSearchError(f"vector length mismatch: {len(a)} vs {len(b)}")
     dot = 0.0
     norm_a = 0.0
     norm_b = 0.0
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=False):
         dot += x * y
         norm_a += x * x
         norm_b += y * y
@@ -161,9 +150,7 @@ def serialize_vector(vec: list[float]) -> bytes:
 def deserialize_vector(blob: bytes, expected_dim: int) -> list[float]:
     """Unpack a float32 blob into a list, validating dimension."""
     if len(blob) != expected_dim * 4:
-        raise SemanticSearchError(
-            f"vector blob size {len(blob)} != expected {expected_dim * 4}"
-        )
+        raise SemanticSearchError(f"vector blob size {len(blob)} != expected {expected_dim * 4}")
     return list(struct.unpack(f"<{expected_dim}f", blob))
 
 
@@ -212,9 +199,7 @@ def _validate_user_tenant(user_id: str, tenant_id: str) -> None:
 
 def _validate_memory_id(memory_id: str) -> None:
     if not memory_id or len(memory_id) > MAX_MEMORY_ID_LENGTH:
-        raise SemanticSearchError(
-            f"memory_id must be 1-{MAX_MEMORY_ID_LENGTH} chars"
-        )
+        raise SemanticSearchError(f"memory_id must be 1-{MAX_MEMORY_ID_LENGTH} chars")
 
 
 class SemanticSearch:
@@ -231,8 +216,7 @@ class SemanticSearch:
         self.embedder: Embedder = embedder or get_embedder(provider)
         if self.embedder.provider_name != provider:
             raise SemanticSearchError(
-                f"embedder.provider_name {self.embedder.provider_name!r} "
-                f"does not match requested provider {provider!r}"
+                f"embedder.provider_name {self.embedder.provider_name!r} does not match requested provider {provider!r}"
             )
         self.dimension = self.embedder.dimension
         self._lock = threading.Lock()
@@ -293,9 +277,7 @@ class SemanticSearch:
         embedder = self.embedder if prov == self.provider else get_embedder(prov)
         vec = embedder.embed(text)
         try:
-            validate_embedding_dimension(
-                vec, expected_dimension=embedder.dimension
-            )
+            validate_embedding_dimension(vec, expected_dimension=embedder.dimension)
         except EmbeddingDimensionError as exc:
             raise SemanticSearchError(str(exc)) from exc
 
@@ -370,7 +352,7 @@ class SemanticSearch:
             else:
                 conn.close()
 
-    def search(
+    def search(  # noqa: PLR0913
         self,
         query: str,
         user_id: str,
@@ -393,9 +375,7 @@ class SemanticSearch:
 
         query_vec = embedder.embed(query)
         try:
-            validate_embedding_dimension(
-                query_vec, expected_dimension=embedder.dimension
-            )
+            validate_embedding_dimension(query_vec, expected_dimension=embedder.dimension)
         except EmbeddingDimensionError as exc:
             raise SemanticSearchError(str(exc)) from exc
 
@@ -448,21 +428,32 @@ class SemanticSearch:
         )
 
 
-_store: SemanticSearch | None = None
-_store_lock = threading.Lock()
+class _SemanticSearchSingleton:
+    """Module-level singleton for SemanticSearch."""
+
+    _instance: SemanticSearch | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, provider: str = DEFAULT_PROVIDER) -> SemanticSearch:
+        """Return the process-singleton SemanticSearch, initializing lazily."""
+        with cls._lock:
+            if cls._instance is None or cls._instance.provider != provider:
+                cls._instance = SemanticSearch(DB_PATH, provider=provider)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton (test-only helper)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_semantic_search(provider: str = DEFAULT_PROVIDER) -> SemanticSearch:
     """Return the process-singleton SemanticSearch, initializing lazily."""
-    global _store
-    with _store_lock:
-        if _store is None or _store.provider != provider:
-            _store = SemanticSearch(DB_PATH, provider=provider)
-        return _store
+    return _SemanticSearchSingleton.get_instance(provider)
 
 
 def reset_semantic_search() -> None:
     """Reset the singleton (test-only helper)."""
-    global _store
-    with _store_lock:
-        _store = None
+    _SemanticSearchSingleton.reset()

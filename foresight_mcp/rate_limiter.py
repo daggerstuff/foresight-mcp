@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 
 
-class RateLimitExceeded(Exception):
+class RateLimitExceededError(Exception):
     """Raised when rate limit is exceeded."""
 
     def __init__(self, remaining: int, reset_time: float):
@@ -101,21 +101,32 @@ class RateLimiter:
 
 
 # Global rate limiter instance (thread-safe)
-_rate_limiter: RateLimiter | None = None
-_rate_limiter_lock = threading.Lock()
+class _RateLimiterSingleton:
+    """Module-level singleton for RateLimiter."""
+
+    _instance: RateLimiter | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls) -> RateLimiter:
+        """Get the global rate limiter instance (thread-safe)."""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = RateLimiter()
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the global rate limiter (for testing)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_rate_limiter() -> RateLimiter:
     """Get the global rate limiter instance (thread-safe)."""
-    global _rate_limiter
-    with _rate_limiter_lock:
-        if _rate_limiter is None:
-            _rate_limiter = RateLimiter()
-        return _rate_limiter
+    return _RateLimiterSingleton.get_instance()
 
 
 def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
-    global _rate_limiter
-    with _rate_limiter_lock:
-        _rate_limiter = None
+    _RateLimiterSingleton.reset()

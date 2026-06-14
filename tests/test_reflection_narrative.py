@@ -36,12 +36,9 @@ from foresight_mcp.reflection_narrative import (
     generate_insight_narrative,
 )
 
-
 # Sensitive string used to test that raw memory `content` is excluded
 # from the prompt payload. This MUST NOT appear in any generated prompt.
-RAW_MEMORY_CONTENT_SENTINEL = (
-    "Patient disclosed childhood trauma — must never appear in prompt."
-)
+RAW_MEMORY_CONTENT_SENTINEL = "Patient disclosed childhood trauma — must never appear in prompt."
 
 
 # ============================================================

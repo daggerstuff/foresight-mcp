@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,6 +22,16 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Optional kafka dependency
+try:
+    from kafka import KafkaConsumer, TopicPartition
+
+    HAS_KAFKA = True
+except Exception:
+    KafkaConsumer = None
+    TopicPartition = None
+    HAS_KAFKA = False
 
 
 @dataclass
@@ -125,7 +136,7 @@ class KafkaConsumerGroup:
     Consumes events from Kafka topics and processes them.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         bootstrap_servers: str = "localhost:9092",
         group_id: str = "foresight-consumer",
@@ -167,24 +178,22 @@ class KafkaConsumerGroup:
     def _get_consumer(self):
         """Lazy-load Kafka consumer."""
         if self._consumer is None:
-            try:
-                from kafka import KafkaConsumer
+            if not HAS_KAFKA or KafkaConsumer is None:
+                raise RuntimeError("kafka-python is not installed. Install it with 'pip install kafka-python'")
 
-                self._consumer = KafkaConsumer(
-                    *self.topics,
-                    bootstrap_servers=self.bootstrap_servers.split(","),
-                    group_id=self.group_id,
-                    auto_offset_reset="earliest",
-                    enable_auto_commit=self.auto_commit,
-                    auto_commit_interval_ms=self.auto_commit_interval,
-                    max_poll_records=self.max_poll_records,
-                    session_timeout_ms=self.session_timeout,
-                    heartbeat_interval_ms=self.heartbeat_interval,
-                    value_deserializer=lambda v: json.loads(v.decode("utf-8")) if v else None,
-                    key_deserializer=lambda k: k.decode("utf-8") if k else None,
-                )
-            except ImportError:
-                raise ImportError("kafka-python not installed. Install with: pip install kafka-python")
+            self._consumer = KafkaConsumer(
+                *self.topics,
+                bootstrap_servers=self.bootstrap_servers.split(","),
+                group_id=self.group_id,
+                auto_offset_reset="earliest",
+                enable_auto_commit=self.auto_commit,
+                auto_commit_interval_ms=self.auto_commit_interval,
+                max_poll_records=self.max_poll_records,
+                session_timeout_ms=self.session_timeout,
+                heartbeat_interval_ms=self.heartbeat_interval,
+                value_deserializer=lambda v: json.loads(v.decode("utf-8")) if v else None,
+            )
+
         return self._consumer
 
     def add_handler(self, handler: Callable[[ConsumerRecord], None]) -> None:
@@ -212,7 +221,7 @@ class KafkaConsumerGroup:
         while self._running:
             try:
                 records = consumer.poll(timeout_ms=1000)
-                for topic_partition, messages in records.items():
+                for _topic_partition, messages in records.items():
                     for message in messages:
                         record = ConsumerRecord(
                             topic=message.topic,
@@ -220,7 +229,7 @@ class KafkaConsumerGroup:
                             offset=message.offset,
                             key=message.key,
                             value=message.value,
-                            timestamp=datetime.fromtimestamp(message.timestamp / 1000),
+                            timestamp=datetime.fromtimestamp(message.timestamp / 1000, tz=timezone.utc),
                             headers={k: v.decode() for k, v in message.headers} if message.headers else {},
                         )
                         self._process_record(record)
@@ -234,7 +243,6 @@ class KafkaConsumerGroup:
                 if not self._running:
                     break
                 logger.error(f"Consumer poll failed, retrying in {backoff_seconds}s: {e}")
-                import time
 
                 time.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 60)  # Exponential backoff, max 60s
@@ -266,7 +274,8 @@ class KafkaConsumerGroup:
     def seek_to_beginning(self, topic: str, partition: int = 0) -> None:
         """Seek to beginning of topic/partition."""
         consumer = self._get_consumer()
-        from kafka import TopicPartition
+        if not HAS_KAFKA or TopicPartition is None:
+            raise RuntimeError("kafka-python is not installed")
 
         tp = TopicPartition(topic, partition)
         consumer.assign([tp])
@@ -275,7 +284,8 @@ class KafkaConsumerGroup:
     def seek_to_end(self, topic: str, partition: int = 0) -> None:
         """Seek to end of topic/partition."""
         consumer = self._get_consumer()
-        from kafka import TopicPartition
+        if not HAS_KAFKA or TopicPartition is None:
+            raise RuntimeError("kafka-python is not installed")
 
         tp = TopicPartition(topic, partition)
         consumer.assign([tp])
@@ -284,7 +294,8 @@ class KafkaConsumerGroup:
     def seek_to_offset(self, topic: str, partition: int, offset: int) -> None:
         """Seek to specific offset."""
         consumer = self._get_consumer()
-        from kafka import TopicPartition
+        if not HAS_KAFKA or TopicPartition is None:
+            raise RuntimeError("kafka-python is not installed")
 
         tp = TopicPartition(topic, partition)
         consumer.assign([tp])

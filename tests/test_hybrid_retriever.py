@@ -238,7 +238,7 @@ class TestSemanticSearch:
         # Anxiety-related memories should rank
         assert len(ranking) > 0
         # Ranks should be 1-based positive integers
-        for mid, rank in ranking.items():
+        for _mid, rank in ranking.items():
             assert rank >= 1
 
     def test_finds_topically_similar_documents(self, test_db):
@@ -490,7 +490,7 @@ class TestRRF:
         result = retriever._reciprocal_rank_fusion(keyword, semantic, graph, temporal)
 
         # A should score higher (found by 2 signals)
-        scores = {mid: score for mid, score in result}
+        scores = dict(result)
         assert scores["A"] > scores["B"]
 
     def test_rrf_empty_inputs(self):
@@ -507,7 +507,7 @@ class TestRRF:
         temporal = {}
 
         result = retriever._reciprocal_rank_fusion(keyword, semantic, graph, temporal)
-        scores = {mid: score for mid, score in result}
+        scores = dict(result)
 
         # A is found by keyword + semantic, B only by semantic
         assert scores["A"] > scores["B"]

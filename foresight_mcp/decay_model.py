@@ -198,13 +198,9 @@ class MemoryDecayService:
     @staticmethod
     def _validate_ids(user_id: str, tenant_id: str) -> None:
         if not user_id or len(user_id) > MAX_USER_ID_LENGTH:
-            raise DecayModelError(
-                f"user_id must be 1-{MAX_USER_ID_LENGTH} chars"
-            )
+            raise DecayModelError(f"user_id must be 1-{MAX_USER_ID_LENGTH} chars")
         if not tenant_id or len(tenant_id) > MAX_TENANT_ID_LENGTH:
-            raise DecayModelError(
-                f"tenant_id must be 1-{MAX_TENANT_ID_LENGTH} chars"
-            )
+            raise DecayModelError(f"tenant_id must be 1-{MAX_TENANT_ID_LENGTH} chars")
 
     @staticmethod
     def _parse_iso(ts: str) -> datetime:
@@ -221,17 +217,12 @@ class MemoryDecayService:
             return "stale"
         if activation_count >= config.strengthening_threshold:
             return "strengthening"
-        if (
-            activation_count < 2
-            and hours_since_decay > config.half_life_hours
-        ):
+        if activation_count < 2 and hours_since_decay > config.half_life_hours:
             return "weakening"
         return "stable"
 
     @staticmethod
-    def _compute_decay_factor(
-        hours_elapsed: float, half_life_hours: float
-    ) -> float:
+    def _compute_decay_factor(hours_elapsed: float, half_life_hours: float) -> float:
         if half_life_hours <= 0:
             return 0.0
         return pow(0.5, max(0.0, hours_elapsed) / half_life_hours)
@@ -276,7 +267,7 @@ class MemoryDecayService:
             pool = get_pool(self.db_path)
             pool.release(conn)
 
-    def set_decay_config(
+    def set_decay_config(  # noqa: PLR0913
         self,
         user_id: str,
         tenant_id: str | None = None,
@@ -294,31 +285,13 @@ class MemoryDecayService:
             tenant_id=tid,
             user_id=user_id,
             category=category,
-            half_life_hours=(
-                half_life_hours
-                if half_life_hours is not None
-                else DEFAULT_HALF_LIFE_HOURS
-            ),
-            min_importance=(
-                min_importance
-                if min_importance is not None
-                else DEFAULT_MIN_IMPORTANCE
-            ),
-            activation_boost=(
-                activation_boost
-                if activation_boost is not None
-                else DEFAULT_ACTIVATION_BOOST
-            ),
+            half_life_hours=(half_life_hours if half_life_hours is not None else DEFAULT_HALF_LIFE_HOURS),
+            min_importance=(min_importance if min_importance is not None else DEFAULT_MIN_IMPORTANCE),
+            activation_boost=(activation_boost if activation_boost is not None else DEFAULT_ACTIVATION_BOOST),
             strengthening_threshold=(
-                strengthening_threshold
-                if strengthening_threshold is not None
-                else DEFAULT_STRENGTHENING_THRESHOLD
+                strengthening_threshold if strengthening_threshold is not None else DEFAULT_STRENGTHENING_THRESHOLD
             ),
-            stale_threshold=(
-                stale_threshold
-                if stale_threshold is not None
-                else DEFAULT_STALE_THRESHOLD
-            ),
+            stale_threshold=(stale_threshold if stale_threshold is not None else DEFAULT_STALE_THRESHOLD),
         )
         if cfg.half_life_hours <= 0:
             raise DecayModelError("half_life_hours must be > 0")
@@ -429,15 +402,9 @@ class MemoryDecayService:
             if row is None:
                 return None
 
-            config = self.get_decay_config(
-                user_id=user_id, tenant_id=tid, category=row["category"]
-            )
+            config = self.get_decay_config(user_id=user_id, tenant_id=tid, category=row["category"])
             boost = activation_boost or config.activation_boost
-            old_strength = (
-                row["current_strength"]
-                if row["current_strength"] is not None
-                else row["importance"]
-            )
+            old_strength = row["current_strength"] if row["current_strength"] is not None else row["importance"]
             new_strength = min(1.0, old_strength * boost)
             new_strength = max(config.min_importance, new_strength)
             new_activation_count = row["activation_count"] + 1
@@ -536,15 +503,13 @@ class MemoryDecayService:
                 if len(rows) < batch_size:
                     break
             if stats.updated > 0:
-                stats.avg_decay_factor = (
-                    stats.avg_decay_factor / stats.updated
-                )
+                stats.avg_decay_factor = stats.avg_decay_factor / stats.updated
             return stats
         finally:
             pool = get_pool(self.db_path)
             pool.release(conn)
 
-    def _apply_decay_to_row(
+    def _apply_decay_to_row(  # noqa: PLR0913
         self,
         conn: sqlite3.Connection,
         row: sqlite3.Row,
@@ -555,15 +520,11 @@ class MemoryDecayService:
         stats: DecayStats,
     ) -> None:
         stats.processed += 1
-        config = self.get_decay_config(
-            user_id=user_id, tenant_id=tenant_id, category=row["category"]
-        )
+        config = self.get_decay_config(user_id=user_id, tenant_id=tenant_id, category=row["category"])
         last_decay_at = row["last_decay_at"]
         if last_decay_at:
             try:
-                hours_elapsed = (
-                    now - self._parse_iso(last_decay_at)
-                ).total_seconds() / 3600
+                hours_elapsed = (now - self._parse_iso(last_decay_at)).total_seconds() / 3600
             except ValueError:
                 hours_elapsed = 0.0
         else:
@@ -572,17 +533,9 @@ class MemoryDecayService:
             stats.skipped += 1
             return
 
-        decay_factor = self._compute_decay_factor(
-            hours_elapsed, config.half_life_hours
-        )
-        old_strength = (
-            row["current_strength"]
-            if row["current_strength"] is not None
-            else row["importance"]
-        )
-        new_strength = max(
-            config.min_importance, old_strength * decay_factor
-        )
+        decay_factor = self._compute_decay_factor(hours_elapsed, config.half_life_hours)
+        old_strength = row["current_strength"] if row["current_strength"] is not None else row["importance"]
+        new_strength = max(config.min_importance, old_strength * decay_factor)
         trend = self._compute_trend(
             new_strength=new_strength,
             activation_count=row["activation_count"],
@@ -615,17 +568,14 @@ class MemoryDecayService:
             old_strength=old_strength,
             new_strength=new_strength,
             decay_factor=decay_factor,
-            reason=(
-                f"decay (hours={hours_elapsed:.2f}, "
-                f"half_life={config.half_life_hours:.1f})"
-            ),
+            reason=(f"decay (hours={hours_elapsed:.2f}, half_life={config.half_life_hours:.1f})"),
         )
         stats.updated += 1
         stats.avg_decay_factor += decay_factor
         stats.trend_counts[trend] = stats.trend_counts.get(trend, 0) + 1
 
     @staticmethod
-    def _insert_event(
+    def _insert_event(  # noqa: PLR0913
         conn: sqlite3.Connection,
         *,
         tenant_id: str,
@@ -721,8 +671,28 @@ class MemoryDecayService:
 # Singleton
 # ---------------------------------------------------------------------------
 
-_service: MemoryDecayService | None = None
-_service_lock = threading.Lock()
+
+class _DecayModelSingleton:
+    """Module-level singleton for MemoryDecayService."""
+
+    _instance: MemoryDecayService | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, db_path: str | None = None) -> MemoryDecayService:
+        """Return a process-wide MemoryDecayService."""
+        with cls._lock:
+            if cls._instance is None:
+                if db_path is None:
+                    db_path = DB_PATH
+                cls._instance = MemoryDecayService(db_path)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton (for tests)."""
+        with cls._lock:
+            cls._instance = None
 
 
 def get_decay_model(
@@ -734,17 +704,9 @@ def get_decay_model(
     binding, which means tests can use ``patch.object(mod, "DB_PATH", ...)``
     to redirect the singleton to a temp database.
     """
-    global _service
-    with _service_lock:
-        if _service is None:
-            if db_path is None:
-                db_path = DB_PATH
-            _service = MemoryDecayService(db_path)
-    return _service
+    return _DecayModelSingleton.get_instance(db_path)
 
 
 def reset_decay_model() -> None:
     """Reset the singleton (for tests)."""
-    global _service
-    with _service_lock:
-        _service = None
+    _DecayModelSingleton.reset()

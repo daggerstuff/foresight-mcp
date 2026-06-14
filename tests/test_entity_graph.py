@@ -79,7 +79,7 @@ class TestEntityExtractor:
 
         assert len(result.relationships) > 0
         # Should have a concept-emotion relationship
-        rel_types = set(r.relationship_type for r in result.relationships)
+        rel_types = {r.relationship_type for r in result.relationships}
         assert "relates_to" in rel_types
 
     def test_extract_empty_content(self):

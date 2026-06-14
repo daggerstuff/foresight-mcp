@@ -66,7 +66,7 @@ class ClusterResult:
     memory_links: list[dict[str, Any]]
 
 
-def cluster_memories(
+def cluster_memories(  # noqa: PLR0912,PLR0915
     memories: list[dict[str, Any]],
     *,
     min_similarity: float = 0.25,

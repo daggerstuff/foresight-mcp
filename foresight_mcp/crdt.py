@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 
 T = TypeVar("T")
 
@@ -96,7 +96,7 @@ class VectorClock:
 
 
 @dataclass
-class LWWRegister(Generic[T]):
+class LWWRegister[T]:
     """
     Last-Writer-Wins Register CRDT.
 
@@ -179,7 +179,7 @@ class LWWRegister(Generic[T]):
 
 
 @dataclass
-class ORSet(Generic[T]):
+class ORSet[T]:
     """
     Observed-Remove Set CRDT.
 
@@ -318,7 +318,7 @@ class ORSet(Generic[T]):
 
 
 @dataclass
-class LWWMap(Generic[T]):
+class LWWMap[T]:
     """
     Last-Writer-Wins Map CRDT.
 

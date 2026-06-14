@@ -5,13 +5,15 @@ Event sourcing with full audit trail for all memory operations.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import datetime, timedelta, timezone
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -25,7 +27,7 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """Types of events in the system."""
 
     # Memory lifecycle
@@ -291,7 +293,6 @@ class EventStore:
         Returns:
             Number of rows deleted.
         """
-        from datetime import timedelta
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
         conn = self._connect()
@@ -318,10 +319,7 @@ class EventStore:
         try:
             # row[1] is tenant_id (not stored in Event dataclass)
             # Handle both old (7 cols) and new (8 cols) schema
-            if len(row) >= 8:
-                offset = 1  # tenant_id at row[1]
-            else:
-                offset = 0
+            offset = 1 if len(row) >= 8 else 0  # tenant_id at row[1]
             return Event(
                 id=row[0],
                 event_type=EventType(row[1 + offset]),
@@ -413,10 +411,8 @@ class EventBus:
     def unsubscribe(self, event_type: EventType, handler: EventHandler) -> None:
         """Unsubscribe from an event type."""
         if event_type in self._handlers:
-            try:
+            with contextlib.suppress(ValueError):
                 self._handlers[event_type].remove(handler)
-            except ValueError:
-                pass  # Handler not found
 
     def replay(self, entity_id: str, handler: EventHandler) -> None:
         """Replay events for an entity."""
@@ -431,11 +427,35 @@ class EventBus:
 # Global Event Bus
 # =============================================================================
 
-_event_bus: EventBus | None = None
-_event_store: EventStore | None = None
 
+class _EventBusSingleton:
+    """Module-level singleton for EventBus."""
 
-_event_bus_lock = threading.Lock()
+    _instance: EventBus | None = None
+    _store: EventStore | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls, stream_publisher: Any | None = None) -> EventBus:
+        """Get the global event bus instance.
+
+        Args:
+            stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
+        """
+        with cls._lock:
+            if cls._instance is None:
+                cls._store = EventStore()
+                cls._instance = EventBus(cls._store, stream_publisher)
+            elif stream_publisher is not None:
+                cls._instance.set_stream_publisher(stream_publisher)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the global event bus (for testing)."""
+        with cls._lock:
+            cls._instance = None
+            cls._store = None
 
 
 def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
@@ -444,21 +464,12 @@ def get_event_bus(stream_publisher: Any | None = None) -> EventBus:
     Args:
         stream_publisher: Optional StreamPublisher for publishing to Kafka/Kinesis
     """
-    global _event_bus, _event_store
-    with _event_bus_lock:
-        if _event_bus is None:
-            _event_store = EventStore()
-            _event_bus = EventBus(_event_store, stream_publisher)
-        elif stream_publisher is not None:
-            _event_bus.set_stream_publisher(stream_publisher)
-    return _event_bus
+    return _EventBusSingleton.get_instance(stream_publisher)
 
 
 def reset_event_bus() -> None:
     """Reset the global event bus (for testing)."""
-    global _event_bus, _event_store
-    _event_bus = None
-    _event_store = None
+    _EventBusSingleton.reset()
 
 
 # =============================================================================
@@ -470,7 +481,6 @@ def _make_event(
     event_type: EventType, actor: str, entity_id: str, payload: dict[str, Any], metadata: dict[str, Any] | None = None
 ) -> Event:
     """Create a new event with standard metadata."""
-    import uuid
 
     return Event(
         id=str(uuid.uuid4()),

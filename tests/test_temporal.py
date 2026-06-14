@@ -98,7 +98,7 @@ class TestDecayCalculations:
     def test_exponential_decay_after_one_half_life(self, temporal_service):
         """After one half-life (168 hours), importance should be ~50%."""
         one_week_ago = (datetime.now(timezone.utc) - timedelta(hours=168)).isoformat()
-        importance, trend = temporal_service.calculate_decay(
+        importance, _trend = temporal_service.calculate_decay(
             importance=1.0, created_at=one_week_ago, activation_count=0, category="general", user_id="test"
         )
         assert 0.45 <= importance <= 0.55  # ~50% with variance
@@ -136,7 +136,7 @@ class TestFreshnessTrends:
     def test_strengthening_with_activations(self, temporal_service):
         """Frequent activations should result in strengthening trend."""
         now = datetime.now(timezone.utc).isoformat()
-        importance, trend = temporal_service.calculate_decay(
+        _importance, trend = temporal_service.calculate_decay(
             importance=0.8,
             created_at=now,
             activation_count=10,  # Above threshold of 5
@@ -148,7 +148,7 @@ class TestFreshnessTrends:
     def test_stable_for_normal_decay(self, temporal_service):
         """Recent memories with some activations should be stable."""
         one_day_ago = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        importance, trend = temporal_service.calculate_decay(
+        _importance, trend = temporal_service.calculate_decay(
             importance=0.9, created_at=one_day_ago, activation_count=2, category="general", user_id="test"
         )
         assert trend == "stable"

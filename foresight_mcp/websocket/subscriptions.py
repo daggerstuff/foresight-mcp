@@ -10,15 +10,15 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
-from ..event_bus import EventType
+from foresight_mcp.event_bus import EventType
 
 logger = logging.getLogger("foresight_websocket")
 
 
-class SubscriptionStatus(str, Enum):
+class SubscriptionStatus(StrEnum):
     ACTIVE = "active"
     INACTIVE = "inactive"
     ERROR = "error"
@@ -53,10 +53,7 @@ class Subscription:
         if event_type not in self.event_types:
             return False
 
-        if self.entity_filter and entity_id and not self._entity_matches(entity_id):
-            return False
-
-        return True
+        return not (self.entity_filter and entity_id and not self._entity_matches(entity_id))
 
     def _entity_matches(self, entity_id: str) -> bool:
         """Check if entity matches filter (supports wildcards)."""
@@ -218,18 +215,30 @@ class SubscriptionManager:
 # Global Subscription Manager
 # =============================================================================
 
-_subscription_manager: SubscriptionManager | None = None
+
+class _SubscriptionManagerSingleton:
+    """Module-level singleton for SubscriptionManager."""
+
+    _instance: SubscriptionManager | None = None
+
+    @classmethod
+    def get_instance(cls) -> SubscriptionManager:
+        """Get the global subscription manager instance."""
+        if cls._instance is None:
+            cls._instance = SubscriptionManager()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the global subscription manager (for testing)."""
+        cls._instance = None
 
 
 def get_subscription_manager() -> SubscriptionManager:
     """Get the global subscription manager instance."""
-    global _subscription_manager
-    if _subscription_manager is None:
-        _subscription_manager = SubscriptionManager()
-    return _subscription_manager
+    return _SubscriptionManagerSingleton.get_instance()
 
 
 def reset_subscription_manager() -> None:
     """Reset the global subscription manager (for testing)."""
-    global _subscription_manager
-    _subscription_manager = None
+    _SubscriptionManagerSingleton.reset()

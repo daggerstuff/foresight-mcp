@@ -5,12 +5,11 @@ import sqlite3
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from foresight_mcp import profile_synthesizer as ps_mod
-from foresight_mcp import subconscious as sub_mod
+from foresight_mcp import profile_synthesizer as ps_mod, subconscious as sub_mod
 from foresight_mcp.context_blocks import update_context_block
 from foresight_mcp.profile_synthesizer import (
     _deduplicate_lines,
@@ -122,7 +121,6 @@ def _seed_context_block(
 @contextmanager
 def _patched_profile_env(db_path: str) -> Iterator[None]:
     """Point profile_synthesizer and context blocks at a test database."""
-    from foresight_mcp import profile_synthesizer as ps_mod, subconscious as sub_mod
 
     with (
         patch.object(ps_mod, "DB_PATH", db_path),

@@ -4,6 +4,7 @@ Provides API key-based authentication with secure password hashing.
 """
 
 import hashlib
+import json
 import logging
 import os
 import re
@@ -12,11 +13,32 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+from fastmcp.server.middleware import Middleware as _Middleware
+from fastmcp.tools.base import ToolResult
+from mcp.types import TextContent
 
 from .config import DB_PATH
 from .connection_pool import get_pool
 from .tenant_middleware import resolve_tenant_id_from_message
+
+logger = logging.getLogger(__name__)
+
+# Optional dependencies for password hashing
+try:
+    from argon2 import PasswordHasher
+
+    HAS_ARGON2 = True
+except Exception:
+    PasswordHasher = None
+    HAS_ARGON2 = False
+
+try:
+    import bcrypt
+
+    HAS_BCRYPT = True
+except Exception:
+    bcrypt = None
+    HAS_BCRYPT = False
 
 
 class Role(Enum):
@@ -143,71 +165,66 @@ class AuthManager:
 
     def _hash_password(self, password: str) -> str:
         """Hash a password using Argon2, bcrypt, or PBKDF2-SHA256."""
-        # Lazy import to avoid hard dependency
-        # Try Argon2 first
-        try:
-            from argon2 import PasswordHasher
-
+        # Use optional dependencies if available
+        if HAS_ARGON2 and PasswordHasher:
             ph = PasswordHasher()
             return ph.hash(password)
-        except Exception:
-            # Fallback to bcrypt
-            try:
-                import bcrypt
+        # Fallback to bcrypt
+        if HAS_BCRYPT and bcrypt:
+            hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
+            return hashed.decode("utf-8")
+        # Final fallback: PBKDF2-SHA256 from the Python standard library
+        iterations = 600_000
+        salt = secrets.token_hex(16)
+        hash_bytes = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt.encode("utf-8"),
+            iterations,
+        ).hex()
+        return f"pbkdf2_sha256${iterations}${salt}${hash_bytes}"
 
-                hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-                return hashed.decode("utf-8")
+    def _verify_password(self, password: str, password_hash: str) -> bool:  # noqa: PLR0911
+        """Verify a password against its stored Argon2, bcrypt, PBKDF2, or legacy hash."""
+        # Use optional dependencies if available
+        if HAS_ARGON2 and PasswordHasher:
+            try:
+                ph = PasswordHasher()
+                return ph.verify(password_hash, password)
             except Exception:
-                # Final fallback: PBKDF2-SHA256 from the Python standard library
-                iterations = 600_000
-                salt = secrets.token_hex(16)
-                hash_bytes = hashlib.pbkdf2_hmac(
+                # Continue to next fallback
+                pass
+
+        if HAS_BCRYPT and bcrypt:
+            try:
+                return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+            except Exception:
+                # Continue to next fallback
+                pass
+
+        # Fallback to PBKDF2 verification
+        if password_hash.startswith("pbkdf2_sha256$"):
+            try:
+                _, iteration_str, salt, stored_hash = password_hash.split("$", 3)
+                calc_hash = hashlib.pbkdf2_hmac(
                     "sha256",
                     password.encode("utf-8"),
                     salt.encode("utf-8"),
-                    iterations,
+                    int(iteration_str),
                 ).hex()
-                return f"pbkdf2_sha256${iterations}${salt}${hash_bytes}"
-
-    def _verify_password(self, password: str, password_hash: str) -> bool:
-        """Verify a password against its stored Argon2, bcrypt, PBKDF2, or legacy hash."""
-        # Attempt Argon2 verification first
-        # Attempt Argon2 verification
-        try:
-            from argon2 import PasswordHasher
-
-            ph = PasswordHasher()
-            return ph.verify(password_hash, password)
-        except Exception:
-            # Try bcrypt verification
-            try:
-                import bcrypt
-
-                return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+                return secrets.compare_digest(calc_hash, stored_hash)
             except Exception:
-                # Fallback to PBKDF2 verification
-                if password_hash.startswith("pbkdf2_sha256$"):
-                    try:
-                        _, iteration_str, salt, stored_hash = password_hash.split("$", 3)
-                        calc_hash = hashlib.pbkdf2_hmac(
-                            "sha256",
-                            password.encode("utf-8"),
-                            salt.encode("utf-8"),
-                            int(iteration_str),
-                        ).hex()
-                        return secrets.compare_digest(calc_hash, stored_hash)
-                    except Exception:
-                        return False
-
-                # Legacy fallback for pre-hardening hashes
-                if password_hash.startswith("sha256$"):
-                    try:
-                        _, salt, stored_hash = password_hash.split("$")
-                        calc_hash = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-                        return secrets.compare_digest(calc_hash, stored_hash)
-                    except Exception:
-                        return False
                 return False
+
+        # Legacy fallback for pre-hardening hashes
+        if password_hash.startswith("sha256$"):
+            try:
+                _, salt, stored_hash = password_hash.split("$")
+                calc_hash = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+                return secrets.compare_digest(calc_hash, stored_hash)
+            except Exception:
+                return False
+        return False
 
     def create_user(
         self,
@@ -228,8 +245,6 @@ class AuthManager:
         user_id = secrets.token_urlsafe(32)
         password_hash = self._hash_password(password)
         api_key = secrets.token_urlsafe(32)
-
-        import json
 
         tenant_access_json = json.dumps(tenant_access)
 
@@ -307,8 +322,6 @@ class AuthManager:
             if not self._verify_password(password, password_hash):
                 return None
 
-            import json
-
             # Update last login
             conn.execute(
                 """
@@ -365,8 +378,6 @@ class AuthManager:
                 _,
                 tenant_access_json,
             ) = row
-
-            import json
 
             # Update last login
             conn.execute(
@@ -460,12 +471,10 @@ class AuthManager:
                 password_hash,
                 api_key,
                 tenant_access_json,
-                expires_at_str,
+                _expires_at_str,
             ) = row
 
             # Session hash validation handled elsewhere; no placeholder check needed
-
-            import json
 
             return User(
                 user_id=user_id,
@@ -502,23 +511,35 @@ class AuthManager:
 
 
 # Global auth manager instance
-_auth_manager: AuthManager | None = None
-_auth_lock = __import__("threading").RLock()
+class _AuthManagerSingleton:
+    """Thread-safe singleton holder for AuthManager."""
+
+    def __init__(self):
+        self._instance: AuthManager | None = None
+        self._lock = __import__("threading").RLock()
+
+    def get(self) -> AuthManager:
+        with self._lock:
+            if self._instance is None:
+                self._instance = AuthManager()
+            return self._instance
+
+    def reset(self) -> None:
+        with self._lock:
+            self._instance = None
+
+
+_auth_manager = _AuthManagerSingleton()
 
 
 def get_auth_manager() -> AuthManager:
     """Get the global auth manager instance."""
-    global _auth_manager
-    with _auth_lock:
-        if _auth_manager is None:
-            _auth_manager = AuthManager()
-        return _auth_manager
+    return _auth_manager.get()
 
 
 def initialize_default_users() -> None:
     """Create default users if none exist."""
     auth_manager = get_auth_manager()
-    pool = get_auth_manager().db_path
 
     # Check if any users exist
     pool_conn = get_pool(DB_PATH)
@@ -531,7 +552,7 @@ def initialize_default_users() -> None:
         if count == 0:
             # Create default admin user
             admin_password = secrets.token_urlsafe(32)  # Increase to 32 chars for stronger password
-            admin_user = auth_manager.create_user(
+            auth_manager.create_user(
                 username="admin",
                 email="admin@foresight.local",
                 password=admin_password,
@@ -545,7 +566,7 @@ def initialize_default_users() -> None:
 
             # Create a default readonly user for testing
             readonly_password = secrets.token_urlsafe(32)
-            readonly_user = auth_manager.create_user(
+            auth_manager.create_user(
                 username="readonly",
                 email="readonly@foresight.local",
                 password=readonly_password,
@@ -559,9 +580,6 @@ def initialize_default_users() -> None:
 
 
 # FastMCP authentication middleware
-from fastmcp.server.middleware import Middleware as _Middleware
-from fastmcp.tools.base import ToolResult
-from mcp.types import TextContent
 
 
 class AuthMiddleware(_Middleware):
