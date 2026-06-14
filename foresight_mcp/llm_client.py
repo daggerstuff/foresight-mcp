@@ -315,6 +315,8 @@ class TenantLLMClient:
         throttler = get_request_throttler()
 
         if not rate_limiter.acquire(self._tenant_id):
+            # Sleep to prevent tight agent retry loops
+            time.sleep(5.0)
             raise LLMRateLimitError(
                 f"Rate limited for tenant '{self._tenant_id}': remaining={rate_limiter.get_remaining(self._tenant_id)}"
             )
@@ -346,6 +348,8 @@ class TenantLLMClient:
         except LLMRateLimitError:
             outcome = "rate_limited"
             error_type = "rate_limit"
+            # Sleep to prevent tight agent retry loops
+            time.sleep(5.0)
             raise
 
         except LLMNotConfiguredError:

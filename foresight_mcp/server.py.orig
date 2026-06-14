@@ -869,8 +869,6 @@ class RateLimitMiddleware(_Middleware):
         try:
             _check_rate_limit()
         except RateLimitExceededError as e:
-            # Sleep to prevent tight agent retry loops that burn API tokens
-            await asyncio.sleep(5.0)
             return ToolResult(
                 content=[TextContent(type="text", text=str(e))],
                 meta={"isError": True},
