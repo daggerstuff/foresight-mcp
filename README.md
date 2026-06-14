@@ -1,13 +1,284 @@
-# Foresight MCP Server
+# Foresight 🧠
 
-**Persistent memory for AI agents with safety-aware memory storage,
-Foresight-native context blocks, and reviewable curation runs.**
+**Persistent memory for AI agents** — CLI, TUI, MCP server, and Python SDK.
 
-Foresight provides a local MCP server plus Python and CLI helpers for storing
-memories, maintaining continuity context, and curating long-lived memory banks
-into cleaner reviewable outputs.
+[![PyPI](https://img.shields.io/pypi/v/foresight-mcp?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/foresight-mcp/)
+[![Python](https://img.shields.io/pypi/pyversions/foresight-mcp?logo=python&logoColor=white)](https://python.org)
+[![License](https://img.shields.io/pypi/l/foresight-mcp?color=green)](LICENSE)
+[![CI](https://github.com/daggerstuff/foresight-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/daggerstuff/foresight-mcp/actions)
+[![Downloads](https://img.shields.io/pypi/dm/foresight-mcp?color=purple)](https://pypi.org/project/foresight-mcp/)
 
-Compatible with Claude Code, Goose, Cursor, and other MCP-compatible AI agents.
+---
+
+### One-liner install
+
+```bash
+pip install foresight-mcp[all]
+```
+
+That's it. Now run:
+
+```bash
+foresight init          # First-time setup — creates config + database
+foresight doctor        # Health check — verify everything works
+foresight tui           # Launch the interactive TUI
+```
+
+Three commands. You're live.
+
+---
+
+### What you get
+
+| Surface                 | What                                   | How                                                                     |
+| ----------------------- | -------------------------------------- | ----------------------------------------------------------------------- |
+| **`foresight`**         | Full CLI with 20+ commands             | `foresight store "hello"`, `foresight list`, `foresight query "search"` |
+| **`foresight --agent`** | Machine-parseable output for AI agents | `foresight --agent status → [JSON] {...}`                               |
+| **`foresight tui`**     | Interactive Textual TUI                | Browse, search, edit memories — keyboard-first                          |
+| **`foresight-mcp`**     | MCP server for agent tool integration  | Add to Claude Code, Cursor, Goose, any MCP client                       |
+| **Python SDK**          | Import directly for custom tooling     | `from foresight_mcp import store_memory, query_memories`                |
+
+---
+
+### Install walkthrough
+
+#### Step 1 — Install
+
+```bash
+pip install foresight-mcp[all]
+```
+
+> **Extras breakdown** — install only what you need:
+> | Extra | Includes |
+> |---|---|
+> | `(none)` | MCP server only — no CLI, no TUI |
+> | `[cli]` | CLI (`typer` + `rich`) — no TUI |
+> | `[tui]` | CLI + TUI (`textual`) — no MCP |
+> | `[all]` | Everything — CLI + TUI + MCP server |
+
+On macOS/Linux with uv installed, `uv pip install foresight-mcp[all]` is ~3x faster.
+
+---
+
+#### Step 2 — Init
+
+One command. No config file to write. No `.env` to hunt.
+
+```bash
+$ foresight init
+
+╭────────────────────────── Setup Complete ───────────────────────────╮
+│ Foresight is ready. Try:                                            │
+│   foresight status          # Check health                          │
+│   foresight store 'hello'  # Store a memory                        │
+│   foresight list            # List memories                         │
+│   foresight tui             # Launch the TUI                        │
+╰────────────────────────────────────────────────────────────────────╯
+```
+
+The setup wizard creates `~/.foresight/config.json` and initializes your SQLite database.  
+Done in under a second.
+
+---
+
+#### Step 3 — Doctor
+
+Before you trust it, verify it.
+
+```bash
+$ foresight doctor
+
+Foresight Diagnostics
+
+  ✓ Python 3.11+
+  ✓ Config dir exists
+  ✓ Config file exists
+  ✓ Database file exists
+  ✓ User ID configured
+  ✓ Bank ID configured
+  ✓ Database responsive
+
+All 7 checks passed (3 env overrides)
+Active env overrides:
+  FORESIGHT_DB_PATH=/home/vivi/.foresight/memory.db
+  FORESIGHT_USER_ID=vivi
+  FORESIGHT_BANK_ID=pixelated
+```
+
+7 green checks. Your memory system is healthy and ready.
+
+---
+
+#### Step 4 — Store, list, retrieve
+
+```bash
+$ foresight store "First real memory from the CLI walkthrough"
+
+Memory stored: Stored memory 4d9440b9fb5c6961. Gate: auto. Reason: Normal
+information flow.
+```
+
+Memory saved. Now list them all:
+
+```bash
+$ foresight list
+
+Memories (4 found):
+- [4d9440b9fb5c6961] (session/short_term) This is a test memory from the real
+  CLI walkthrough
+- [ee8983a30fa0305f] (session/short_term) verification test memory from
+  end-to-end check
+- [fa11bc68adc42b64] (session/short_term) Test memory from CLI build
+- [1bed10c017d0b083] (trait/long_term) Purged 100K test artifacts from the
+  default tenant's Foresight memory store.
+```
+
+Retrieve a specific one by ID:
+
+```bash
+$ foresight get 4d9440b9fb5c6961
+
+╭───────────────────────── Memory 4d9440b9fb5c6961 ──────────────────────────╮
+│ [4d9440b9fb5c6961] (session/short_term)                                    │
+│ Content: This is a test memory from the real CLI walkthrough               │
+│ Tags: RISK_NONE, fact                                                       │
+╰─────────────────────────────────────────────────────────────────────────────╯
+```
+
+Search by keyword:
+
+```bash
+$ foresight query "test"
+
+Found 4 memories (hybrid search):
+- [fa11bc68adc42b64] Test memory from CLI build... (score=0.026, signals=keyword, temporal)
+- [1bed10c017d0b083] Purged 100K test artifacts... (score=0.026, signals=keyword, temporal)
+- [ee8983a30fa0305f] verification test memory from end-to-end check... (score=0.026, ...)
+- [4d9440b9fb5c6961] This is a test memory from the real CLI walkthrough... (score=0.025, ...)
+```
+
+---
+
+#### Step 5 — TUI
+
+```bash
+$ foresight tui
+```
+
+Full-screen Textual terminal UI. Three tabs:
+
+| Tab           | What it does                                   |
+| ------------- | ---------------------------------------------- |
+| **Dashboard** | Live stat cards, recent activity, memory chart |
+| **Memories**  | Browse every memory, search, store inline      |
+| **Blocks**    | View and edit context blocks live              |
+
+Keyboard navigation: `Tab` between tabs, `/` to search, `q` to quit.  
+It feels like a mission control dashboard for your brain. Everything refreshes live.
+
+---
+
+#### Step 6 — Agent mode (machine output)
+
+When Foresight calls your agent, it uses `--agent` for pipe-safe, parseable output:
+
+```bash
+$ foresight --agent status
+
+[JSON] {"status": "healthy", "memory_count": 4, "by_scope": {"session": 3, "trait": 1}, "tenant_id": "default"}
+```
+
+Or pure JSON with `--json`:
+
+```bash
+$ foresight --json status
+
+{
+  "status": "healthy",
+  "memory_count": 4,
+  "by_scope": {
+    "session": 3,
+    "trait": 1
+  },
+  "tenant_id": "default"
+}
+```
+
+---
+
+#### Step 7 — Wire it to your AI agent
+
+Add to any MCP-compatible agent. Here's the Claude Code config:
+
+```json
+// ~/.claude.json or claude_desktop_config.json
+{
+  "mcpServers": {
+    "foresight": {
+      "command": "uvx",
+      "args": ["foresight-mcp"]
+    }
+  }
+}
+```
+
+**Cursor** → Settings → MCP Servers → Add new:
+
+```bash
+Command: uvx
+Arguments: foresight-mcp
+```
+
+**Goose** — same pattern, same command. Any stdio MCP client works.
+
+Once connected, your agent gets Foresight as a built-in tool. It can store memories from conversations, search across everything you've told it, and pull context from three sessions ago — automatically, without you asking.
+
+---
+
+### Quick reference
+
+```bash
+# Store & retrieve
+foresight store "text"                    # Store a memory
+foresight get <id>                         # Get memory by ID
+foresight list                             # List all memories (newest first)
+foresight query "search term"              # Keyword + hybrid search
+foresight search "term"                    # Advanced search with signals/scoring
+
+# Analysis
+foresight synthesize                      # Find patterns & contradictions
+foresight reflect --period weekly          # Time-windowed reflection
+foresight profile                          # Build user profile (static + dynamic)
+
+# Data portability
+foresight export memories.json             # Export to JSON file
+foresight import memories.json             # Import from JSON file
+
+# System
+foresight doctor                           # 7-point diagnostics
+foresight stats                            # Memory count, scope breakdown
+foresight config                           # View/set config values
+foresight init --force                     # Reinitialize (wipes data)
+
+# Output modes
+foresight --agent status                  # Machine-parseable: [JSON] {...}
+foresight --json status                   # Pure JSON to stdout
+foresight -o json status                  # Same as --json (short form)
+
+# TUI
+foresight tui                             # Full-screen Textual terminal UI
+```
+
+---
+
+### Extras
+
+- **Shell completion**: `foresight --install-completion`
+- **Database path**: `export FORESIGHT_DB_PATH=/custom/path/memory.db`
+- **Config file**: `~/.foresight/config.json`
+- **Docker databases**: See [Installation Guide](https://foresight.vectorize.io/installation)
+
+---
 
 ## Architecture
 
@@ -79,24 +350,30 @@ uv run foresight --help
    cd foresight-mcp
    ```
 
-3. Run setup:
+3. Install the package:
 
    ```bash
-   ./scripts/setup.sh
+   pip install foresight-mcp[all]
    ```
 
-4. Start the MCP server:
+4. Initialize your memory store:
 
    ```bash
-   uv run foresight-mcp
+   foresight init
    ```
 
-5. Explore the CLI:
+5. Start the MCP server:
 
    ```bash
-   uv run foresight --help
-   uv run foresight blocks --help
-   uv run foresight curate --help
+   uvx foresight-mcp
+   ```
+
+6. Explore the CLI:
+
+   ```bash
+   foresight --help
+   foresight blocks --help
+   foresight curate --help
    ```
 
 ## Add to your MCP client
@@ -140,16 +417,16 @@ Use the same stdio pattern with `uv run -m foresight_mcp`.
 
 ### Memory tools
 
-- `store_memory`
-- `query_memories`
-- `list_memories`
-- `get_memory`
-- `update_memory`
-- `delete_memory`
-- `memory_status`
-- `synthesize_memories`
-- `reflect_on_memories`
-- `process_session_transcript`
+These are the actual MCP tool names exposed by the server:
+
+- `manage_memories` — store, update, delete, or archive a memory
+- `search_memories` — unified search/retrieval (ID lookup, keyword, hybrid)
+- `manage_memory_versions` — diff and rollback memory versions
+- `analyze_memories` — synthesize patterns or reflect over a time period
+- `manage_context_blocks` — list, get, update, reset, or clear context blocks
+- `manage_curation_runs` — create, get, list, cancel, or archive curation runs
+- `inject_context` — surface relevant memories for a conversation
+- `process_session_transcript` — extract memories from a session transcript
 
 ### Context block helpers
 
