@@ -385,7 +385,8 @@ Output (raw JSON only, no markdown):
             raise RuntimeError("httpx is not installed. Install it with 'pip install httpx'")
 
         try:
-            prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:3000])
+            max_context = int(os.environ.get("FORESIGHT_ENTITY_EXTRACTION_MAX_CONTEXT", "1500"))
+            prompt = self.ENTITY_EXTRACTION_PROMPT.format(text=content[:max_context])
 
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(

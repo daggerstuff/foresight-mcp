@@ -5,6 +5,7 @@ Token bucket algorithm for per-tenant rate limiting.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -112,7 +113,9 @@ class _RateLimiterSingleton:
         """Get the global rate limiter instance (thread-safe)."""
         with cls._lock:
             if cls._instance is None:
-                cls._instance = RateLimiter()
+                rate_limit = int(os.environ.get("FORESIGHT_LLM_RATE_LIMIT", "60"))
+                burst_limit = int(os.environ.get("FORESIGHT_LLM_BURST_LIMIT", "10"))
+                cls._instance = RateLimiter(rate_limit=rate_limit, burst_limit=burst_limit)
             return cls._instance
 
     @classmethod
@@ -130,3 +133,45 @@ def get_rate_limiter() -> RateLimiter:
 def reset_rate_limiter() -> None:
     """Reset the global rate limiter (for testing)."""
     _RateLimiterSingleton.reset()
+
+
+class _ThrottlerSingleton:
+    _instance: RequestThrottler | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_instance(cls) -> RequestThrottler:
+        with cls._lock:
+            if cls._instance is None:
+                min_interval = float(os.environ.get("FORESIGHT_LLM_MIN_INTERVAL", "0.5"))
+                cls._instance = RequestThrottler(min_interval=min_interval)
+            return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        with cls._lock:
+            cls._instance = None
+
+
+def get_request_throttler() -> RequestThrottler:
+    return _ThrottlerSingleton.get_instance()
+
+
+def reset_request_throttler() -> None:
+    _ThrottlerSingleton.reset()
+
+
+class RequestThrottler:
+    def __init__(self, min_interval: float = 1.0):
+        self.min_interval = min_interval
+        self._last_request_time: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def throttle(self, key: str = "default") -> None:
+        with self._lock:
+            now = time.monotonic()
+            last = self._last_request_time.get(key, 0)
+            elapsed = now - last
+            if elapsed < self.min_interval:
+                time.sleep(self.min_interval - elapsed)
+            self._last_request_time[key] = time.monotonic()

@@ -60,3 +60,9 @@ BANK_ID = os.environ.get("FORESIGHT_BANK_ID", DEFAULT_BANK_ID)
 # Rate limiting
 DEFAULT_RATE_LIMIT = 100  # requests per minute
 DEFAULT_BURST_LIMIT = 20  # burst requests
+
+# LLM request throttling (environment overrides)
+# FORESIGHT_LLM_RATE_LIMIT       -- requests per minute (default: 60)
+# FORESIGHT_LLM_BURST_LIMIT      -- burst requests (default: 10)
+# FORESIGHT_LLM_MIN_INTERVAL     -- minimum seconds between requests (default: 0.5)
+# FORESIGHT_LLM_MAX_PROMPT_CHARS -- max prompt character length (default: 10000)

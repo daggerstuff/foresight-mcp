@@ -34,6 +34,7 @@ from typing import Protocol
 from .llm_errors import LLMError, LLMNotConfiguredError, LLMProviderError, LLMRateLimitError
 from .llm_providers.anthropic import AnthropicClient
 from .llm_providers.openai import OpenAIClient
+from .rate_limiter import get_rate_limiter, get_request_throttler
 
 __all__ = [
     "LLMClient",
@@ -272,6 +273,17 @@ class TenantLLMClient:
             error_type or "",
         )
 
+    def _truncate_prompt(self, prompt: str) -> str:
+        max_chars = int(os.environ.get("FORESIGHT_LLM_MAX_PROMPT_CHARS", "10000"))
+        if len(prompt) > max_chars:
+            logger.warning(
+                "Prompt truncated from %d to %d chars (set FORESIGHT_LLM_MAX_PROMPT_CHARS to adjust)",
+                len(prompt),
+                max_chars,
+            )
+            return prompt[:max_chars]
+        return prompt
+
     def generate(
         self,
         prompt: str,
@@ -296,6 +308,18 @@ class TenantLLMClient:
         """
         if not prompt or not isinstance(prompt, str):
             raise LLMProviderError("prompt must be a non-empty string")
+
+        prompt = self._truncate_prompt(prompt)
+
+        rate_limiter = get_rate_limiter()
+        throttler = get_request_throttler()
+
+        if not rate_limiter.acquire(self._tenant_id):
+            raise LLMRateLimitError(
+                f"Rate limited for tenant '{self._tenant_id}': remaining={rate_limiter.get_remaining(self._tenant_id)}"
+            )
+
+        throttler.throttle(key=self._tenant_id)
 
         prompt_hash = _hash_payload(prompt)
         start = time.perf_counter()

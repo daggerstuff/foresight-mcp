@@ -921,7 +921,9 @@ def _make_curation_test_db():
     return tmp.name
 
 
-def _seed_memory(db_path: str, *, memory_id: str, content: str, bank_id: str, user_id: str) -> None:
+def _seed_memory(
+    db_path: str, *, memory_id: str, content: str, bank_id: str, user_id: str, tenant_id: str = "_test_"
+) -> None:
     """Insert a memory row for curation tests."""
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -931,8 +933,8 @@ def _seed_memory(db_path: str, *, memory_id: str, content: str, bank_id: str, us
         (id, content, tenant_id, scope, retention, category, user_id, bank_id, created_at,
          updated_at, tags, emotional_context, metrics, is_ghost, synthesized_from, version,
          importance, activation_count, decay_rate, retrieval_count, strength_trend, last_retrieved_at, accessed_at)
-        VALUES (?, ?, 'default', 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, 'stable', NULL, ?)""",
-        (memory_id, content, user_id, bank_id, now, now, now),
+        VALUES (?, ?, ?, 'arc', 'long_term', 'fact', ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', 1, 1.0, 0, 0.01, 0, 'stable', NULL, ?)""",
+        (memory_id, content, tenant_id, user_id, bank_id, now, now, now),
     )
     conn.commit()
     conn.close()
@@ -1427,7 +1429,7 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
         )
         run = created["run"]
         payload = {
-            "tenant_id": "default",
+            "tenant_id": run.get("tenant_id", "_test_"),
             "user_id": user_id,
             "source_bank_id": "source_bank",
             "output_bank_id": run["output_bank_id"],
@@ -1442,6 +1444,11 @@ def test_claim_curation_run_is_atomic_for_duplicate_workers():
 
         server_module._execute_curation_run(run["id"], payload)
         server_module._execute_curation_run(run["id"], payload)
+
+        # Reset tenant context after _execute_curation_run changed it via set_current_tenant_id()
+        from foresight_mcp.tenant_context import set_current_account_id
+
+        set_current_account_id("_test_")
 
         fetched = json.loads(manage_curation_runs(CurationRunAction(action="get", run_id=run["id"]), user_id=user_id))[
             "run"
