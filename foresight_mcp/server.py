@@ -18,7 +18,7 @@ import sqlite3
 import threading
 import time
 import uuid
-import warnings
+import warnings as _warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -50,7 +50,7 @@ from .context_blocks import (
     get_context_block_agent,
 )
 from .crisis_detection import get_crisis_service
-from .decay_model import get_decay_model, DecayConfigOptions
+from .decay_model import DecayConfigOptions, get_decay_model
 from .document_layer import (
     DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
     DocumentCreateOptions,
@@ -96,6 +96,7 @@ from .reflection_narrative import _default_cache as _reflection_narrative_cache
 from .semantic_search import (
     DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
     SemanticSearchError as _SemanticSearchError,
+    SemanticSearchOptions,
     get_semantic_search,
 )
 from .stream_producer import (
@@ -2986,7 +2987,7 @@ def set_tenant_context(tenant_id: str) -> None:
     Deprecated: Use set_current_tenant_id() from tenant_module instead.
     The TenantMiddleware handles per-request tenant isolation automatically.
     """
-    warnings.warn(
+    _warnings.warn(
         "set_tenant_context() is deprecated; use set_current_tenant_id() instead",
         DeprecationWarning,
         stacklevel=2,
@@ -3945,7 +3946,6 @@ def semantic_search_memories(
     prov = provider or _SEMANTIC_DEFAULT_PROVIDER
     try:
         store = get_semantic_search(provider=prov)
-        from .semantic_search import SemanticSearchOptions
 
         result = store.search(
             query=query,

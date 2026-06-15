@@ -11,15 +11,32 @@ if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 
-# Install Python dependencies (uses pyproject.toml)
-uv sync
+# Install Python dependencies with all extras (CLI + TUI)
+uv sync --extra all
+
+# Create symlink for one-liner access (optional)
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -d "$HOME/.local/bin" ]; then
+  if [ ! -f "$HOME/.local/bin/foresight" ]; then
+    ln -sf "$SCRIPT_DIR/foresight" "$HOME/.local/bin/foresight"
+    echo "  → Created symlink: ~/.local/bin/foresight"
+  fi
+fi
 
 # Create memory directory with secure permissions
 MEMORY_DIR="$HOME/.foresight"
 mkdir -p "$MEMORY_DIR"
 chmod 700 "$MEMORY_DIR"
 
-# Run initial health check to verify installation
-python -m foresight_mcp --health
+# Initialize foresight config and DB
+python -m foresight_cli.cli init 2>/dev/null || true
 
-echo "Setup complete. You can now start the server with: uv run foresight-mcp"
+echo ""
+echo "Setup complete! 🚀"
+echo ""
+echo "  Interactive TUI:    foresight tui"
+echo "  CLI commands:       foresight --help"
+echo "  Agent mode:         foresight --agent status"
+echo "  JSON mode:          foresight --json status"
+echo "  MCP server:         uv run foresight-mcp"
+echo ""

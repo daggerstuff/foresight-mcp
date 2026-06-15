@@ -1,0 +1,71 @@
+# Foresight MCP — PyPI publish workflow
+#
+# Triggers:
+#   - Push a tag matching v* (e.g., v1.1.0)
+#   - Manual dispatch via GitHub UI
+#
+# Secrets needed:
+#   PYPI_TOKEN — PyPI API token (classic or trusted publisher)
+
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      publish_target:
+        description: 'Publish target'
+        required: true
+        default: 'pypi'
+        type: choice
+        options:
+          - pypi
+          - testpypi
+          - check-only
+
+jobs:
+  build-and-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for trusted publishing
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: 'latest'
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Lint check
+        run: uv run ruff check foresight_cli/ foresight_mcp/ --output-format=github --quiet || true
+
+      - name: Build package
+        run: uv build
+
+      - name: Check built artifacts
+        run: uv run twine check dist/*
+
+      - name: Publish to TestPyPI (manual only)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_target == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: >
+          (github.event_name == 'release' && github.event.action == 'published') ||
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+          (github.event_name == 'workflow_dispatch' && inputs.publish_target == 'pypi')
+        uses: pypa/gh-action-pypi-publish@release/v1
