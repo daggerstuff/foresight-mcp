@@ -116,7 +116,7 @@ from .stream_producer import (
 from .sync import Operation, OperationQueue, OperationType
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
-from .tenant_context import get_current_tenant_id, set_current_tenant_id
+from .tenant_context import get_current_tenant_id, get_current_user_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 
 # WebSocket imports
@@ -3098,6 +3098,147 @@ def get_relevant_memories(
         max_chars,
     )
     return json.dumps(payload, indent=2)
+
+
+# =============================================================================
+# Recovery Payload for Session Resume / Compaction
+# =============================================================================
+
+
+def _fetch_session_memories_raw(
+    uid: str,
+    tenant_id: str,
+    limit: int = 20,
+) -> list[sqlite3.Row]:
+    """Fetch session-scoped memories for a user, ordered by importance desc."""
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            "SELECT id, content, importance, scope, category, created_at, tags "
+            "FROM memories "
+            "WHERE user_id = ? AND tenant_id = ? AND scope = 'session' AND is_ghost = 0 "
+            "ORDER BY importance DESC, created_at DESC "
+            "LIMIT ?",
+            (uid, tenant_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _fetch_high_confidence_memories(
+    uid: str,
+    tenant_id: str,
+    min_importance: float = 0.5,
+    limit: int = 20,
+) -> list[sqlite3.Row]:
+    """Fetch high-confidence project-level memories (arc/fact/trait) as fallback."""
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            "SELECT id, content, importance, scope, category, created_at, tags "
+            "FROM memories "
+            "WHERE user_id = ? AND tenant_id = ? "
+            "AND scope IN ('arc', 'fact', 'trait') "
+            "AND importance >= ? AND is_ghost = 0 "
+            "ORDER BY importance DESC, created_at DESC "
+            "LIMIT ?",
+            (uid, tenant_id, min_importance, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+@mcp.tool(output_schema=None)
+def generate_recovery_payload(
+    session_id: str,
+    user_id: str | None = None,
+    max_chars: int | None = None,
+    exclude_memory_ids: str | None = None,
+) -> str:
+    """Generate a compact recovery payload for session resume or context compaction.
+
+    Creates a budgeted, deduplicated memory block containing only the most
+    relevant session and project memories. Designed for injection after
+    session compaction or agent resume events where full transcript history
+    is no longer available.
+
+    Uses the same lane-based budget system (PIX-3949) as inject_context.
+
+    Memory sourcing (two-phase):
+      1. Session-scoped memories (scope='session') — most relevant to the
+         session being recovered.
+      2. High-confidence project memories (arc/fact/trait with importance ≥ 0.5)
+         — fallback when few session memories exist.
+
+    Args:
+        session_id: Unique session identifier (used for diagnostics and
+            future session-scoped querying).
+        user_id: Optional user ID override.
+        max_chars: Optional character budget for the formatted payload.
+            When set, output is truncated at sentence boundaries per lane
+            priority (session > project > blocks).
+            Default None = unbounded (legacy behavior).
+        exclude_memory_ids: Optional comma-separated list of memory IDs
+            to exclude (e.g. memories already present in current context).
+            Enables dedup after compaction.
+
+    Returns:
+        Formatted string with recovery payload.
+        Returns minimal message when no relevant memories exist.
+    """
+    uid = user_id or get_current_user_id()
+    tenant_id = get_current_tenant_id()
+
+    excluded: set[str] = set()
+    if exclude_memory_ids:
+        excluded = {mid.strip() for mid in exclude_memory_ids.split(",") if mid.strip()}
+
+    session_rows = _fetch_session_memories_raw(uid, tenant_id, limit=20)
+
+    project_rows: list[sqlite3.Row] = []
+    if len(session_rows) < 10:
+        project_rows = _fetch_high_confidence_memories(uid, tenant_id, min_importance=0.5, limit=20)
+
+    seen_contents: set[str] = set()
+
+    def _dedup_rows(rows: list[sqlite3.Row], session_boost: float) -> list[LaneItem]:
+        items: list[LaneItem] = []
+        for row in rows:
+            row_id = row["id"]
+            row_content = row["content"] or ""
+            if row_id in excluded:
+                continue
+            content_digest = hashlib.sha256(row_content.encode()).hexdigest()[:16]
+            if content_digest in seen_contents:
+                continue
+            seen_contents.add(content_digest)
+            importance = row["importance"] if row["importance"] is not None else 0.5
+            score = min(importance + session_boost, 1.0)
+            items.append(
+                LaneItem(
+                    id=row_id,
+                    content=row_content,
+                    score=score,
+                    lane=Lane.MEMORIES,
+                    metadata={"scope": row["scope"], "importance": importance},
+                )
+            )
+        return items
+
+    session_items = _dedup_rows(session_rows, session_boost=0.2)
+    project_items = _dedup_rows(project_rows, session_boost=0.0)
+
+    budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else InjectionBudget()
+    lane_items: dict[Lane, list[LaneItem]] = {Lane.MEMORIES: session_items + project_items}
+
+    total_items = len(session_items) + len(project_items)
+
+    if total_items == 0:
+        return "[Recovery Context - 0 memories]\nNo session or project memories available for recovery."
+
+    result = format_budgeted_payload(lane_items, budget, header=f"[Recovery Context - session: {session_id}]")
+
+    return result.formatted
 
 
 def _resume_pending_curation_runs() -> None:

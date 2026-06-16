@@ -188,6 +188,7 @@ from .server import (
     create_document as create_document,
     delete_document as delete_document,
     delete_memory as delete_memory,
+    generate_recovery_payload as generate_recovery_payload,
     get_decay_config as get_decay_config,
     get_decay_events as get_decay_events,
     get_document as get_document,
