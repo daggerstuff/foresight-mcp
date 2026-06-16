@@ -1477,8 +1477,6 @@ wheels = [
 ]
 
 [[package]]
-<<<<<<< HEAD
-=======
 name = "textual"
 version = "8.2.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1579,7 +1577,6 @@ wheels = [
 ]
 
 [[package]]
->>>>>>> 732fd8c1f91c988a134ea18dfec63cad11802164
 name = "typer"
 version = "0.25.1"
 source = { registry = "https://pypi.org/simple" }
