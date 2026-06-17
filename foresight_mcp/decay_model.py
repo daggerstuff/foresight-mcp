@@ -749,6 +749,24 @@ def get_decay_model(
     return _DecayModelSingleton.get_instance(db_path)
 
 
+def get_decay_config_for_user(
+    user_id: str,
+    tenant_id: str | None = None,
+    category: str = "general",
+    db_path: str | None = None,
+) -> DecayConfig:
+    """Convenience: get decay config for a (user, category) pair.
+
+    Useful for cross-service consumers (e.g. hybrid retriever) that
+    need to know the decay parameters when scoring memories.
+    """
+    return get_decay_model(db_path).get_decay_config(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        category=category,
+    )
+
+
 def reset_decay_model() -> None:
     """Reset the singleton (for tests)."""
     _DecayModelSingleton.reset()

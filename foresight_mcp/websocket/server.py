@@ -15,7 +15,7 @@ import contextlib
 import json
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -82,6 +82,8 @@ class WebSocketHandler:
         self._auth_callback = auth_callback
         self._heartbeat_interval = heartbeat_interval
         self._heartbeat_timeout = heartbeat_timeout
+        self._event_buffer: list[dict[str, Any]] = []
+        self._max_buffer_size = 1000
 
     async def connect(
         self,
@@ -110,7 +112,30 @@ class WebSocketHandler:
             conn = self._connections[connection_id]
             conn.state = ConnectionState.CONNECTED
             conn.last_heartbeat = datetime.now(timezone.utc)
-            logger.info(f"Reconnected connection: {connection_id}")
+            logger.info("Reconnected connection: %s", connection_id)
+
+            # Replay missed events from buffer
+            missed_events = self.get_buffered_events(since_event_id=conn.last_event_id)
+            if missed_events:
+                logger.info(
+                    "Replaying %d missed events to %s",
+                    len(missed_events),
+                    connection_id,
+                )
+                for ev in missed_events:
+                    try:
+                        conn.send_message(
+                            {
+                                "type": "event_replay",
+                                "event_type": ev.get("event_type"),
+                                "payload": ev,
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                    except Exception as e:
+                        logger.error("Failed to replay event to %s: %s", connection_id, e)
+                        break
+
             return connection_id, {
                 "type": "reconnected",
                 "connection_id": connection_id,
@@ -296,6 +321,25 @@ class WebSocketHandler:
             "by_state": states,
         }
 
+    def push_event(self, payload: dict[str, Any]) -> None:
+        self._event_buffer.append(payload)
+        if len(self._event_buffer) > self._max_buffer_size:
+            self._event_buffer.pop(0)
+
+    def get_buffered_events(self, since_event_id: str | None = None) -> list[dict[str, Any]]:
+        if not since_event_id:
+            return self._event_buffer[-100:]
+
+        found = False
+        result: list[dict[str, Any]] = []
+        for event in self._event_buffer:
+            if event.get("id") == since_event_id:
+                found = True
+            if found:
+                result.append(event)
+
+        return result if found else self._event_buffer
+
 
 class WebSocketServer:
     """
@@ -332,8 +376,7 @@ class WebSocketServer:
         self._heartbeat_timeout = heartbeat_timeout
         self._running = False
         self._task: asyncio.Task | None = None
-        self._event_buffer: list[dict[str, Any]] = []
-        self._max_buffer_size = 1000
+        self._heartbeat_task: asyncio.Task | None = None
 
     async def start(self, host: str = "0.0.0.0", port: int = 8765) -> None:
         """Start the WebSocket server."""
@@ -342,6 +385,7 @@ class WebSocketServer:
 
         # Start background tasks
         self._task = asyncio.create_task(self._server_loop())
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         # Subscribe to event bus
         if self._event_bus:
@@ -379,6 +423,51 @@ class WebSocketServer:
                 logger.error("Server loop error: %s", exc)
                 await asyncio.sleep(_min_cleanup_interval)
 
+    async def _heartbeat_loop(self) -> None:
+        """
+        Proactive heartbeat: send ping to all connections every
+        *heartbeat_interval* seconds and close any that miss 2 pongs.
+        """
+        ping_interval = self._heartbeat_interval
+
+        while self._running:
+            try:
+                await asyncio.sleep(ping_interval)
+                if not self._running:
+                    break
+
+                now = datetime.now(timezone.utc)
+                for conn_id, conn in list(self.handler._connections.items()):
+                    if conn.state in (ConnectionState.DISCONNECTED,):
+                        continue
+                    elapsed = (now - conn.last_heartbeat).total_seconds()
+                    if elapsed > self._heartbeat_timeout:
+                        logger.warning(
+                            "Heartbeat timeout for %s: %.0fs idle (max %.0fs)",
+                            conn_id,
+                            elapsed,
+                            self._heartbeat_timeout,
+                        )
+                        with contextlib.suppress(Exception):
+                            conn.close()
+                        conn.state = ConnectionState.DISCONNECTED
+
+                    # Send a ping message
+                    try:
+                        conn.send_message(
+                            {
+                                "type": "ping",
+                                "timestamp": now.isoformat(),
+                            }
+                        )
+                    except Exception:
+                        logger.debug("Failed to send ping to %s", conn_id, exc_info=True)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Heartbeat loop error: %s", exc)
+
     async def stop(self) -> None:
         """Stop the WebSocket server."""
         self._running = False
@@ -386,6 +475,10 @@ class WebSocketServer:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
 
     def _subscribe_to_events(self) -> None:
         """Subscribe to all event bus events."""
@@ -405,18 +498,14 @@ class WebSocketServer:
                 "metadata": event.metadata,
             }
             self._broadcast_event(event.event_type.value, payload)
-
-            # Add to buffer
-            self._event_buffer.append(payload)
-            if len(self._event_buffer) > self._max_buffer_size:
-                self._event_buffer.pop(0)
+            self.handler.push_event(payload)
 
         # Subscribe to all event types
         for event_type in EventType:
             self._event_bus.subscribe(event_type, on_event)
 
     def _broadcast_event(self, event_type: str, payload: dict[str, Any]) -> None:
-        """Broadcast event to all subscribed connections."""
+        """Route event to connections that have matching subscriptions."""
 
         message = {
             "type": "event",
@@ -425,27 +514,32 @@ class WebSocketServer:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        for connection in self.handler._connections.values():
+        # Parse event_type back to an EventType enum for subscription matching
+        try:
+            parsed_type = EventType(event_type)
+        except ValueError:
+            parsed_type = None
+
+        if parsed_type is not None:
+            sub_manager = get_subscription_manager()
+            entity_id = payload.get("entity_id") or payload.get("id")
+            matching = sub_manager.get_matching_subscriptions(parsed_type, entity_id)
+            # Deduplicate by connection_id
+            target_conn_ids: set[str] = set()
+            for sub in matching:
+                target_conn_ids.add(sub.connection_id)
+        else:
+            # Fallback: send to all connections if event_type can't be parsed
+            target_conn_ids = set(self.handler._connections.keys())
+
+        for conn_id in target_conn_ids:
+            connection = self.handler._connections.get(conn_id)
+            if connection is None:
+                continue
             try:
                 connection.send_message(message)
             except Exception as e:
-                logger.error(f"Error broadcasting event to connection {connection.id}: {e}")
-
-    def get_buffered_events(self, since_event_id: str | None = None) -> list[dict[str, Any]]:
-        """Get buffered events for reconnection sync."""
-        if not since_event_id:
-            return self._event_buffer[-100:]  # Last 100 events
-
-        # Find events since the given ID
-        found = False
-        result = []
-        for event in self._event_buffer:
-            if event.get("id") == since_event_id:
-                found = True
-            if found:
-                result.append(event)
-
-        return result if found else self._event_buffer
+                logger.error("Error routing event to connection %s: %s", conn_id, e)
 
 
 # =============================================================================

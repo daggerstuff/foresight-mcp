@@ -1,68 +1,47 @@
-# Foresight MCP — CI workflow
-#
-# Runs on every PR and push to main: lint → test → build-check.
-
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main, develop]
   pull_request:
-    branches: ['**']
+    branches: [master, main, develop]
+
+permissions:
+  contents: read
 
 jobs:
-  lint-test-build:
-    name: Lint + Test + Build
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.11', '3.12', '3.13']
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        uses: astral-sh/setup-uv@v5
         with:
-          version: 'latest'
-          python-version: ${{ matrix.python-version }}
+          enable-cache: true
 
       - name: Install dependencies
-        run: uv sync --extra dev
-
-      - name: Ruff lint
-        run: uv run ruff check foresight_cli/ foresight_mcp/ --quiet || echo "Lint issues found (non-blocking)"
-
-      - name: Check importability
         run: |
-          uv run python -c "
-          from foresight_mcp import get_system_status
-          from foresight_cli.cli import app
-          print('All imports OK')
-          print('Commands:', len(list(app.registered_commands)))
-          print('Groups:', list(app.registered_groups.keys()))
-          "
+          uv sync --frozen
 
-      - name: CLI smoke test
+      - name: Run unit tests
         run: |
-          uv run foresight --help > /dev/null
-          uv run foresight doctor > /dev/null 2>&1
-          echo "✓ CLI smoke test passed"
+          uv run pytest tests/ -v --cov=foresight_mcp --cov-report=lcov
 
-      - name: Build package
-        run: uv build
+      - name: Prepare coverage report
+        run: |
+          mkdir -p coverage
+          mv coverage.lcov coverage/lcov.info
 
-      - name: Twine check
-        run: uv run twine check dist/*
-
-      - name: Run tests
-        run: uv run pytest tests/ -v --timeout=30 -q 2>&1 || echo "Tests completed (may have pre-existing failures)"
+      - name: Upload coverage to Qlty
         continue-on-error: true
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        uses: qltysh/qlty-action/coverage@v2
         with:
-          name: foresight-mcp-dist-${{ matrix.python-version }}
-          path: dist/
-          retention-days: 5
+          token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+          files: coverage/lcov.info

@@ -5,6 +5,7 @@ Allows registering custom handlers for events with support for:
 - HTTP webhooks
 - Async handlers
 - Conditional execution
+- Memory operation pre/post hooks (abort/modify/observe)
 """
 
 from __future__ import annotations
@@ -558,6 +559,330 @@ def reset_hook_executor() -> None:
 
 
 # =============================================================================
+# Memory Operation Hooks (Pre/Post)
+# =============================================================================
+
+
+class MemoryHookType(StrEnum):
+    """Hook points for memory lifecycle operations.
+
+    Pre-hooks fire *before* the operation and can abort or modify it.
+    Post-hooks fire *after* the operation and are fire-and-forget.
+    """
+
+    PRE_STORE = "pre_store"
+    POST_STORE = "post_store"
+    PRE_RETRIEVE = "pre_retrieve"
+    POST_RETRIEVE = "post_retrieve"
+    PRE_UPDATE = "pre_update"
+    POST_UPDATE = "post_update"
+    PRE_DELETE = "pre_delete"
+    POST_DELETE = "post_delete"
+
+
+@dataclass
+class HookResult:
+    """Result returned by a pre-hook handler.
+
+    Attributes:
+        abort: If True, the memory operation is cancelled.
+        message: Human-readable reason for abort / result description.
+        modified_context: Optional dict of fields to override on the
+            operation context before the operation proceeds.
+    """
+
+    abort: bool = False
+    message: str = ""
+    modified_context: dict[str, Any] | None = None
+
+
+@dataclass
+class MemoryHookContext:
+    """Context passed to every memory hook handler.
+
+    Fields:
+        action: Operation identifier (store / retrieve / update / delete).
+        memory_id: Target memory ID (None for new store).
+        user_id: Acting user.
+        tenant_id: Active tenant.
+        content: Payload content (for store / update; None for retrieve / delete).
+        old_content: Previous content (for update; None otherwise).
+        category: Memory category label.
+        scope: Memory scope string.
+        retention: Retention policy string.
+        importance: Numeric importance weight.
+        tags: Optional list of tag strings.
+        metadata: Arbitrary key-value bag for extension.
+    """
+
+    action: str
+    memory_id: str | None = None
+    user_id: str | None = None
+    tenant_id: str | None = None
+    content: str | None = None
+    old_content: str | None = None
+    category: str | None = None
+    scope: str | None = None
+    retention: str | None = None
+    importance: float = 0.5
+    tags: list[str] | None = None
+    query: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict for handler consumption."""
+        return {
+            "action": self.action,
+            "memory_id": self.memory_id,
+            "user_id": self.user_id,
+            "tenant_id": self.tenant_id,
+            "content": self.content,
+            "old_content": self.old_content,
+            "category": self.category,
+            "scope": self.scope,
+            "retention": self.retention,
+            "importance": self.importance,
+            "tags": self.tags,
+            "query": self.query,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemoryHookContext:
+        """Create from a dict (e.g. after deserialization)."""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+# A hook handler accepts a MemoryHookContext and may return:
+#   - HookResult with abort=True → operation is cancelled
+#   - HookResult with modified_context → override fields before operation
+#   - HookResult(abort=False) or None → proceed unchanged
+#   - Coroutine resolving to any of the above → async handler
+MemoryHookHandler = Callable[
+    [MemoryHookContext],
+    HookResult | None | Coroutine[Any, Any, HookResult | None],
+]
+
+
+def _resolve_hook_result(
+    result: HookResult | None | Coroutine[Any, Any, HookResult | None],
+) -> HookResult | None:
+    """If the handler returned a coroutine, run it synchronously.
+
+    This is safe because memory operations are currently synchronous and
+    the coroutine is lightweight (no nested async-WSGI-style frames).
+    """
+    if isinstance(result, Coroutine):
+        try:
+            return asyncio.run(result)
+        except RuntimeError:
+            # Running loop already exists → schedule and wait
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            return loop.run_until_complete(result)
+    return result
+
+
+class MemoryHookRegistry:
+    """Registry for memory lifecycle hooks.
+
+    Supports registering handlers for 7 hook points (3 pre + 3 post).
+    Pre-hooks can abort or modify the operation; post-hooks are
+    fire-and-forget observers.
+
+    Thread-safe. Handler isolation: a single failing handler never
+    prevents other handlers from running or the operation from proceeding.
+    """
+
+    def __init__(self) -> None:
+        self._pre_handlers: dict[MemoryHookType, list[tuple[str, MemoryHookHandler]]] = {}
+        self._post_handlers: dict[MemoryHookType, list[tuple[str, MemoryHookHandler]]] = {}
+        self._lock = threading.RLock()
+
+    # ── Registration ──────────────────────────────────────────────────────
+
+    def register(
+        self,
+        hook_type: MemoryHookType,
+        handler: MemoryHookHandler,
+        *,
+        name: str = "",
+    ) -> None:
+        """Register a handler for a memory hook point.
+
+        Args:
+            hook_type: Which hook point to listen to.
+            handler: Sync or async callable receiving a ``MemoryHookContext``.
+            name: Optional human-readable label (defaults to ``__name__``).
+        """
+        label = name or getattr(handler, "__name__", "unknown")
+        is_pre = hook_type.value.startswith("pre_")
+        bucket = self._pre_handlers if is_pre else self._post_handlers
+        with self._lock:
+            if hook_type not in bucket:
+                bucket[hook_type] = []
+            bucket[hook_type].append((label, handler))
+        logger.debug("Registered %s hook %r for %s", "pre" if is_pre else "post", label, hook_type.value)
+
+    def unregister(self, hook_type: MemoryHookType, handler: MemoryHookHandler) -> bool:
+        """Remove a previously registered handler.
+
+        Returns True if the handler was found and removed.
+        """
+        is_pre = hook_type.value.startswith("pre_")
+        bucket = self._pre_handlers if is_pre else self._post_handlers
+        with self._lock:
+            handlers = bucket.get(hook_type, [])
+            for i, (_, h) in enumerate(handlers):
+                if h is handler:
+                    bucket[hook_type].pop(i)
+                    logger.debug("Unregistered handler from %s", hook_type.value)
+                    return True
+        return False
+
+    def list_handlers(self, hook_type: MemoryHookType | None = None) -> list[dict[str, Any]]:
+        """List registered handlers, optionally filtered by hook type."""
+        result: list[dict[str, Any]] = []
+        buckets = [("pre", self._pre_handlers), ("post", self._post_handlers)]
+        with self._lock:
+            for phase, bucket in buckets:
+                for ht, handlers in bucket.items():
+                    if hook_type is not None and ht != hook_type:
+                        continue
+                    for name, _ in handlers:
+                        result.append({"phase": phase, "hook_type": ht.value, "name": name})
+        return result
+
+    # ── Emission (called by the memory operation pipeline) ────────────────
+
+    def emit_pre(self, hook_type: MemoryHookType, ctx: MemoryHookContext) -> list[HookResult]:
+        """Run all pre-hooks for *hook_type*.
+
+        Each handler is called with the context.  If any handler returns
+        a ``HookResult`` with ``abort=True``, the caller should cancel the
+        operation and return the message to the user.
+
+        If a handler returns ``modified_context``, those fields are applied
+        to the ``ctx`` object in-place before the next handler runs, so
+        later handlers see the accumulated modifications.
+
+        Returns the list of all ``HookResult`` instances (non-None).
+        """
+        assert hook_type.value.startswith("pre_"), f"Expected pre_ hook, got {hook_type}"
+        results: list[HookResult] = []
+        with self._lock:
+            handlers = list(self._pre_handlers.get(hook_type, []))
+        for name, handler in handlers:
+            try:
+                raw = handler(ctx)
+                resolved = _resolve_hook_result(raw)
+                if resolved is not None:
+                    results.append(resolved)
+                    if resolved.abort:
+                        logger.info("Hook %s aborted %s: %s", name, hook_type.value, resolved.message)
+                        return results  # short-circuit on first abort
+                    if resolved.modified_context:
+                        for k, v in resolved.modified_context.items():
+                            if hasattr(ctx, k):
+                                setattr(ctx, k, v)
+            except Exception:
+                logger.exception("Hook handler %s failed for %s (isolated)", name, hook_type.value)
+        return results
+
+    def emit_post(self, hook_type: MemoryHookType, ctx: MemoryHookContext) -> None:
+        """Fire all post-hooks for *hook_type*.
+
+        Post-hooks are fire-and-forget.  Their return values are ignored
+        and exceptions never propagate.
+        """
+        assert hook_type.value.startswith("post_"), f"Expected post_ hook, got {hook_type}"
+        with self._lock:
+            handlers = list(self._post_handlers.get(hook_type, []))
+        for name, handler in handlers:
+            try:
+                raw = handler(ctx)
+                resolved = _resolve_hook_result(raw)
+                if isinstance(resolved, HookResult) and resolved.abort:
+                    logger.warning("Post-hook %s returned abort=True (ignored for post hooks)", name)
+            except Exception:
+                logger.exception("Post-hook handler %s failed for %s (isolated)", name, hook_type.value)
+
+    def clear(self) -> None:
+        """Remove all registered handlers (useful in tests)."""
+        with self._lock:
+            self._pre_handlers.clear()
+            self._post_handlers.clear()
+
+
+# ── Global singleton ─────────────────────────────────────────────────────
+
+
+class _RegistryManager:
+    _instance: MemoryHookRegistry | None = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get(cls) -> MemoryHookRegistry:
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = MemoryHookRegistry()
+        return cls._instance
+
+    @classmethod
+    def reset(cls) -> None:
+        with cls._lock:
+            if cls._instance is not None:
+                cls._instance.clear()
+            cls._instance = None
+
+
+def get_memory_hook_registry() -> MemoryHookRegistry:
+    return _RegistryManager.get()
+
+
+def reset_memory_hook_registry() -> None:
+    _RegistryManager.reset()
+
+
+# =============================================================================
+# Built-in hook implementations
+# =============================================================================
+
+
+def _audit_hook(ctx: MemoryHookContext) -> None:
+    """Built-in audit hook: logs every memory operation for compliance."""
+    logger.info(
+        "AUDIT: action=%s memory_id=%s user=%s tenant=%s content_len=%d",
+        ctx.action,
+        ctx.memory_id,
+        ctx.user_id,
+        ctx.tenant_id,
+        len(ctx.content or ""),
+    )
+
+
+def _cache_invalidation_hook(ctx: MemoryHookContext) -> None:
+    """Built-in cache invalidation hook: triggers TF-IDF cache reset.
+
+    Registered as a post-store / post-update / post-delete hook so that
+    the search index is kept consistent.
+    """
+    logger.debug(
+        "Cache invalidation triggered by %s for user=%s tenant=%s",
+        ctx.action,
+        ctx.user_id,
+        ctx.tenant_id,
+    )
+    # The actual invalidation is already done inline in each handler;
+    # this hook exists so external consumers can attach additional
+    # cache-busting logic without modifying server.py.
+
+
+# =============================================================================
 # MCP Tools
 # =============================================================================
 
@@ -591,11 +916,7 @@ def register_hook(
     name: str,
     event_type: str,
     *,
-    params: HookRegistrationParams | None = None,
-    hook_type: str = "http",
-    url: str | None = None,
-    retry_count: int = 3,
-    timeout: int = 30,
+    params: HookRegistrationParams,
 ) -> str:
     """
     Register a new hook.
@@ -603,22 +924,17 @@ def register_hook(
     Args:
         name: Human-readable name for the hook
         event_type: Event type to listen for (e.g., "memory.stored")
-        hook_type: Type of hook ("http" supported)
-        url: URL for HTTP hooks
-        retry_count: Number of retries on failure
-        timeout: Timeout in seconds
+        params: Hook registration parameters (hook_type, url, retry_count, timeout)
     """
     try:
         et = EventType(event_type)
     except ValueError:
         return f"Invalid event type: {event_type}. Valid types: {', '.join(e.value for e in EventType)}"
 
-    # Use params if provided, otherwise fall back to individual parameters
-    if params is not None:
-        hook_type = params.hook_type
-        url = params.url
-        retry_count = params.retry_count
-        timeout = params.timeout
+    retry_count = params.retry_count
+    timeout = params.timeout
+    hook_type = params.hook_type
+    url = params.url
 
     executor = get_hook_executor()
 

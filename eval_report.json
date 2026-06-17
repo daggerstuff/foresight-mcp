@@ -1,0 +1,200 @@
+{
+  "harness_version": "1.0.0",
+  "timestamp": "2026-06-17T00:40:42.398596+00:00",
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "pass_rate_pct": 100.0,
+    "avg_payload_size": 1186.6,
+    "avg_latency_ms": 1.7897586047183722,
+    "pii_findings_total": 0,
+    "pii_scenarios_with_findings": 0
+  },
+  "scenarios": [
+    {
+      "scenario_id": "S1_preference",
+      "query": "What coding style does the user prefer for TypeScript?",
+      "passed": true,
+      "metrics": {
+        "total_candidates": 13,
+        "grm_latency_ms": 0.12,
+        "grm_result_count": 10,
+        "budget_chars": 2000
+      },
+      "found_memory_ids": [
+        "current_auth_approach",
+        "stale_auth_approach",
+        "pending_auth",
+        "pref_concise_typescript",
+        "pending_dashboard",
+        "distractor_weather",
+        "entity_deploy_script",
+        "pref_2space_indent",
+        "pending_refactor",
+        "session_deploy"
+      ],
+      "missing_expected": [],
+      "injection_payload_size": 1227,
+      "latency_ms": 3.8103819970274344,
+      "signal_counts": {
+        "keyword": 12,
+        "tfidf_cosine": 12,
+        "semantic": 12,
+        "graph": 2,
+        "temporal": 12,
+        "fast_path": "cache"
+      },
+      "fast_path": "cache",
+      "pii_findings": [],
+      "error": null
+    },
+    {
+      "scenario_id": "S2_pending",
+      "query": "What's the current project status and what needs to be done?",
+      "passed": true,
+      "metrics": {
+        "total_candidates": 13,
+        "grm_latency_ms": 0.11,
+        "grm_result_count": 10,
+        "budget_chars": 2000
+      },
+      "found_memory_ids": [
+        "current_auth_approach",
+        "stale_auth_approach",
+        "distractor_weather",
+        "pending_dashboard",
+        "pref_2space_indent",
+        "pending_refactor",
+        "pending_auth",
+        "session_deploy",
+        "entity_deploy_script",
+        "entity_db_config"
+      ],
+      "missing_expected": [],
+      "injection_payload_size": 1178,
+      "latency_ms": 1.3167990109650418,
+      "signal_counts": {
+        "keyword": 13,
+        "tfidf_cosine": 12,
+        "semantic": 12,
+        "graph": 2,
+        "temporal": 12,
+        "fast_path": "cache"
+      },
+      "fast_path": "cache",
+      "pii_findings": [],
+      "error": null
+    },
+    {
+      "scenario_id": "S3_stale_vs_current",
+      "query": "How does authentication work in this project?",
+      "passed": true,
+      "metrics": {
+        "total_candidates": 12,
+        "grm_latency_ms": 0.1,
+        "grm_result_count": 10,
+        "budget_chars": 2000
+      },
+      "found_memory_ids": [
+        "current_auth_approach",
+        "stale_auth_approach",
+        "pending_auth",
+        "entity_db_config",
+        "pending_dashboard",
+        "pref_2space_indent",
+        "pref_concise_typescript",
+        "session_deploy",
+        "pending_refactor",
+        "distractor_weather"
+      ],
+      "missing_expected": [],
+      "injection_payload_size": 1195,
+      "latency_ms": 1.1898289958480746,
+      "signal_counts": {
+        "keyword": 12,
+        "tfidf_cosine": 4,
+        "semantic": 4,
+        "graph": 2,
+        "temporal": 12,
+        "fast_path": "cache"
+      },
+      "fast_path": "cache",
+      "pii_findings": [],
+      "error": null
+    },
+    {
+      "scenario_id": "S4_entity_ref",
+      "query": "Where is the database configuration file located?",
+      "passed": true,
+      "metrics": {
+        "total_candidates": 13,
+        "grm_latency_ms": 0.1,
+        "grm_result_count": 10,
+        "budget_chars": 2000
+      },
+      "found_memory_ids": [
+        "entity_db_config",
+        "current_auth_approach",
+        "entity_deploy_script",
+        "stale_auth_approach",
+        "pending_auth",
+        "distractor_weather",
+        "pending_dashboard",
+        "pending_refactor",
+        "distractor_lunch",
+        "pref_concise_typescript"
+      ],
+      "missing_expected": [],
+      "injection_payload_size": 1156,
+      "latency_ms": 1.2970390089321882,
+      "signal_counts": {
+        "keyword": 13,
+        "tfidf_cosine": 9,
+        "semantic": 9,
+        "graph": 4,
+        "temporal": 12,
+        "fast_path": "cache"
+      },
+      "fast_path": "cache",
+      "pii_findings": [],
+      "error": null
+    },
+    {
+      "scenario_id": "S5_session",
+      "query": "What did we discuss about deployment in the last standup?",
+      "passed": true,
+      "metrics": {
+        "total_candidates": 13,
+        "grm_latency_ms": 0.12,
+        "grm_result_count": 10,
+        "budget_chars": 2000
+      },
+      "found_memory_ids": [
+        "session_deploy",
+        "current_auth_approach",
+        "stale_auth_approach",
+        "entity_deploy_script",
+        "distractor_weather",
+        "pending_dashboard",
+        "session_code_review",
+        "pending_auth",
+        "entity_db_config",
+        "pending_refactor"
+      ],
+      "missing_expected": [],
+      "injection_payload_size": 1177,
+      "latency_ms": 1.3347440108191222,
+      "signal_counts": {
+        "keyword": 13,
+        "tfidf_cosine": 11,
+        "semantic": 11,
+        "graph": 4,
+        "temporal": 12,
+        "fast_path": "cache"
+      },
+      "fast_path": "cache",
+      "pii_findings": [],
+      "error": null
+    }
+  ]
+}

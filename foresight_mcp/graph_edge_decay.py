@@ -269,22 +269,32 @@ class _GraphEdgeDecaySingleton:
     _lock = __import__("threading").RLock()
 
     @classmethod
-    def get_instance(cls, db_path: str | None = None, half_life_hours: float | None = None) -> GraphEdgeDecay:
+    def get_instance(
+        cls,
+        db_path: str | None = None,
+        half_life_hours: float | None = None,
+        prune_threshold: float | None = None,
+    ) -> GraphEdgeDecay:
         """Get or create global graph edge decay service."""
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH
-                cls._instance = GraphEdgeDecay(db_path, half_life_hours)
+                cls._instance = GraphEdgeDecay(
+                    db_path,
+                    half_life_hours=half_life_hours,
+                    prune_threshold=prune_threshold,
+                )
             return cls._instance
 
 
 def get_graph_edge_decay(
     db_path: str | None = None,
     half_life_hours: float | None = None,
+    prune_threshold: float | None = None,
 ) -> GraphEdgeDecay:
     """Get or create global graph edge decay service."""
-    return _GraphEdgeDecaySingleton.get_instance(db_path, half_life_hours)
+    return _GraphEdgeDecaySingleton.get_instance(db_path, half_life_hours, prune_threshold)
 
 
 def run_edge_decay_update(tenant_id: str = "default") -> EdgeDecayStats:
@@ -295,3 +305,33 @@ def run_edge_decay_update(tenant_id: str = "default") -> EdgeDecayStats:
 def run_edge_pruning(tenant_id: str = "default") -> EdgeDecayStats:
     """Run edge pruning with default settings."""
     return get_graph_edge_decay().prune_stale_edges(tenant_id)
+
+
+def get_effective_edge_confidence(
+    entity_id: str,
+    tenant_id: str = "default",
+    db_path: str | None = None,
+) -> float | None:
+    """Convenience: get the maximum effective confidence across all
+    relationships involving an entity. Used by graph search to assess
+    entity salience.
+
+    Returns None if the entity has no relationships.
+    """
+    svc = get_graph_edge_decay(db_path)
+    pool = get_pool(svc.db_path)
+    conn = pool.acquire()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT MAX(confidence * decay_factor)
+            FROM entity_relationships
+            WHERE (source_entity_id = ? OR target_entity_id = ?)
+            AND tenant_id = ?
+            """,
+            (entity_id, entity_id, tenant_id),
+        )
+        row = cursor.fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+    finally:
+        pool.release(conn)

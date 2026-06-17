@@ -26,23 +26,48 @@ logger = logging.getLogger("foresight_rrf_tuning")
 
 @dataclass
 class RRFConfig:
-    """Configuration for RRF fusion weights."""
+    """Configuration for RRF fusion weights.
+
+    In addition to per-signal weights, supports trend modifiers and
+    category half-life multipliers for the temporal signal, plus
+    optional entity_weight that can be injected into RRF as a
+    separate ranking pass.
+    """
 
     rrf_k: float = 60.0  # Smoothing constant
     keyword_weight: float = 1.0
     tfidf_cosine_weight: float = 0.7
     graph_weight: float = 0.8
     temporal_weight: float = 0.6
+    entity_weight: float = 0.0  # Separate entity-salience pass (0 = disabled)
+
+    # Trend modifiers for temporal scoring
+    trend_mod_strengthening: float = 1.2
+    trend_mod_stable: float = 1.0
+    trend_mod_weakening: float = 0.8
+    trend_mod_stale: float = 0.5
+
+    # Category half-life multipliers
+    category_mult_session: float = 0.5
+    category_mult_fact: float = 1.0
+    category_mult_preference: float = 1.5
+    category_mult_trait: float = 2.0
 
     def to_dict(self) -> dict[str, float]:
         """Convert to dictionary for storage."""
-        return {
+        d: dict[str, float] = {
             "rrf_k": self.rrf_k,
             "keyword": self.keyword_weight,
             "tfidf_cosine": self.tfidf_cosine_weight,
             "graph": self.graph_weight,
             "temporal": self.temporal_weight,
+            "entity": self.entity_weight,
         }
+        for k in ("strengthening", "stable", "weakening", "stale"):
+            d[f"trend_mod_{k}"] = getattr(self, f"trend_mod_{k}")
+        for cat in ("session", "fact", "preference", "trait"):
+            d[f"category_mult_{cat}"] = getattr(self, f"category_mult_{cat}")
+        return d
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RRFConfig":
@@ -53,6 +78,15 @@ class RRFConfig:
             tfidf_cosine_weight=data.get("tfidf_cosine", 0.7),
             graph_weight=data.get("graph", 0.8),
             temporal_weight=data.get("temporal", 0.6),
+            entity_weight=data.get("entity", 0.0),
+            trend_mod_strengthening=data.get("trend_mod_strengthening", 1.2),
+            trend_mod_stable=data.get("trend_mod_stable", 1.0),
+            trend_mod_weakening=data.get("trend_mod_weakening", 0.8),
+            trend_mod_stale=data.get("trend_mod_stale", 0.5),
+            category_mult_session=data.get("category_mult_session", 0.5),
+            category_mult_fact=data.get("category_mult_fact", 1.0),
+            category_mult_preference=data.get("category_mult_preference", 1.5),
+            category_mult_trait=data.get("category_mult_trait", 2.0),
         )
 
     def to_json_file(self, path: str) -> None:
@@ -131,6 +165,7 @@ def grid_search_weights(
     tfidf_range: tuple[float, float, float] = (0.3, 1.0, 0.2),
     graph_range: tuple[float, float, float] = (0.4, 1.2, 0.2),
     temporal_range: tuple[float, float, float] = (0.2, 1.0, 0.2),
+    entity_range: tuple[float, float, float] | None = None,
     evaluate_fn: Callable[[dict[str, float]], float] | None = None,
 ) -> GridSearchResult:
     """
@@ -154,19 +189,23 @@ def grid_search_weights(
     tfidf_values = list(frange(tfidf_range[0], tfidf_range[1] + 0.001, tfidf_range[2]))
     graph_values = list(frange(graph_range[0], graph_range[1] + 0.001, graph_range[2]))
     temporal_values = list(frange(temporal_range[0], temporal_range[1] + 0.001, temporal_range[2]))
+    entity_values = list(frange(entity_range[0], entity_range[1] + 0.001, entity_range[2])) if entity_range else [0.0]
 
-    all_combinations = list(itertools.product(keyword_values, tfidf_values, graph_values, temporal_values))
+    all_combinations = list(
+        itertools.product(keyword_values, tfidf_values, graph_values, temporal_values, entity_values)
+    )
 
     best_score = float("-inf")
     best_weights: dict[str, float] = {}
     all_results: list[dict[str, Any]] = []
 
-    for kw, tfidf, graph, temporal in all_combinations:
+    for kw, tfidf, graph, temporal, entity in all_combinations:
         weights = {
             "keyword": kw,
             "tfidf_cosine": tfidf,
             "graph": graph,
             "temporal": temporal,
+            "entity": entity,
         }
 
         score = evaluate_fn(weights) if evaluate_fn else 0.0  # Placeholder - would need actual evaluation data

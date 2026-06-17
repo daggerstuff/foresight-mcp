@@ -69,13 +69,28 @@ from .event_bus import (
     memory_updated,
 )
 from .graph_store import get_graph_store
-from .hybrid_retriever import HybridResult, HybridSearchOptions, get_hybrid_retriever
+from .hooks import (
+    MemoryHookContext,
+    MemoryHookType,
+    _audit_hook,
+    _cache_invalidation_hook,
+    get_memory_hook_registry,
+)
+from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
+from .injection_budget import (
+    BudgetResult,
+    InjectionBudget,
+    Lane,
+    LaneItem,
+    format_budgeted_payload,
+)
 from .memory_components import (
     MemoryCrisisTagger,
     MemoryLinker,
     MemorySynthesizer,
     SocraticGate,
 )
+from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -108,7 +123,7 @@ from .stream_producer import (
 from .sync import Operation, OperationQueue, OperationType
 from .temporal_queries import get_temporal_query_builder
 from .temporal_service import get_temporal_service
-from .tenant_context import get_current_tenant_id, set_current_tenant_id
+from .tenant_context import get_current_tenant_id, get_current_user_id, set_current_tenant_id
 from .tenant_middleware import TenantMiddleware
 
 # WebSocket imports
@@ -189,6 +204,10 @@ class SearchOptions(BaseModel):
     use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
     cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
     cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
+    debug: bool = Field(
+        default=False,
+        description="Return structured trace with timing and signal metadata instead of formatted results",
+    )
 
 
 class ContextBlockAction(BaseModel):
@@ -294,6 +313,18 @@ class AnalysisAction(BaseModel):
     period: str = Field(default="weekly", description="Period for reflection")
     limit: int = Field(default=50, description="Limit for synthesis")
     enhanced: bool = Field(default=False, description="Whether to use enhanced synthesis")
+
+
+class MaintenanceAction(BaseModel):
+    modes: list[str] = Field(
+        default=["consolidate", "contradict", "archive_stale", "synthesize"],
+        description="Maintenance modes to run",
+    )
+    duplicate_threshold: float = Field(default=0.25, description="Minimum Jaccard similarity to consider duplicate")
+    stale_strength_threshold: float = Field(default=0.2, description="Archive memories below this strength")
+    stale_importance_threshold: float = Field(default=0.1, description="Archive memories below this importance")
+    batch_size: int = Field(default=200, description="Max memories to process per mode")
+    max_runtime_seconds: float = Field(default=300, description="Wall-clock budget in seconds")
 
 
 def _run_async(coro):
@@ -1035,6 +1066,28 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if not options.content:
         return "Error: Content is required for 'store' action"
     opts = options.options or MemoryOptions()
+
+    # ── PRE_STORE hook ─────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="store",
+        user_id=uid,
+        tenant_id=tenant_id,
+        content=options.content,
+        category=opts.category,
+        scope=getattr(opts, "scope", None),
+        retention=getattr(opts, "retention", None),
+        importance=getattr(opts, "importance", 0.5),
+        tags=getattr(opts, "tags", None),
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_STORE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted store: {r.message}"
+        if r.modified_context:
+            if "content" in r.modified_context:
+                options.content = r.modified_context["content"]
+            if "category" in r.modified_context:
+                opts.category = r.modified_context["category"]
+
     # Hard cap enforcement: check memory count per tenant
     conn = get_db_connection()
     current_count = conn.execute(
@@ -1120,6 +1173,11 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             logger.warning(f"Failed to create memory relationship: {exc}")
     get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=options.content, actor=uid))
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+
+    # ── POST_STORE hook ────────────────────────────────────────────────
+    hook_ctx.memory_id = memory_id
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_STORE, hook_ctx)
+
     return f"Stored memory {memory_id}. Gate: {gate_result.decision}. Reason: {gate_result.reason}"
 
 
@@ -1127,6 +1185,22 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     """Helper to handle memory updates."""
     if not options.memory_id or not options.updates:
         return "Error: memory_id and updates required for 'update' action"
+
+    # ── PRE_UPDATE hook ────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="update",
+        memory_id=options.memory_id,
+        user_id=uid,
+        tenant_id=tenant_id,
+        content=options.updates.content,
+        category=options.updates.category,
+        scope=options.updates.scope,
+        retention=options.updates.retention,
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_UPDATE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted update: {r.message}"
+
     conn = get_db_connection()
     row = conn.execute(
         "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
@@ -1182,6 +1256,11 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
     )
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+
+    # ── POST_UPDATE hook ───────────────────────────────────────────────
+    hook_ctx.old_content = row["content"]
+    hook_ctx.content = options.updates.content or row["content"]
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_UPDATE, hook_ctx)
     # Create memory relationship if specified
     if options.updates.relation_type and options.updates.related_memory_id:
         store = get_memory_relationship_store()
@@ -1203,6 +1282,17 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     if not memory_id:
         return "Error: memory_id required for 'delete' action"
 
+    # ── PRE_DELETE hook ────────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="delete",
+        memory_id=memory_id,
+        user_id=uid,
+        tenant_id=tenant_id,
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_DELETE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted delete: {r.message}"
+
     conn = get_db_connection()
     if not conn.execute(
         "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
@@ -1215,6 +1305,10 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
     conn.commit()
     conn.close()
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
+
+    # ── POST_DELETE hook ───────────────────────────────────────────────
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_DELETE, hook_ctx)
+
     return f"Deleted memory {memory_id}"
 
 
@@ -1295,6 +1389,65 @@ def manage_memories(
     return f"Unknown action: {options.action}"
 
 
+@dataclass
+class SearchTrace:
+    """Structured trace of a retrieval operation for performance observability."""
+
+    query: str
+    latency_ms: float
+    result_count: int
+    total_candidates: int
+    signal_counts: dict[str, Any]
+    fast_path: int | str | None
+    response_bytes: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "latency_ms": self.latency_ms,
+            "result_count": self.result_count,
+            "total_candidates": self.total_candidates,
+            "signal_counts": self.signal_counts,
+            "fast_path": self.fast_path,
+            "response_bytes": self.response_bytes,
+        }
+
+
+def _trace_retrieval(
+    query: str,
+    uid: str,
+    tenant_id: str,
+    options: HybridSearchOptions,
+) -> tuple[HybridSearchResult, SearchTrace]:
+    """Run hybrid search and return (result, trace) pair."""
+    t0 = time.perf_counter()
+    retriever = get_hybrid_retriever()
+    result = retriever.search(query, uid, options)
+    latency_ms = (time.perf_counter() - t0) * 1000
+    fast_path = result.signal_counts.get("fast_path")
+    trace = SearchTrace(
+        query=query,
+        latency_ms=round(latency_ms, 2),
+        result_count=len(result.results),
+        total_candidates=result.total_candidates,
+        signal_counts=result.signal_counts,
+        fast_path=fast_path,
+        response_bytes=0,
+    )
+    logger.debug(
+        "search_memories trace: query=%r user=%s tenant=%s latency_ms=%.2f results=%d candidates=%d fast_path=%s signals=%s",
+        query,
+        uid,
+        tenant_id,
+        trace.latency_ms,
+        trace.result_count,
+        trace.total_candidates,
+        fast_path,
+        result.signal_counts,
+    )
+    return result, trace
+
+
 @mcp.tool(output_schema=None)
 def search_memories(
     options: SearchOptions,
@@ -1311,6 +1464,21 @@ def search_memories(
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
 
+    # ── PRE_RETRIEVE hook ──────────────────────────────────────────────
+    hook_ctx = MemoryHookContext(
+        action="retrieve",
+        user_id=uid,
+        tenant_id=tenant_id,
+        query=options.query,
+    )
+    for r in get_memory_hook_registry().emit_pre(MemoryHookType.PRE_RETRIEVE, hook_ctx):
+        if r.abort:
+            return f"Hook aborted retrieval: {r.message}"
+        if r.modified_context:
+            query_override = r.modified_context.get("query", options.query)
+            if query_override:
+                options.query = query_override
+
     # 1. Direct ID lookup
     if options.query_type == "id" or options.memory_id:
         mid = options.memory_id or options.query
@@ -1323,6 +1491,8 @@ def search_memories(
         conn.close()
 
         if not row:
+            # ── POST_RETRIEVE hook (no results) ────────────────────────
+            get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
             return f"Memory {mid} not found."
 
         # Emit event
@@ -1335,26 +1505,32 @@ def search_memories(
         result += f"Tags: {', '.join(tags) if tags else 'none'}\n"
         if row["is_ghost"]:
             result += "[GHOST NODE - Content archived]"
+
+        # ── POST_RETRIEVE hook (ID lookup) ─────────────────────────────
+        hook_ctx.memory_id = mid
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return result
 
     # 2. Hybrid search if enabled and query provided
     if options.use_hybrid and options.query:
         try:
-            retriever = get_hybrid_retriever()
-            hybrid_result = retriever.search(
+            hybrid_result, trace = _trace_retrieval(
                 options.query,
                 uid,
+                tenant_id,
                 HybridSearchOptions(
                     tenant_id=tenant_id,
                     limit=options.limit,
                     min_importance=options.min_importance,
                     use_keyword=True,
                     use_tfidf_cosine=True,
-                    use_semantic=None,  # Let the search method handle the semantic/tfidf_cosine alias
+                    use_semantic=None,
                     use_graph=True,
                     use_temporal=True,
                 ),
             )
+            if options.debug:
+                return json.dumps(trace.to_dict(), indent=2)
             if hybrid_result.results:
                 results = []
                 for r in hybrid_result.results:
@@ -1362,6 +1538,8 @@ def search_memories(
                     results.append(
                         f"- [{r.memory_id}] {r.content[:100]}... (score={r.combined_score:.3f}, signals={signals})"
                     )
+                # ── POST_RETRIEVE hook (hybrid search) ─────────────────
+                get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
                 return f"Found {len(results)} memories (hybrid search):\n" + "\n".join(results)
         except Exception as e:
             logger.debug(f"Hybrid search failed: {e}")
@@ -1384,9 +1562,13 @@ def search_memories(
     conn.close()
 
     if not rows:
+        # ── POST_RETRIEVE hook (no results) ────────────────────────────
+        get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return "No memories found."
 
     results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
+    get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
 
 
@@ -2685,6 +2867,7 @@ def inject_context(
     max_memories: int = 5,
     min_relevance: float = 0.3,
     include_details: bool = False,
+    max_chars: int | None = None,
 ) -> str:
     """Surface relevant memories based on conversation context.
 
@@ -2699,6 +2882,11 @@ def inject_context(
          min_relevance: Minimum relevance score threshold (default: 0.3)
          include_details: If True, return JSON with formatted text plus structured
              memories and context blocks grouped by InjectionPoint (default: False)
+         max_chars: Optional character budget for the formatted payload.
+             When set, output is truncated at sentence boundaries per lane
+             priority (static > dynamic > memories > blocks > safety).
+             Items that don't fit are progressively summarized or stubbed.
+             Default None = unbounded (legacy behavior).
 
      Returns:
          Formatted string with relevant memories and context block signals.
@@ -2706,6 +2894,7 @@ def inject_context(
          - formatted: the formatted text
          - memories: list of dicts with memory_id, content, score, signals
          - context_blocks: dict grouped by InjectionPoint
+         - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
@@ -2713,6 +2902,7 @@ def inject_context(
     retriever = get_hybrid_retriever()
     query_text = conversation_text if conversation_text else " ".join(terms)
 
+    t0 = time.perf_counter()
     hybrid_result = retriever.search(
         query=query_text,
         user_id=uid,
@@ -2722,27 +2912,44 @@ def inject_context(
             min_importance=0.1,
             use_keyword=True,
             use_tfidf_cosine=True,
-            use_semantic=None,  # Let the search method handle the semantic/tfidf_cosine alias
+            use_semantic=None,
             use_graph=True,
             use_temporal=True,
         ),
     )
-
+    latency_ms = (time.perf_counter() - t0) * 1000
     memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
         :max_memories
     ]
+    logger.debug(
+        "inject_context: query_len=%d latency_ms=%.2f fetched=%d filtered=%d fast_path=%s signals=%s",
+        len(conversation_text),
+        latency_ms,
+        len(hybrid_result.results),
+        len(memories),
+        hybrid_result.signal_counts.get("fast_path"),
+        hybrid_result.signal_counts,
+    )
 
-    formatted = _format_injection_output(memories, uid, tenant_id, terms)
+    budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else None
+
+    if budget is not None and budget.is_bounded:
+        budgeted = _format_injection_output_budgeted(memories, uid, tenant_id, terms, budget)
+    else:
+        budgeted = None
 
     if not include_details:
-        return formatted
+        return budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
 
     blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
-    payload = {
-        "formatted": formatted,
+    legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
+    payload: dict[str, Any] = {
+        "formatted": budgeted.formatted if budgeted is not None else legacy_formatted,
         "memories": [m.to_dict() for m in memories],
         "context_blocks": blocks_by_point,
     }
+    if budgeted is not None:
+        payload["budget"] = budgeted.to_dict()
     return json.dumps(payload, indent=2)
 
 
@@ -2772,6 +2979,52 @@ def _format_injection_output(
         return "[Relevant Context - 0 memories surfaced]\nNo relevant memories found for this conversation."
 
     return "\n".join(lines)
+
+
+def _format_injection_output_budgeted(
+    memories: list[HybridResult],
+    uid: str,
+    tenant_id: str,
+    terms: list[str],
+    budget: InjectionBudget,
+) -> BudgetResult:
+    lane_items: dict[Lane, list[LaneItem]] = {lane: [] for lane in Lane}
+
+    user_prefs = get_context_block_agent(uid, tenant_id).state.get_block(USER_PREFERENCES)
+    if user_prefs and not user_prefs.is_empty():
+        lane_items[Lane.STATIC].append(
+            LaneItem(id="user_preferences", content=user_prefs.content, score=0.9, lane=Lane.STATIC)
+        )
+
+    project_ctx = get_context_block_agent(uid, tenant_id).state.get_block("project_context")
+    pending = get_context_block_agent(uid, tenant_id).state.get_block(PENDING_ITEMS)
+    if project_ctx and not project_ctx.is_empty():
+        lane_items[Lane.DYNAMIC].append(
+            LaneItem(id="project_context", content=project_ctx.content, score=0.8, lane=Lane.DYNAMIC)
+        )
+    if pending and not pending.is_empty():
+        lane_items[Lane.DYNAMIC].append(
+            LaneItem(id="pending_items", content=pending.content, score=0.7, lane=Lane.DYNAMIC)
+        )
+
+    for mem in memories:
+        lane_items[Lane.MEMORIES].append(
+            LaneItem(
+                id=mem.memory_id,
+                content=mem.content or "",
+                score=mem.combined_score,
+                lane=Lane.MEMORIES,
+                metadata={"category": mem.category, "importance": mem.importance},
+            )
+        )
+
+    sub_lines = _context_block_notes_for_terms(uid, terms)
+    if sub_lines:
+        lane_items[Lane.BLOCKS].append(
+            LaneItem(id="block_signals", content="\n".join(sub_lines), score=0.5, lane=Lane.BLOCKS)
+        )
+
+    return format_budgeted_payload(lane_items, budget, header="[Relevant Context]")
 
 
 def _format_context_blocks_by_injection_point(
@@ -2856,6 +3109,7 @@ def get_relevant_memories(
     user_id: str | None = None,
     limit: int = 5,
     min_relevance: float = 0.1,
+    max_chars: int | None = None,
 ) -> str:
     """Return structured list of relevant memories for a query.
 
@@ -2867,6 +3121,10 @@ def get_relevant_memories(
         user_id: Optional user ID override
         limit: Maximum number of memories to return (default: 5)
         min_relevance: Minimum combined_score threshold (default: 0.1)
+        max_chars: Optional character budget for memory content. When set,
+            each memory's content is truncated at sentence boundaries
+            if the total payload would exceed this limit. Default None
+            = unbounded (legacy behavior).
 
     Returns:
         JSON string with:
@@ -2875,11 +3133,13 @@ def get_relevant_memories(
           graph_score, temporal_score, combined_score, source_signals
         - total_candidates: number of candidates considered
         - signal_counts: dict of how many results each signal contributed
+        - budget: lane allocation details (only when max_chars is set)
     """
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
     retriever = get_hybrid_retriever()
 
+    t0 = time.perf_counter()
     result = retriever.search(
         query=query,
         user_id=uid,
@@ -2889,14 +3149,193 @@ def get_relevant_memories(
             min_importance=0.0,
         ),
     )
+    latency_ms = (time.perf_counter() - t0) * 1000
+    filtered_results = [m for m in result.results if m.combined_score >= min_relevance][:limit]
+    memories = [m.to_dict() for m in filtered_results]
 
-    memories = [m.to_dict() for m in result.results if m.combined_score >= min_relevance][:limit]
-    payload = {
+    payload: dict[str, Any] = {
         "memories": memories,
         "total_candidates": result.total_candidates,
         "signal_counts": result.signal_counts,
+        "_trace": {
+            "latency_ms": round(latency_ms, 2),
+            "fast_path": result.signal_counts.get("fast_path"),
+        },
     }
+
+    if max_chars is not None:
+        budget = InjectionBudget(max_chars=max_chars)
+        lane_items = {
+            Lane.MEMORIES: [
+                LaneItem(id=m.memory_id, content=m.content or "", score=m.combined_score, lane=Lane.MEMORIES)
+                for m in filtered_results
+            ]
+        }
+        budgeted = format_budgeted_payload(lane_items, budget, header="[Relevant Memories]")
+        payload["budget"] = budgeted.to_dict()
+        mem_alloc = budgeted.allocations.get(Lane.MEMORIES)
+        if mem_alloc is not None:
+            for item, _ in mem_alloc.summary_items:
+                for mem_dict in payload["memories"]:
+                    if mem_dict.get("memory_id") == item.id:
+                        mem_dict["_truncation"] = "summary"
+            for item, _ in mem_alloc.stub_items:
+                for mem_dict in payload["memories"]:
+                    if mem_dict.get("memory_id") == item.id:
+                        mem_dict["_truncation"] = "stub"
+
+    logger.debug(
+        "get_relevant_memories: query=%r latency_ms=%.2f candidates=%d returned=%d fast_path=%s signals=%s budget=%s",
+        query,
+        latency_ms,
+        result.total_candidates,
+        len(memories),
+        result.signal_counts.get("fast_path"),
+        result.signal_counts,
+        max_chars,
+    )
     return json.dumps(payload, indent=2)
+
+
+# =============================================================================
+# Recovery Payload for Session Resume / Compaction
+# =============================================================================
+
+
+def _fetch_session_memories_raw(
+    uid: str,
+    tenant_id: str,
+    limit: int = 20,
+) -> list[sqlite3.Row]:
+    """Fetch session-scoped memories for a user, ordered by importance desc."""
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            "SELECT id, content, importance, scope, category, created_at, tags "
+            "FROM memories "
+            "WHERE user_id = ? AND tenant_id = ? AND scope = 'session' AND is_ghost = 0 "
+            "ORDER BY importance DESC, created_at DESC "
+            "LIMIT ?",
+            (uid, tenant_id, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def _fetch_high_confidence_memories(
+    uid: str,
+    tenant_id: str,
+    min_importance: float = 0.5,
+    limit: int = 20,
+) -> list[sqlite3.Row]:
+    """Fetch high-confidence project-level memories (arc/fact/trait) as fallback."""
+    conn = get_db_connection()
+    try:
+        return conn.execute(
+            "SELECT id, content, importance, scope, category, created_at, tags "
+            "FROM memories "
+            "WHERE user_id = ? AND tenant_id = ? "
+            "AND scope IN ('arc', 'fact', 'trait') "
+            "AND importance >= ? AND is_ghost = 0 "
+            "ORDER BY importance DESC, created_at DESC "
+            "LIMIT ?",
+            (uid, tenant_id, min_importance, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+@mcp.tool(output_schema=None)
+def generate_recovery_payload(
+    session_id: str,
+    user_id: str | None = None,
+    max_chars: int | None = None,
+    exclude_memory_ids: str | None = None,
+) -> str:
+    """Generate a compact recovery payload for session resume or context compaction.
+
+    Creates a budgeted, deduplicated memory block containing only the most
+    relevant session and project memories. Designed for injection after
+    session compaction or agent resume events where full transcript history
+    is no longer available.
+
+    Uses the same lane-based budget system (PIX-3949) as inject_context.
+
+    Memory sourcing (two-phase):
+      1. Session-scoped memories (scope='session') — most relevant to the
+         session being recovered.
+      2. High-confidence project memories (arc/fact/trait with importance ≥ 0.5)
+         — fallback when few session memories exist.
+
+    Args:
+        session_id: Unique session identifier (used for diagnostics and
+            future session-scoped querying).
+        user_id: Optional user ID override.
+        max_chars: Optional character budget for the formatted payload.
+            When set, output is truncated at sentence boundaries per lane
+            priority (session > project > blocks).
+            Default None = unbounded (legacy behavior).
+        exclude_memory_ids: Optional comma-separated list of memory IDs
+            to exclude (e.g. memories already present in current context).
+            Enables dedup after compaction.
+
+    Returns:
+        Formatted string with recovery payload.
+        Returns minimal message when no relevant memories exist.
+    """
+    uid = user_id or get_current_user_id()
+    tenant_id = get_current_tenant_id()
+
+    excluded: set[str] = set()
+    if exclude_memory_ids:
+        excluded = {mid.strip() for mid in exclude_memory_ids.split(",") if mid.strip()}
+
+    session_rows = _fetch_session_memories_raw(uid, tenant_id, limit=20)
+
+    project_rows: list[sqlite3.Row] = []
+    if len(session_rows) < 10:
+        project_rows = _fetch_high_confidence_memories(uid, tenant_id, min_importance=0.5, limit=20)
+
+    seen_contents: set[str] = set()
+
+    def _dedup_rows(rows: list[sqlite3.Row], session_boost: float) -> list[LaneItem]:
+        items: list[LaneItem] = []
+        for row in rows:
+            row_id = row["id"]
+            row_content = row["content"] or ""
+            if row_id in excluded:
+                continue
+            content_digest = hashlib.sha256(row_content.encode()).hexdigest()[:16]
+            if content_digest in seen_contents:
+                continue
+            seen_contents.add(content_digest)
+            importance = row["importance"] if row["importance"] is not None else 0.5
+            score = min(importance + session_boost, 1.0)
+            items.append(
+                LaneItem(
+                    id=row_id,
+                    content=row_content,
+                    score=score,
+                    lane=Lane.MEMORIES,
+                    metadata={"scope": row["scope"], "importance": importance},
+                )
+            )
+        return items
+
+    session_items = _dedup_rows(session_rows, session_boost=0.2)
+    project_items = _dedup_rows(project_rows, session_boost=0.0)
+
+    budget = InjectionBudget(max_chars=max_chars) if max_chars is not None else InjectionBudget()
+    lane_items: dict[Lane, list[LaneItem]] = {Lane.MEMORIES: session_items + project_items}
+
+    total_items = len(session_items) + len(project_items)
+
+    if total_items == 0:
+        return "[Recovery Context - 0 memories]\nNo session or project memories available for recovery."
+
+    result = format_budgeted_payload(lane_items, budget, header=f"[Recovery Context - session: {session_id}]")
+
+    return result.formatted
 
 
 def _resume_pending_curation_runs() -> None:
@@ -2931,6 +3370,17 @@ def main():
     initialize_stream_producer()
     _resume_pending_curation_runs()
 
+    reg = get_memory_hook_registry()
+    reg.register(MemoryHookType.PRE_STORE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_STORE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.PRE_RETRIEVE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_RETRIEVE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.PRE_UPDATE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_UPDATE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.PRE_DELETE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_DELETE, _audit_hook, name="audit")
+    reg.register(MemoryHookType.POST_DELETE, _cache_invalidation_hook, name="cache_invalidation")
+
     # Initialize WebSocket server
     async def websocket_auth_callback(token: str) -> tuple[str, str] | None:
         """Auth callback for WebSocket connections."""
@@ -2949,8 +3399,11 @@ def main():
 
         return None
 
-    # Create and start WebSocket server
-    websocket_server = WebSocketServer(auth_callback=cast(Any, websocket_auth_callback))
+    # Create and start WebSocket server with event bus for real-time push
+    websocket_server = WebSocketServer(
+        event_bus=get_event_bus(),
+        auth_callback=cast(Any, websocket_auth_callback),
+    )
     _run_async(websocket_server.start())
 
     mcp.run(show_banner=False)
@@ -4239,6 +4692,53 @@ def get_decay_events(
             "action": "get_decay_events",
             "count": len(events),
             "events": [e.to_dict() for e in events],
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(output_schema=None)
+def run_maintenance(
+    options: MaintenanceAction,
+    user_id: str | None = None,
+    tenant_id: str | None = None,
+) -> str:
+    """Run a conservative memory maintenance job.
+
+    Performs background memory quality operations: duplicate consolidation,
+    contradiction detection, stale archival, and cross-memory synthesis.
+    High-impact changes (contradictions) are flagged for admin review and
+    never auto-applied.
+
+    Args:
+        options: Maintenance configuration (modes, thresholds, budget)
+        user_id: Optional user ID override
+        tenant_id: Optional tenant ID override
+    """
+    uid = user_id or USER_ID
+    tid = tenant_id or get_current_tenant_id()
+
+    _check_rate_limit(tid)
+
+    config = MaintenanceConfig(
+        tenant_id=tid,
+        user_id=uid,
+        modes=options.modes,
+        duplicate_threshold=options.duplicate_threshold,
+        stale_strength_threshold=options.stale_strength_threshold,
+        stale_importance_threshold=options.stale_importance_threshold,
+        batch_size=options.batch_size,
+        max_runtime_seconds=options.max_runtime_seconds,
+    )
+
+    job = MemoryMaintenanceJob()
+    stats = job.run(config)
+
+    return json.dumps(
+        {
+            "ok": True,
+            "action": "run_maintenance",
+            **stats.to_dict(),
         },
         indent=2,
     )
