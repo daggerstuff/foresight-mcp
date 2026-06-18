@@ -20,6 +20,17 @@ Includes:
 from typing import TYPE_CHECKING, Any
 
 # Core system exports
+from .capture import (
+    CapturePipeline as CapturePipeline,
+    CaptureStats as CaptureStats,
+    CapturedMemory as CapturedMemory,
+    DedupeResult as DedupeResult,
+    DedupeEngine as DedupeEngine,
+    MemoryExtractor as MemoryExtractor,
+    SessionClassifier as SessionClassifier,
+    get_capture_pipeline as get_capture_pipeline,
+    reset_capture_pipeline as reset_capture_pipeline,
+)
 from .block_registry import (
     DEFAULT_BLOCK_SCHEMAS as DEFAULT_BLOCK_SCHEMAS,
     BlockRegistry as BlockRegistry,
@@ -135,6 +146,13 @@ from .injection_budget import (
 )
 from .maintenance_eval import (
     run_maintenance_eval as run_maintenance_eval,
+)
+from .memory_gc import (
+    GCConfig as GCConfig,
+    GCStats as GCStats,
+    MemoryGC as MemoryGC,
+    get_memory_gc as get_memory_gc,
+    run_memory_gc as run_memory_gc,
 )
 from .memory_relationships import (
     VALID_RELATIONSHIP_TYPES as VALID_RELATIONSHIP_TYPES,
@@ -399,6 +417,8 @@ __all__ = [
     "EventType",
     "ExtractionResult",
     "FreshnessTrend",
+    "GCConfig",
+    "GCStats",
     "GraphStore",
     "GraphTraversalResult",
     "HookExecutor",
@@ -424,6 +444,7 @@ __all__ = [
     "MemoryBlock",
     "MemoryBlockSchema",
     "MemoryDecayService",
+    "MemoryGC",
     "MemoryGraphTraversal",
     "MemoryOptions",
     "MemoryRelationship",
@@ -507,6 +528,7 @@ __all__ = [
     "get_hook_executor",
     "get_hybrid_retriever",
     "get_memory",
+    "get_memory_gc",
     "get_memory_relationship_store",
     "get_memory_relationships",
     "get_memory_source",
@@ -561,6 +583,7 @@ __all__ = [
     "reset_temporal_service",
     "run_clustering",
     "run_maintenance_eval",
+    "run_memory_gc",
     "run_temporal_migrations",
     "search_memories",
     "semantic_search_memories",
