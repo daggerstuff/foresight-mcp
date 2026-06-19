@@ -1904,7 +1904,7 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_stale_count(self):
         """get_system_status returns stale_count metric."""
-        from foresight_mcp.server import get_system_status, store_memory
+        from foresight_mcp.server import get_system_status
 
         result = get_system_status()
         data = json.loads(result)

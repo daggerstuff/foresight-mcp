@@ -105,10 +105,14 @@ class BlocksScreen(Screen):
         if isinstance(item, BlockItem):
             detail = self.query_one("#block-detail", Static)
             try:
-                result = manage_context_blocks(options=ContextBlockAction(action="get", label=item.block_label))
+                result = manage_context_blocks(
+                    options=ContextBlockAction(action="get", label=item.block_label)
+                )
                 if isinstance(result, str):
                     payload = json.loads(result)
-                    content = payload.get("content", "(empty)") if isinstance(payload, dict) else result
+                    content = (
+                        payload.get("content", "(empty)") if isinstance(payload, dict) else result
+                    )
                 elif isinstance(result, dict):
                     content = result.get("content", "(empty)")
                 else:
@@ -133,7 +137,7 @@ class BlocksScreen(Screen):
             if content:
                 try:
                     init_db()
-                    result = manage_context_blocks(
+                    manage_context_blocks(
                         options=ContextBlockAction(action="update", label=label, content=content)
                     )
                     detail.update(f"[bold]{label}[/bold]\n\n{content}")

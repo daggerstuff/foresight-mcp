@@ -17,7 +17,7 @@ from enum import StrEnum
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Schema version

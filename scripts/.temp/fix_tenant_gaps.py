@@ -1,5 +1,4 @@
 """One-off script to add tenant_id filters to all remaining query gaps."""
-import re
 
 FILES = {}
 

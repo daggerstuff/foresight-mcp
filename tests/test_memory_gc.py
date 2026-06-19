@@ -8,15 +8,12 @@ import sqlite3
 import tempfile
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from foresight_mcp.memory_gc import (
-    DEFAULT_RETENTION_TTLS,
     GCConfig,
     GCStats,
     MemoryGC,
     get_memory_gc,
-    run_memory_gc,
 )
 
 
