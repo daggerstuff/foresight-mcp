@@ -41,7 +41,7 @@ class SqliteBackend(DatabaseBackend):
         logger.debug("Initialising SqliteBackend with db_path=%s", path)
         self._pool = ConnectionPool(
             db_path=path,
-            max_size=max_size
+            max_size=max_size,
             max_idle_seconds=max_idle_seconds,
         )
 

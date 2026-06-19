@@ -77,7 +77,12 @@ from .hooks import (
     _cache_invalidation_hook,
     get_memory_hook_registry,
 )
-from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
+from .hybrid_retriever import (
+    HybridResult,
+    HybridSearchOptions,
+    HybridSearchResult,
+    get_hybrid_retriever,
+)
 from .injection_budget import (
     BudgetResult,
     DEFAULT_LANE_WEIGHTS,
@@ -108,7 +113,11 @@ from .memory_types import (
 )
 from .narrative_cache import NarrativeCache
 from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
-from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
+from .profile_synthesizer import (
+    ProfileConfig,
+    profile_to_prompt,
+    synthesize_profile as _synthesize_profile,
+)
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
 from .reflection_engine import get_reflection_engine
 from .reflection_narrative import _default_cache as _reflection_narrative_cache
@@ -167,14 +176,17 @@ class MemoryOptions(BaseModel):
     category: str = Field(default="fact", description="Category label")
     scope: str = Field(default="session", description="Memory scope: session, arc, trait, or fact")
     retention: str = Field(
-        default="short_term", description="Retention policy: ephemeral, short_term, long_term, or permanent"
+        default="short_term",
+        description="Retention policy: ephemeral, short_term, long_term, or permanent",
     )
     importance: float = Field(default=0.5, description="Initial importance score (0.0 to 1.0)")
     emotional_context: dict[str, Any] | None = Field(
-        default=None, description="Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)"
+        default=None,
+        description="Emotional metadata (valence, arousal, dominance, primary_emotion, intensity)",
     )
     metrics: dict[str, Any] | None = Field(
-        default=None, description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)"
+        default=None,
+        description="Empathy metrics (reciprocity, validation_accuracy, resistance_level)",
     )
     relation_type: str | None = Field(
         default=None,
@@ -201,14 +213,18 @@ class MemoryUpdateOptions(BaseModel):
 
 
 class SearchOptions(BaseModel):
-    query_type: Literal["id", "keyword", "list"] = Field(default="keyword", description="Type of search/retrieval")
+    query_type: Literal["id", "keyword", "list"] = Field(
+        default="keyword", description="Type of search/retrieval"
+    )
     query: str | None = Field(default=None, description="Search query string")
     memory_id: str | None = Field(default=None, description="Retrieve specific memory by ID")
     limit: int = Field(default=10, description="Maximum results")
     offset: int = Field(default=0, description="Result offset")
     min_importance: float = Field(default=0.1, description="Minimum importance threshold")
     use_hybrid: bool = Field(default=True, description="Enable hybrid search signals")
-    use_cascade: bool = Field(default=False, description="Enable cascade search across related entities")
+    use_cascade: bool = Field(
+        default=False, description="Enable cascade search across related entities"
+    )
     cascade_depth: int = Field(default=2, description="Maximum depth for cascade traversal")
     cascade_limit: int = Field(default=100, description="Maximum results per cascade level")
     debug: bool = Field(
@@ -218,7 +234,9 @@ class SearchOptions(BaseModel):
 
 
 class ContextBlockAction(BaseModel):
-    action: Literal["list", "get", "update", "reset", "clear"] = Field(description="Action to perform")
+    action: Literal["list", "get", "update", "reset", "clear"] = Field(
+        description="Action to perform"
+    )
     label: str | None = Field(default=None, description="Block label (e.g. guidance, preferences)")
     content: str | None = Field(default=None, description="New content for update action")
 
@@ -228,10 +246,14 @@ class SubconsciousAction(ContextBlockAction):
 
 
 class CurationRunAction(BaseModel):
-    action: Literal["create", "get", "list", "cancel", "archive"] = Field(description="Action to perform")
+    action: Literal["create", "get", "list", "cancel", "archive"] = Field(
+        description="Action to perform"
+    )
     run_id: str | None = Field(default=None, description="Curation run ID for get/cancel/archive")
     source_bank_id: str | None = Field(default=None, description="Source bank to curate from")
-    output_bank_id: str | None = Field(default=None, description="Optional output bank for reviewable results")
+    output_bank_id: str | None = Field(
+        default=None, description="Optional output bank for reviewable results"
+    )
     policy_mode: Literal["preserve", "rebalance", "rebuild"] = Field(
         default="rebalance", description="Curation policy mode"
     )
@@ -250,33 +272,52 @@ class CurationRunAction(BaseModel):
     transcript_bundle: list[dict[str, Any]] | None = Field(
         default=None, description="Optional transcript bundle to incorporate during curation"
     )
-    session_id: str | None = Field(default=None, description="Optional session ID for transcript bundles")
-    project_path: str | None = Field(default=None, description="Optional project path for transcript bundles")
+    session_id: str | None = Field(
+        default=None, description="Optional session ID for transcript bundles"
+    )
+    project_path: str | None = Field(
+        default=None, description="Optional project path for transcript bundles"
+    )
     limit: int = Field(default=20, description="Maximum number of runs to return for list")
 
 
 class EntityQueryType(BaseModel):
-    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(description="Type of entity query")
+    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(
+        description="Type of entity query"
+    )
     entity_type: str | None = Field(
-        default=None, description="Entity type for 'by_type' (person/place/concept/event/emotion/object)"
+        default=None,
+        description="Entity type for 'by_type' (person/place/concept/event/emotion/object)",
     )
     name: str | None = Field(default=None, description="Name for 'by_name' partial match")
-    entity_id: str | None = Field(default=None, description="Entity ID for 'relationships' or 'traverse'")
-    direction: Literal["in", "out", "both"] = Field(default="both", description="Direction for relationships")
+    entity_id: str | None = Field(
+        default=None, description="Entity ID for 'relationships' or 'traverse'"
+    )
+    direction: Literal["in", "out", "both"] = Field(
+        default="both", description="Direction for relationships"
+    )
     max_depth: int = Field(default=2, description="Max depth for traversal")
 
 
 class TemporalWindow(BaseModel):
-    window: Literal["today", "week", "month", "year"] = Field(default="week", description="Time window for retrieval")
-    trend: str | None = Field(default=None, description="Filter by trend (stable/strengthening/weakening/stale)")
+    window: Literal["today", "week", "month", "year"] = Field(
+        default="week", description="Time window for retrieval"
+    )
+    trend: str | None = Field(
+        default=None, description="Filter by trend (stable/strengthening/weakening/stale)"
+    )
     category: str | None = Field(default=None, description="Category filter")
     limit: int = Field(default=50, description="Max results")
 
 
 class SystemStatusOptions(BaseModel):
-    include_trends: bool = Field(default=False, description="Whether to include temporal trend analysis")
+    include_trends: bool = Field(
+        default=False, description="Whether to include temporal trend analysis"
+    )
     timeframe: str = Field(default="30 days", description="Timeframe for trend analysis")
-    include_cache_metrics: bool = Field(default=False, description="Whether to include cache and budget metrics")
+    include_cache_metrics: bool = Field(
+        default=False, description="Whether to include cache and budget metrics"
+    )
     enforce_hard_caps: bool = Field(
         default=False, description="Whether to enforce hard caps on memory and cache counts"
     )
@@ -290,21 +331,31 @@ class EntityAction(BaseModel):
 
 
 class EntityQuery(BaseModel):
-    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(..., description="Type of query")
+    query_type: Literal["by_type", "by_name", "relationships", "traverse"] = Field(
+        ..., description="Type of query"
+    )
     entity_type: str | None = Field(default=None, description="Entity type filter")
     name: str | None = Field(default=None, description="Name for partial match")
-    entity_id: str | None = Field(default=None, description="Entity ID for relationships or starting traversal")
-    direction: Literal["in", "out", "both"] = Field(default="both", description="Relationship direction")
+    entity_id: str | None = Field(
+        default=None, description="Entity ID for relationships or starting traversal"
+    )
+    direction: Literal["in", "out", "both"] = Field(
+        default="both", description="Relationship direction"
+    )
     max_depth: int = Field(default=2, description="Traversal depth")
     limit: int = Field(default=50, description="Result limit")
 
 
 class MemoryAction(BaseModel):
-    action: Literal["store", "update", "delete", "archive"] = Field(..., description="Action to perform")
+    action: Literal["store", "update", "delete", "archive"] = Field(
+        ..., description="Action to perform"
+    )
     memory_id: str | None = Field(default=None, description="Memory ID for update/delete/archive")
     content: str | None = Field(default=None, description="Content for store/update")
     options: MemoryOptions | None = Field(default=None, description="Options for store")
-    updates: MemoryUpdateOptions | None = Field(default=None, description="Updates for update action")
+    updates: MemoryUpdateOptions | None = Field(
+        default=None, description="Updates for update action"
+    )
 
 
 class VersionAction(BaseModel):
@@ -327,9 +378,15 @@ class MaintenanceAction(BaseModel):
         default=["consolidate", "contradict", "archive_stale", "synthesize"],
         description="Maintenance modes to run",
     )
-    duplicate_threshold: float = Field(default=0.25, description="Minimum Jaccard similarity to consider duplicate")
-    stale_strength_threshold: float = Field(default=0.2, description="Archive memories below this strength")
-    stale_importance_threshold: float = Field(default=0.1, description="Archive memories below this importance")
+    duplicate_threshold: float = Field(
+        default=0.25, description="Minimum Jaccard similarity to consider duplicate"
+    )
+    stale_strength_threshold: float = Field(
+        default=0.2, description="Archive memories below this strength"
+    )
+    stale_importance_threshold: float = Field(
+        default=0.1, description="Archive memories below this importance"
+    )
     batch_size: int = Field(default=200, description="Max memories to process per mode")
     max_runtime_seconds: float = Field(default=300, description="Wall-clock budget in seconds")
 
@@ -359,7 +416,9 @@ def _check_rate_limit(tenant_id: str | None = None) -> None:
     burst_limit = DEFAULT_BURST_LIMIT
     try:
         conn = get_db_connection()
-        row = conn.execute("SELECT rate_limit, burst_limit FROM tenants WHERE id = ?", (tid,)).fetchone()
+        row = conn.execute(
+            "SELECT rate_limit, burst_limit FROM tenants WHERE id = ?", (tid,)
+        ).fetchone()
         conn.close()
         if row:
             rate_limit = row["rate_limit"] or DEFAULT_RATE_LIMIT
@@ -394,7 +453,12 @@ def _seed_default_tenant(conn) -> None:
         INSERT OR IGNORE INTO tenants (id, name, rate_limit, burst_limit, created_at, config)
         VALUES (?, 'Default tenant', ?, ?, ?, '{}')
         """,
-        (DEFAULT_TENANT_ID, DEFAULT_RATE_LIMIT, DEFAULT_BURST_LIMIT, datetime.now(timezone.utc).isoformat()),
+        (
+            DEFAULT_TENANT_ID,
+            DEFAULT_RATE_LIMIT,
+            DEFAULT_BURST_LIMIT,
+            datetime.now(timezone.utc).isoformat(),
+        ),
     )
 
 
@@ -632,7 +696,9 @@ def init_db():
         )
     """)
 
-    applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+    applied = {
+        row["version"] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+    }
 
     for version in sorted(_SCHEMA_MIGRATIONS):
         if version in applied:
@@ -659,15 +725,21 @@ def init_db():
     try:
         cols = [row[1] for row in conn.execute("PRAGMA table_info(decay_config)").fetchall()]
         if cols and "tenant_id" not in cols:
-            conn.execute("ALTER TABLE decay_config ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)")
+            conn.execute(
+                "ALTER TABLE decay_config ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_decay_config_tenant ON decay_config(tenant_id)"
+            )
             conn.commit()
     except sqlite3.OperationalError:
         pass  # Table doesn't exist yet; will be created by migrations
 
     # Backfill content_hash for existing memories (v10 migration)
     try:
-        rows = conn.execute("SELECT id, content FROM memories WHERE content_hash IS NULL").fetchall()
+        rows = conn.execute(
+            "SELECT id, content FROM memories WHERE content_hash IS NULL"
+        ).fetchall()
         if rows:
             for row in rows:
                 h = _content_hash(row["content"])
@@ -851,14 +923,19 @@ def rollback_to_version(memory_id: str, target_version: int, user_id: str | None
     event_bus = get_event_bus_with_stream()
     event_bus.publish(
         memory_updated(
-            memory_id=memory_id, old_content=current["content"], new_content=version_row["content"], actor=uid
+            memory_id=memory_id,
+            old_content=current["content"],
+            new_content=version_row["content"],
+            actor=uid,
         )
     )
 
     return f"Rolled back memory {memory_id} to version {target_version}"
 
 
-def get_memory_diff(memory_id: str, version1: int, version2: int, _user_id: str | None = None) -> dict[str, Any]:
+def get_memory_diff(
+    memory_id: str, version1: int, version2: int, _user_id: str | None = None
+) -> dict[str, Any]:
     """Get diff between two versions of a memory."""
     conn = get_db_connection()
     tenant_id = get_current_tenant_id()
@@ -1017,7 +1094,13 @@ class InputValidationMiddleware(_Middleware):
 
 
 mcp = FastMCP(
-    "Foresight", middleware=[AuthMiddleware(), TenantMiddleware(), InputValidationMiddleware(), RateLimitMiddleware()]
+    "Foresight",
+    middleware=[
+        AuthMiddleware(),
+        TenantMiddleware(),
+        InputValidationMiddleware(),
+        RateLimitMiddleware(),
+    ],
 )
 
 logger = logging.getLogger("foresight_server")
@@ -1107,7 +1190,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     if current_count >= DEFAULT_MAX_MEMORY_PER_TENANT:
         conn.close()
         return f"Error: Memory limit reached ({DEFAULT_MAX_MEMORY_PER_TENANT} per tenant). Cannot store new memory."
-    memory_id = hashlib.sha256(f"{content}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+    memory_id = hashlib.sha256(
+        f"{content}{datetime.now(timezone.utc).isoformat()}".encode()
+    ).hexdigest()[:16]
     content_h = _content_hash(content)
     existing = conn.execute(
         "SELECT id, activation_count FROM memories "
@@ -1125,7 +1210,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
         conn.close()
         return f"Duplicate detected - bumped activation for existing memory {existing['id']}"
     # Parse emotional context and metrics
-    emo_ctx = EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
+    emo_ctx = (
+        EmotionalMetadata.from_dict(opts.emotional_context) if opts.emotional_context else None
+    )
     met = EmpathyMetrics.from_dict(opts.metrics) if opts.metrics else None
     memory = MemoryObject.create(
         content=content,
@@ -1181,7 +1268,9 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             )
         except MemoryRelationshipError as exc:
             logger.warning(f"Failed to create memory relationship: {exc}")
-    get_event_bus_with_stream().publish(memory_stored(memory_id=memory_id, content=content, actor=uid))
+    get_event_bus_with_stream().publish(
+        memory_stored(memory_id=memory_id, content=content, actor=uid)
+    )
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
 
     # ── POST_STORE hook ────────────────────────────────────────────────
@@ -1213,7 +1302,8 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (options.memory_id, uid, tenant_id),
     ).fetchone()
     if not row:
         conn.close()
@@ -1253,7 +1343,8 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     values.append(datetime.now(timezone.utc).isoformat())
     values.extend([options.memory_id, uid, tenant_id])
     conn.execute(
-        f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?", values
+        f"UPDATE memories SET {', '.join(updates_list)} WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        values,
     )
     conn.commit()
     conn.close()
@@ -1305,13 +1396,17 @@ def _handle_memory_delete(uid: str, tenant_id: str, memory_id: str | None) -> st
 
     conn = get_db_connection()
     if not conn.execute(
-        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
+        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, tenant_id),
     ).fetchone():
         conn.close()
         return f"Memory {memory_id} not found."
 
     get_event_bus_with_stream().publish(memory_deleted(memory_id=memory_id, actor=uid))
-    conn.execute("DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id))
+    conn.execute(
+        "DELETE FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, tenant_id),
+    )
     conn.commit()
     conn.close()
     get_hybrid_retriever().invalidate_tfidf_cache(uid, tenant_id)
@@ -1329,7 +1424,8 @@ def _handle_memory_archive(uid: str, tenant_id: str, memory_id: str | None) -> s
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (memory_id, uid, tenant_id),
     ).fetchone()
 
     if not row:
@@ -1379,10 +1475,12 @@ def manage_memories(
     uid = user_id or USER_ID
     tenant_id = get_current_tenant_id()
 
-    if options.action == "store" and tenant_id == "default" and os.environ.get("PYTEST_CURRENT_TEST"):
-        return (
-            "Error: refusing to store to the 'default' tenant under pytest; set FORESIGHT_DB_PATH or use a test tenant"
-        )
+    if (
+        options.action == "store"
+        and tenant_id == "default"
+        and os.environ.get("PYTEST_CURRENT_TEST")
+    ):
+        return "Error: refusing to store to the 'default' tenant under pytest; set FORESIGHT_DB_PATH or use a test tenant"
 
     if options.action == "store":
         return _handle_memory_store(uid, tenant_id, options)
@@ -1496,7 +1594,8 @@ def search_memories(
             return "Error: memory_id or query (as ID) required for id lookup."
         conn = get_db_connection()
         row = conn.execute(
-            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (mid, uid, tenant_id)
+            "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+            (mid, uid, tenant_id),
         ).fetchone()
         conn.close()
 
@@ -1558,14 +1657,10 @@ def search_memories(
     conn = get_db_connection()
     if options.query:
         escaped = options.query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
-        query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
-        )
+        query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND content LIKE ? ESCAPE '!' LIMIT ? OFFSET ?"
         params = (uid, tenant_id, f"%{escaped}%", options.limit, options.offset)
     else:
-        query_sql = (
-            "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
-        )
+        query_sql = "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
         params = (uid, tenant_id, options.limit, options.offset)
 
     rows = conn.execute(query_sql, params).fetchall()
@@ -1576,7 +1671,9 @@ def search_memories(
         get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
         return "No memories found."
 
-    results = [f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows]
+    results = [
+        f"- [{r['id']}] ({r['scope']}/{r['retention']}) {r['content'][:80]}..." for r in rows
+    ]
     # ── POST_RETRIEVE hook (fallback) ─────────────────────────────────
     get_memory_hook_registry().emit_post(MemoryHookType.POST_RETRIEVE, hook_ctx)
     return f"Memories ({len(results)} found):\n" + "\n".join(results)
@@ -1594,7 +1691,8 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
 
     conn = get_db_connection()
     row = conn.execute(
-        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+        "SELECT * FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (options.memory_id, uid, tenant_id),
     ).fetchone()
     if not row:
         conn.close()
@@ -1645,7 +1743,10 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     conn.close()
     get_event_bus_with_stream().publish(
         memory_updated(
-            memory_id=options.memory_id, old_content=row["content"], new_content=version_row["content"], actor=uid
+            memory_id=options.memory_id,
+            old_content=row["content"],
+            new_content=version_row["content"],
+            actor=uid,
         )
     )
     return f"Rolled back memory {options.memory_id} to version {options.to_version} (now at {new_version})"
@@ -1658,7 +1759,8 @@ def _handle_version_diff(uid: str, tenant_id: str, options: VersionAction) -> st
 
     conn = get_db_connection()
     if not conn.execute(
-        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?", (options.memory_id, uid, tenant_id)
+        "SELECT id FROM memories WHERE id = ? AND user_id = ? AND tenant_id = ?",
+        (options.memory_id, uid, tenant_id),
     ).fetchone():
         conn.close()
         return f"Memory {options.memory_id} not found."
@@ -1877,7 +1979,9 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
     Returns the number of entities stored.
     """
 
-    user_content = " ".join(msg.get("content", "") for msg in messages if msg.get("role") == "user")[:3000]
+    user_content = " ".join(
+        msg.get("content", "") for msg in messages if msg.get("role") == "user"
+    )[:3000]
 
     if not user_content.strip():
         return 0
@@ -1896,7 +2000,10 @@ def _bridge_transcript_entities(messages: list[dict], uid: str) -> int:
 
 @mcp.tool(output_schema=None)
 def process_session_transcript(
-    session_id: str, messages: list[dict], project_path: str | None = None, user_id: str | None = None
+    session_id: str,
+    messages: list[dict],
+    project_path: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """
     Process a session transcript and extract memories.
@@ -1914,7 +2021,11 @@ def process_session_transcript(
     tenant_id = get_current_tenant_id()
     agent = get_context_block_agent(uid, tenant_id)
 
-    _run_async(agent.process_transcript(session_id=session_id, messages=messages, project_path=project_path))
+    _run_async(
+        agent.process_transcript(
+            session_id=session_id, messages=messages, project_path=project_path
+        )
+    )
 
     _bridge_context_blocks_to_memories(agent, uid)
     _bridge_transcript_entities(messages, uid)
@@ -2124,7 +2235,9 @@ def _publish_curation_status(
     **payload: Any,
 ) -> None:
     """Publish a curation lifecycle event."""
-    get_event_bus_with_stream().publish(curation_status_changed(run_id, status, payload=payload, actor=actor))
+    get_event_bus_with_stream().publish(
+        curation_status_changed(run_id, status, payload=payload, actor=actor)
+    )
 
 
 def _get_curation_cancel_event(run_id: str) -> threading.Event:
@@ -2250,7 +2363,9 @@ def _restore_in_place_curation(
         conn.close()
 
 
-def _load_source_bank_rows(uid: str, tenant_id: str, bank_id: str, limit: int = 100) -> list[sqlite3.Row]:
+def _load_source_bank_rows(
+    uid: str, tenant_id: str, bank_id: str, limit: int = 100
+) -> list[sqlite3.Row]:
     """Load source-bank memories for curation."""
     conn = get_db_connection()
     rows = conn.execute(
@@ -2281,14 +2396,18 @@ def _build_synthesis_snapshot(rows: list[sqlite3.Row], uid: str) -> dict[str, An
                 retention=row["retention"] or "long_term",
                 content=row["content"],
                 tags=json.loads(row["tags"]) if row["tags"] else [],
-                emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5)) if emo else None,
+                emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5))
+                if emo
+                else None,
             )
         )
     result = _run_async(get_enhanced_synthesizer().synthesize(memories, user_id=uid))
     return result.to_dict() if result else None
 
 
-def _build_reflection_snapshot(rows: list[sqlite3.Row], uid: str, tenant_id: str) -> dict[str, Any] | None:
+def _build_reflection_snapshot(
+    rows: list[sqlite3.Row], uid: str, tenant_id: str
+) -> dict[str, Any] | None:
     """Build a non-persisting reflection summary from existing reflection primitives."""
     if not rows:
         return None
@@ -2297,7 +2416,10 @@ def _build_reflection_snapshot(rows: list[sqlite3.Row], uid: str, tenant_id: str
     try:
         trend_summary = engine._build_trend_summary(rows)
         entity_summary = engine._build_entity_summary(conn, uid, tenant_id)
-        insights = [insight.to_dict() for insight in engine._generate_insights(rows, trend_summary, entity_summary)[:5]]
+        insights = [
+            insight.to_dict()
+            for insight in engine._generate_insights(rows, trend_summary, entity_summary)[:5]
+        ]
         return {
             "trend_summary": trend_summary,
             "entity_summary": entity_summary,
@@ -2342,10 +2464,14 @@ def _make_curated_entries(
     if context_labels:
         summary_lines.append(f"Context blocks considered: {', '.join(context_labels[:5])}")
     if synthesis:
-        summary_lines.append(f"Synthesis contradictions: {len(synthesis.get('contradictions', []))}")
+        summary_lines.append(
+            f"Synthesis contradictions: {len(synthesis.get('contradictions', []))}"
+        )
         summary_lines.append(f"Synthesis insights: {len(synthesis.get('insights', []))}")
     if reflection:
-        summary_lines.append(f"Reflection overall trend: {reflection['trend_summary'].get('overall', 'stable')}")
+        summary_lines.append(
+            f"Reflection overall trend: {reflection['trend_summary'].get('overall', 'stable')}"
+        )
         summary_lines.append(f"Reflection insights: {len(reflection.get('insights', []))}")
 
     entries.append(
@@ -2383,7 +2509,9 @@ def _make_curated_entries(
         if synthesis and synthesis.get("insights"):
             entries.append(
                 {
-                    "content": "\n".join(f"- {insight['summary']}" for insight in synthesis["insights"][:5]),
+                    "content": "\n".join(
+                        f"- {insight['summary']}" for insight in synthesis["insights"][:5]
+                    ),
                     "category": "curation_insight",
                     "scope": "arc",
                     "retention": "long_term",
@@ -2395,7 +2523,9 @@ def _make_curated_entries(
         if synthesis and synthesis.get("insights"):
             rebuilt_lines.extend(f"- {insight['summary']}" for insight in synthesis["insights"][:5])
         elif reflection and reflection.get("insights"):
-            rebuilt_lines.extend(f"- {insight['summary']}" for insight in reflection["insights"][:5])
+            rebuilt_lines.extend(
+                f"- {insight['summary']}" for insight in reflection["insights"][:5]
+            )
         else:
             rebuilt_lines.extend(f"- {row['content']}" for row in source_rows[:5])
         entries.append(
@@ -2428,7 +2558,9 @@ def _insert_curation_entries(
         for entry in entries:
             if cancel_event and cancel_event.is_set():
                 raise CurationError("Curation canceled before staged output committed")
-            memory_id = hashlib.sha256(f"{bank_id}:{entry['content']}:{uuid.uuid4().hex}".encode()).hexdigest()[:16]
+            memory_id = hashlib.sha256(
+                f"{bank_id}:{entry['content']}:{uuid.uuid4().hex}".encode()
+            ).hexdigest()[:16]
             conn.execute(
                 "INSERT INTO memories "
                 "(id, content, scope, retention, category, user_id, bank_id, tenant_id, "
@@ -2491,9 +2623,15 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         _raise_if_run_canceled(uid, tenant_id, run_id)
         source_rows = _load_source_bank_rows(uid, tenant_id, payload["source_bank_id"])
         block_snapshot = _context_block_snapshot(uid, tenant_id)
-        synthesis = None if payload["tool_access"] == "disabled" else _build_synthesis_snapshot(source_rows, uid)
+        synthesis = (
+            None
+            if payload["tool_access"] == "disabled"
+            else _build_synthesis_snapshot(source_rows, uid)
+        )
         reflection = (
-            None if payload["tool_access"] == "disabled" else _build_reflection_snapshot(source_rows, uid, tenant_id)
+            None
+            if payload["tool_access"] == "disabled"
+            else _build_reflection_snapshot(source_rows, uid, tenant_id)
         )
         run = {
             "id": run_id,
@@ -2565,7 +2703,9 @@ def _execute_curation_run(run_id: str, payload: dict[str, Any]) -> None:
         summary.update(promotion_summary)
         _raise_if_run_canceled(uid, tenant_id, run_id)
         completed_at = datetime.now(timezone.utc).isoformat()
-        _update_curation_run(run_id, tenant_id, status="completed", summary=summary, ended_at=completed_at, error={})
+        _update_curation_run(
+            run_id, tenant_id, status="completed", summary=summary, ended_at=completed_at, error={}
+        )
         queue.remove(run_id, tenant_id=tenant_id)
         _publish_curation_status(
             run_id,
@@ -2636,7 +2776,9 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
         if options.output_mode == "in_place" and options.tool_access != "operate":
             res = _tool_error("create", "output_mode=in_place requires tool_access=operate")
         elif options.output_mode == "in_place" and options.output_bank_id is not None:
-            res = _tool_error("create", "output_mode=in_place does not allow output_bank_id override")
+            res = _tool_error(
+                "create", "output_mode=in_place does not allow output_bank_id override"
+            )
         elif options.transcript_bundle and options.tool_access != "operate":
             res = _tool_error("create", "transcript_bundle requires tool_access=operate")
         else:
@@ -2708,7 +2850,9 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
             (uid, tenant_id, options.limit),
         ).fetchall()
         conn.close()
-        res = _tool_response(ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows])
+        res = _tool_response(
+            ok=True, action="list", runs=[_row_to_curation_run(row) for row in rows]
+        )
 
     elif not options.run_id:
         res = _tool_error(options.action, "run_id is required for this action")
@@ -2716,7 +2860,9 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
     else:
         row = _fetch_curation_run(uid, tenant_id, options.run_id)
         if row is None:
-            res = _tool_error(options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id)
+            res = _tool_error(
+                options.action, f"Curation run {options.run_id} not found.", run_id=options.run_id
+            )
         elif options.action == "get":
             res = _tool_response(ok=True, action="get", run=_row_to_curation_run(row))
         elif options.action == "cancel":
@@ -2729,7 +2875,9 @@ def manage_curation_runs(options: CurationRunAction, user_id: str | None = None)
             else:
                 ended_at = datetime.now(timezone.utc).isoformat()
                 _get_curation_cancel_event(options.run_id).set()
-                _update_curation_run(options.run_id, tenant_id, status="canceled", ended_at=ended_at)
+                _update_curation_run(
+                    options.run_id, tenant_id, status="canceled", ended_at=ended_at
+                )
                 OperationQueue(DB_PATH).remove(options.run_id, tenant_id=tenant_id)
                 _publish_curation_status(options.run_id, "canceled", actor=uid)
                 res = _tool_response(
@@ -2988,9 +3136,9 @@ def inject_context(
         ),
     )
     latency_ms = (time.perf_counter() - t0) * 1000
-    memories: list[HybridResult] = [r for r in hybrid_result.results if r.combined_score >= min_relevance][
-        :max_memories
-    ]
+    memories: list[HybridResult] = [
+        r for r in hybrid_result.results if r.combined_score >= min_relevance
+    ][:max_memories]
     # Track last injection for system status visibility (PIX-3955)
     _last_injection_stats.update(
         {
@@ -3024,7 +3172,11 @@ def inject_context(
         budgeted = None
 
     if not include_details:
-        return budgeted.formatted if budgeted is not None else _format_injection_output(memories, uid, tenant_id, terms)
+        return (
+            budgeted.formatted
+            if budgeted is not None
+            else _format_injection_output(memories, uid, tenant_id, terms)
+        )
 
     blocks_by_point = _format_context_blocks_by_injection_point(uid, tenant_id, terms)
     legacy_formatted = _format_injection_output(memories, uid, tenant_id, terms)
@@ -3085,7 +3237,9 @@ def _format_injection_output_budgeted(
     pending = get_context_block_agent(uid, tenant_id).state.get_block(PENDING_ITEMS)
     if project_ctx and not project_ctx.is_empty():
         lane_items[Lane.DYNAMIC].append(
-            LaneItem(id="project_context", content=project_ctx.content, score=0.8, lane=Lane.DYNAMIC)
+            LaneItem(
+                id="project_context", content=project_ctx.content, score=0.8, lane=Lane.DYNAMIC
+            )
         )
     if pending and not pending.is_empty():
         lane_items[Lane.DYNAMIC].append(
@@ -3173,7 +3327,9 @@ def _context_block_notes_for_terms(
     lines: list[str] = []
     for point_value, entries in grouped.items():
         matching_entries = [
-            e for e in entries if any(re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms)
+            e
+            for e in entries
+            if any(re.search(rf"\b{re.escape(t)}\b", e["content"].lower()) for t in terms)
         ]
         if not matching_entries:
             continue
@@ -3252,7 +3408,12 @@ def get_relevant_memories(
         budget = InjectionBudget(max_chars=max_chars)
         lane_items = {
             Lane.MEMORIES: [
-                LaneItem(id=m.memory_id, content=m.content or "", score=m.combined_score, lane=Lane.MEMORIES)
+                LaneItem(
+                    id=m.memory_id,
+                    content=m.content or "",
+                    score=m.combined_score,
+                    lane=Lane.MEMORIES,
+                )
                 for m in filtered_results
             ]
         }
@@ -3418,7 +3579,9 @@ def generate_recovery_payload(
     if total_items == 0:
         return "[Recovery Context - 0 memories]\nNo session or project memories available for recovery."
 
-    result = format_budgeted_payload(lane_items, budget, header=f"[Recovery Context - session: {session_id}]")
+    result = format_budgeted_payload(
+        lane_items, budget, header=f"[Recovery Context - session: {session_id}]"
+    )
 
     return result.formatted
 
@@ -3589,7 +3752,11 @@ def query_memories_temporal(options: TemporalWindow, user_id: str | None = None)
         )
     else:
         results = builder.get_memories_from_window(
-            user_id=uid, window=options.window, limit=options.limit, min_importance=0.1, category=options.category
+            user_id=uid,
+            window=options.window,
+            limit=options.limit,
+            min_importance=0.1,
+            category=options.category,
         )
 
     return json.dumps(
@@ -3610,7 +3777,9 @@ def query_memories_temporal(options: TemporalWindow, user_id: str | None = None)
 
 
 @mcp.tool(output_schema=None)
-def get_system_status(options: SystemStatusOptions | None = None, user_id: str | None = None) -> str:
+def get_system_status(
+    options: SystemStatusOptions | None = None, user_id: str | None = None
+) -> str:
     """
     Get system health, memory statistics, and temporal trends.
     Args:
@@ -3726,7 +3895,9 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
                     "hits": cache_stats["hits"],
                     "misses": cache_stats["misses"],
                     "evictions": cache_stats["eviction_count"],
-                    "utilization_pct": round((cache_stats["size"] / cache_stats["max_entries"]) * 100, 2),
+                    "utilization_pct": round(
+                        (cache_stats["size"] / cache_stats["max_entries"]) * 100, 2
+                    ),
                 },
                 "reflection_narrative_in_process_cache": {
                     "type": "in_process",
@@ -3735,7 +3906,10 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
             }
         except Exception:
             result["cache_metrics"] = {
-                "narrative_cache": {"type": "persistent", "error": "Unable to retrieve narrative cache metrics"},
+                "narrative_cache": {
+                    "type": "persistent",
+                    "error": "Unable to retrieve narrative cache metrics",
+                },
                 "reflection_narrative_in_process_cache": {
                     "type": "in_process",
                     "size": len(_reflection_narrative_cache),
@@ -3748,15 +3922,19 @@ def get_system_status(options: SystemStatusOptions | None = None, user_id: str |
             result["cache_metrics"]["tfidf_cache"] = {
                 "size": tfidf_cache_size,
                 "max_size": DEFAULT_MAX_TFIDF_CACHE_SIZE,
-                "utilization_pct": round((tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2),
+                "utilization_pct": round(
+                    (tfidf_cache_size / DEFAULT_MAX_TFIDF_CACHE_SIZE) * 100, 2
+                ),
             }
             # Retrieval debug info
-            result["retrieval_debug"] = {
+            result["cache_metrics"]["retrieval_debug"] = {
                 "tfidf_cache_size": tfidf_cache_size,
                 "fast_path_enabled": True,
             }
         except Exception:
-            result["cache_metrics"]["tfidf_cache"] = {"error": "Unable to retrieve TF-IDF cache metrics"}
+            result["cache_metrics"]["tfidf_cache"] = {
+                "error": "Unable to retrieve TF-IDF cache metrics"
+            }
     return json.dumps(result, indent=2)
 
 
@@ -4270,7 +4448,12 @@ def run_clustering(
     memories = _fetch_memories_for_clustering(uid, tenant_id)
     if not memories:
         return json.dumps(
-            {"ok": True, "clusters_created": 0, "memories_processed": 0, "message": "No memories to cluster."},
+            {
+                "ok": True,
+                "clusters_created": 0,
+                "memories_processed": 0,
+                "message": "No memories to cluster.",
+            },
             indent=2,
         )
 
@@ -4572,7 +4755,9 @@ def semantic_search_memories(
 
 def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction) -> str:
     """Helper for analyze synthesize action."""
-    synthesizer = get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
+    synthesizer = (
+        get_enhanced_synthesizer() if options.enhanced else get_memory_system()["synthesizer"]
+    )
     conn = get_db_connection()
     rows = conn.execute(
         "SELECT * FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0 ORDER BY created_at DESC LIMIT ?",
@@ -4594,7 +4779,9 @@ def _handle_analyze_synthesize(uid: str, tenant_id: str, options: AnalysisAction
                 retention=r["retention"],
                 content=r["content"],
                 tags=json.loads(r["tags"]),
-                emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5)) if emo else None,
+                emotional_context=EmotionalMetadata(intensity=emo.get("intensity", 0.5))
+                if emo
+                else None,
             )
         )
 
@@ -4837,7 +5024,9 @@ def get_decay_events(
     """
     uid = user_id or USER_ID
     tid = tenant_id or get_current_tenant_id()
-    events = get_decay_model().get_decay_events(user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit)
+    events = get_decay_model().get_decay_events(
+        user_id=uid, tenant_id=tid, memory_id=memory_id, limit=limit
+    )
     return json.dumps(
         {
             "ok": True,

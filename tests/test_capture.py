@@ -1,19 +1,13 @@
 """Tests for PIX-3954 capture pipeline (SessionClassifier, MemoryExtractor, DedupeEngine, CapturePipeline)."""
 
 import hashlib
-import json
-import sqlite3
-from datetime import datetime, timezone, timedelta
-from unittest.mock import patch
+from datetime import datetime, timezone
 
 import pytest
 
 from foresight_mcp.capture import (
-    CapturePipeline,
-    CaptureStats,
     CapturedMemory,
     DedupeEngine,
-    DedupeResult,
     MemoryExtractor,
     SessionClassifier,
     get_capture_pipeline,
