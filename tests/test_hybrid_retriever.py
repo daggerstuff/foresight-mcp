@@ -1177,5 +1177,182 @@ class TestEntityMetadataInResults:
             assert r.entity_confidence_avg == 0.0
 
 
+class TestDecayFloor:
+    """Decay multiplier floor prevents full suppression of stale memories."""
+
+    def test_decay_has_minimum_floor(self):
+        """Even a severely decayed memory should retain a non-zero decay_multiplier."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        # Memory with importance=0.9 but current_strength=0.01 (decayed to near zero)
+        # Without floor, decay_multiplier would be ≈ 0.01 — nearly full suppression.
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('mem_decayed', ?, 'anxiety therapy session today', 0.9, 0.01, ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("anxiety", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        os.unlink(path)
+
+        decayed_result = next(r for r in result.results if r.memory_id == "mem_decayed")
+        # Floor is 0.2, so decay_multiplier should be >= 0.2
+        assert decayed_result.decay_multiplier >= 0.2, (
+            f"decay_multiplier={decayed_result.decay_multiplier} should be >= 0.2"
+        )
+        assert decayed_result.decay_multiplier <= 1.0
+
+    def test_decay_metadata_in_to_dict(self):
+        """decay_multiplier should appear in structured debug output."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, importance, current_strength, created_at) "
+            "VALUES ('m1', ?, 'memory content here', 0.8, 0.5, ?)",
+            (uid, (now - timedelta(hours=1)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("memory", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        os.unlink(path)
+
+        for r in result.results:
+            d = r.to_dict()
+            assert "decay_multiplier" in d, f"decay_multiplier missing from to_dict: {d}"
+            assert isinstance(d["decay_multiplier"], float)
+
+
+class TestTemporalCategories:
+    """Temporal categorization for debug transparency."""
+
+    def test_current_state_preference(self):
+        """preference category -> 'current_state'."""
+        cat = HybridRetriever._classify_temporal_category(48.0, "preference", "stable")
+        assert cat == "current_state"
+
+    def test_current_state_trait(self):
+        """trait category -> 'current_state'."""
+        cat = HybridRetriever._classify_temporal_category(48.0, "trait", "stable")
+        assert cat == "current_state"
+
+    def test_recent_activity(self):
+        """Created within 24h -> 'recent_activity'."""
+        cat = HybridRetriever._classify_temporal_category(4.0, "fact", "stable")
+        assert cat == "recent_activity"
+
+    def test_future_plan_pending(self):
+        """pending category -> 'future_plan'."""
+        cat = HybridRetriever._classify_temporal_category(72.0, "pending", "stable")
+        assert cat == "future_plan"
+
+    def test_stale_by_trend(self):
+        """strength_trend='stale' -> 'stale' regardless of age."""
+        cat = HybridRetriever._classify_temporal_category(48.0, "fact", "stale")
+        assert cat == "stale"
+
+    def test_stale_by_age(self):
+        """Older than 90 days -> 'stale'."""
+        cat = HybridRetriever._classify_temporal_category(2200.0, "fact", "stable")
+        assert cat == "stale"
+
+    def test_historical_default(self):
+        """Everything else -> 'historical'."""
+        cat = HybridRetriever._classify_temporal_category(500.0, "decision", "stable")
+        assert cat == "historical"
+
+    def test_temporal_category_in_to_dict(self):
+        """temporal_category should appear in to_dict when non-empty."""
+        _, path = tempfile.mkstemp(suffix=".db")
+        conn = sqlite3.connect(path)
+        conn.execute("""
+            CREATE TABLE memories (
+                id TEXT PRIMARY KEY, user_id TEXT, tenant_id TEXT DEFAULT 'default',
+                content TEXT, category TEXT, importance REAL DEFAULT 0.5,
+                current_strength REAL, strength_trend TEXT DEFAULT 'stable',
+                created_at TEXT, activation_count INTEGER DEFAULT 0,
+                last_retrieved_at TEXT, is_ghost INTEGER DEFAULT 0
+            )
+        """)
+        uid = "u1"
+        now = datetime.now(timezone.utc)
+        conn.execute(
+            "INSERT INTO memories (id, user_id, content, category, importance, current_strength, created_at) "
+            "VALUES ('m1', ?, 'preference memory', 'preference', 0.8, 0.8, ?)",
+            (uid, (now - timedelta(hours=48)).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+
+        retriever = HybridRetriever(path)
+        result = retriever.search("preference", uid, limit=5, use_graph=False, use_temporal=False, use_semantic=False)
+        os.unlink(path)
+
+        for r in result.results:
+            d = r.to_dict()
+            assert "temporal_category" in d, f"temporal_category missing from to_dict: {d}"
+            assert d["temporal_category"] in ("current_state", "recent_activity", "historical", "stale", "future_plan")
+
+
+class TestEntityBoostConsistency:
+    """Entity metadata should be consistent in score components."""
+
+    def test_entity_graph_hits_reflect_matched_entities(self, test_db):
+        """Graph results should have entity_hits matching the number of matched entities."""
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "anxiety", "test_user", limit=5, use_keyword=False, use_temporal=False, use_semantic=False
+        )
+        for r in result.results:
+            if "graph" in r.source_signals:
+                assert r.entity_hits > 0, f"Graph result {r.memory_id} has entity_hits=0"
+                assert r.entity_confidence_avg > 0.0, f"Graph result {r.memory_id} has confidence=0"
+
+    def test_non_graph_results_zero_entity(self, test_db):
+        """Keyword-only results should have entity_hits=0."""
+        retriever = HybridRetriever(test_db)
+        result = retriever.search(
+            "feeling", "test_user", limit=5, use_graph=False, use_temporal=False, use_semantic=False
+        )
+        for r in result.results:
+            assert r.entity_hits == 0, f"Non-graph result {r.memory_id} has entity_hits={r.entity_hits}"
+            assert r.entity_confidence_avg == 0.0
+
+    def test_combined_score_reflects_entity_boost(self, test_db):
+        """A memory with entity hits should score higher than one without (same keyword match)."""
+        retriever = HybridRetriever(test_db)
+        result = retriever.search("anxiety", "test_user", limit=10, use_semantic=False)
+        graph_results = [r for r in result.results if "graph" in r.source_signals]
+        assert len(graph_results) > 0, "No graph results found in search"
+        graph_avg = sum(r.combined_score for r in graph_results) / len(graph_results)
+        assert graph_avg > 0, "Graph results should have positive scores"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

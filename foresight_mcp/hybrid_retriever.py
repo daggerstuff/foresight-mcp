@@ -43,6 +43,15 @@ FAST_PATH_EARLY_TERMINATION_RATIO = 2.0
 FAST_PATH_MIN_CANDIDATES = 2
 
 
+def _hours_since(iso_timestamp: str) -> float:
+    """Compute hours elapsed between an ISO 8601 timestamp and now."""
+    try:
+        created = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00"))
+        return max((datetime.now(timezone.utc) - created).total_seconds() / 3600, 0.01)
+    except (ValueError, AttributeError):
+        return 168.0
+
+
 def _normalize_query(query: str) -> str:
     stripped = query.strip().lower()
     if not stripped:
@@ -127,8 +136,12 @@ class HybridResult:
     entity_hits: int = 0
     entity_confidence_avg: float = 0.0
 
+    # Decay metadata (debug only — not used in scoring)
+    decay_multiplier: float = 1.0
+    temporal_category: str = ""
+
     def to_dict(self) -> dict:
-        return {
+        d: dict[str, object] = {
             "memory_id": self.memory_id,
             "content": self.content,
             "category": self.category,
@@ -144,7 +157,12 @@ class HybridResult:
             "source_signals": self.source_signals,
             "entity_hits": self.entity_hits,
             "entity_confidence_avg": round(self.entity_confidence_avg, 4),
+            "decay_multiplier": round(self.decay_multiplier, 4),
         }
+        temporal_category = self.temporal_category
+        if temporal_category:
+            d["temporal_category"] = temporal_category
+        return d
 
 
 @dataclass
@@ -794,6 +812,30 @@ class HybridRetriever:
             half_life *= cat_mult
         return pow(0.5, max(0.0, hours_old) / half_life)
 
+    STALE_DAYS = 90  # memories older than this are "stale"
+    RECENT_HOURS = 24  # memories created within this window are "recent"
+
+    @classmethod
+    def _classify_temporal_category(cls, hours_old: float, category: str | None, strength_trend: str | None) -> str:
+        """Classify a memory into a temporal bucket for debug transparency.
+
+        Categories are derived from existing metadata (no manual tagging):
+          - current_state: user preferences and traits (stable identity signals)
+          - recent_activity: created within the last RECENT_HOURS
+          - future_plan: pending items (action-oriented, forward-looking)
+          - stale: strength_trend == 'stale' OR older than STALE_DAYS
+          - historical: everything else
+        """
+        if category in ("preference", "trait"):
+            return "current_state"
+        if hours_old <= cls.RECENT_HOURS:
+            return "recent_activity"
+        if category == "pending":
+            return "future_plan"
+        if strength_trend == "stale" or hours_old >= cls.STALE_DAYS * 24:
+            return "stale"
+        return "historical"
+
     def _temporal_search(
         self,
         conn: sqlite3.Connection,
@@ -995,15 +1037,22 @@ class HybridRetriever:
             importance = mem.get("importance", 0.5)
             current_strength = mem.get("current_strength")
 
+            created_at = mem["created_at"]
+            hours_old = _hours_since(created_at) if created_at else 0.0
+            strength_trend = mem.get("strength_trend")
+            category = mem.get("category")
+            temporal_category = self._classify_temporal_category(hours_old, category, strength_trend)
+
             result = HybridResult(
                 memory_id=memory_id,
                 content=mem["content"],
-                category=mem.get("category"),
+                category=category,
                 importance=importance,
-                strength_trend=mem.get("strength_trend"),
-                created_at=mem["created_at"],
+                strength_trend=strength_trend,
+                created_at=created_at,
                 combined_score=rrf_score,
                 source_signals=[],
+                temporal_category=temporal_category,
             )
 
             if memory_id in rankings.keyword:
@@ -1029,11 +1078,14 @@ class HybridRetriever:
             # Cross-cutting decay multiplier: penalize memories whose current strength
             # has decayed below their original importance. This applies decay as a
             # post-RRF factor so it affects ALL signals, not just temporal.
+            # Floor at 0.2 so even heavily decayed memories can still surface
+            # when strongly relevant (decay/reinforcement cannot fully suppress).
             decay_multiplier = 1.0
             if current_strength is not None and importance > 0:
                 ratio = current_strength / importance
-                decay_multiplier = max(0.0, min(1.0, ratio))
+                decay_multiplier = max(0.2, min(1.0, ratio))
             result.combined_score = rrf_score * decay_multiplier
+            result.decay_multiplier = decay_multiplier
 
             results.append(result)
 
