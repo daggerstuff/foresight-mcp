@@ -28,7 +28,7 @@ import os
 import sqlite3
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -393,7 +393,7 @@ class MaintenanceEvalHarness:
         harness = MaintenanceEvalHarness()
         harness.seed_fixtures()
         report = harness.run_all()
-        print(report.format_text())
+        logger.info(report.format_text())
     """
 
     def __init__(
@@ -596,7 +596,6 @@ class MaintenanceEvalHarness:
 
     def run_all(self) -> MaintenanceEvalReport:
         results: list[MaintenanceScenarioResult] = []
-        total_payload = 0
         total_latency = 0.0
         total_reduction = 0
         scenario_count = 0
@@ -604,7 +603,6 @@ class MaintenanceEvalHarness:
         for scenario in SCENARIOS:
             result = self.run_scenario(scenario)
             results.append(result)
-            total_payload += result.post_memory_count
             total_latency += result.latency_ms
             total_reduction += result.memory_reduction
             scenario_count += 1
@@ -681,9 +679,9 @@ def run_maintenance_eval(
             logger.info("Report written to %s", report_path)
 
         if json_output:
-            print(json.dumps(report.to_dict(), indent=2))
+            logger.info(json.dumps(report.to_dict(), indent=2))
         else:
-            print(report.format_text())
+            logger.info(report.format_text())
 
         return report
     finally:
