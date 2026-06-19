@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import logging
 import math
-import sqlite3
 import threading
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, ClassVar
 
+from .backend.base import DatabaseBackend
 from .config import DB_PATH
 from .connection_pool import get_pool
 
@@ -232,8 +234,10 @@ class HybridRetriever:
         self,
         db_path: str,
         weights: dict[str, float] | None = None,
+        backend: DatabaseBackend | None = None,
     ):
         self.db_path = db_path
+        self._backend = backend
         merged = self.DEFAULT_WEIGHTS.copy()
         if weights:
             merged.update(weights)
@@ -276,6 +280,87 @@ class HybridRetriever:
         conn = pool.acquire()
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
+
+    def _fetch_rows(self, sql: str, params: tuple | list | dict = ()) -> list[dict]:
+        """Execute a SELECT and return rows as dicts (backend-agnostic)."""
+        if self._backend is not None:
+            _p: tuple | dict = tuple(params) if isinstance(params, list) else params  # type: ignore[arg-type]
+            return self._backend.fetch(sql, _p)
+        conn = self._get_connection()
+        try:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+        finally:
+            conn.close()
+
+    def _execute_sql(self, sql: str, params: tuple | list | dict = ()) -> None:
+        """Execute a write query with auto-commit (backend-agnostic)."""
+        if self._backend is not None:
+            _p: tuple | dict = tuple(params) if isinstance(params, list) else params  # type: ignore[arg-type]
+            self._backend.execute(sql, _p)
+        else:
+            conn = self._get_connection()
+            try:
+                conn.execute(sql, params)
+                conn.commit()
+            finally:
+                conn.close()
+
+    @contextmanager
+    def _connection(self) -> Iterator[Any]:
+        """Context manager yielding a raw connection (backend-agnostic).
+
+        For multi-step operations (transactions, PRAGMA introspection).
+        When a backend is provided, delegates to ``backend.connection()``.
+        When falling back to SQLite, acquires from the pool.
+        """
+        if self._backend is not None:
+            with self._backend.connection() as conn:
+                yield conn
+        else:
+            conn = self._get_connection()
+            try:
+                yield conn
+            finally:
+                conn.close()
+
+    def _detect_columns(self, table_name: str) -> set[str]:
+        """Return the set of column names for a table (cached + backend-agnostic)."""
+        if table_name in self._schema_cache:
+            return self._schema_cache[table_name]
+
+        if self._backend is not None:
+            # Backend path: assume standard schema
+            if table_name == "memory_entities":
+                cols: set[str] = {
+                    "id",
+                    "user_id",
+                    "tenant_id",
+                    "name",
+                    "entity_type",
+                    "description",
+                    "properties",
+                    "created_at",
+                    "updated_at",
+                    "confidence",
+                }
+            elif table_name == "memory_entity_links":
+                cols = {
+                    "memory_id",
+                    "entity_id",
+                    "tenant_id",
+                    "user_id",
+                    "relevance_score",
+                    "created_at",
+                }
+            else:
+                cols = set()
+        else:
+            with self._connection() as conn:
+                rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                cols = {row[1] for row in rows}
+
+        self._schema_cache[table_name] = cols
+        return cols
 
     def _cache_key(self, query: str, user_id: str, tenant_id: str) -> tuple[str, str, str]:
         return (_normalize_query(query), user_id, tenant_id)
@@ -454,7 +539,6 @@ class HybridRetriever:
 
     def _keyword_search(
         self,
-        conn: sqlite3.Connection,
         query: str,
         user_id: str,
         tenant_id: str,
@@ -475,7 +559,7 @@ class HybridRetriever:
         like_clauses = " OR ".join(["content LIKE ? ESCAPE '!'" for _ in terms])
         params = [user_id, tenant_id] + [f"%{t}%" for t in escaped_terms]
 
-        cursor = conn.execute(
+        rows = self._fetch_rows(
             f"""
             SELECT id, content
             FROM memories
@@ -487,12 +571,11 @@ class HybridRetriever:
             [*params, limit],
         )
 
-        rows = cursor.fetchall()
-
         # Score by term frequency
         scored = []
         for row in rows:
-            mid, content = row
+            mid = row["id"]
+            content = row["content"]
             content_lower = content.lower()
             tf = sum(content_lower.count(t) for t in terms)
             doc_len = max(len(content_lower.split()), 1)
@@ -504,7 +587,6 @@ class HybridRetriever:
 
     def _build_tfidf_cache(
         self,
-        conn: sqlite3.Connection,
         user_id: str,
         tenant_id: str,
     ) -> dict:
@@ -526,22 +608,20 @@ class HybridRetriever:
             cached = self._tfidf_cache.get(cache_key)
 
         if cached is not None:
-            current_count = (
-                conn.execute(
-                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-                    (user_id, tenant_id),
-                ).fetchone()[0]
-                or 0
+            count_rows = self._fetch_rows(
+                "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+                (user_id, tenant_id),
             )
+            current_count = count_rows[0]["cnt"] if count_rows else 0
             if cached["doc_count"] == current_count:
                 return cached
 
-        rows = conn.execute(
+        rows = self._fetch_rows(
             "SELECT id, content FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
             (user_id, tenant_id),
-        ).fetchall()
+        )
 
-        docs: dict[str, list[str]] = {mid: content.lower().split() for mid, content in rows}
+        docs: dict[str, list[str]] = {row["id"]: row["content"].lower().split() for row in rows}
         n_docs = len(docs)
 
         doc_freq: dict[str, int] = {}
@@ -551,13 +631,11 @@ class HybridRetriever:
 
         idf: dict[str, float] = {term: math.log(n_docs / df) if df > 0 else 0.0 for term, df in doc_freq.items()}
 
-        current_count = (
-            conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
-                (user_id, tenant_id),
-            ).fetchone()[0]
-            or 0
+        count_rows2 = self._fetch_rows(
+            "SELECT COUNT(*) as cnt FROM memories WHERE user_id = ? AND tenant_id = ? AND is_ghost = 0",
+            (user_id, tenant_id),
         )
+        current_count = count_rows2[0]["cnt"] if count_rows2 else 0
 
         entry = {"idf": idf, "docs": docs, "doc_count": current_count}
         with self._tfidf_cache_lock:
@@ -598,7 +676,6 @@ class HybridRetriever:
 
     def _tfidf_cosine_search(
         self,
-        conn: sqlite3.Connection,
         query: str,
         user_id: str,
         tenant_id: str,
@@ -617,7 +694,7 @@ class HybridRetriever:
         if not terms:
             return {}
 
-        corpus = self._build_tfidf_cache(conn, user_id, tenant_id)
+        corpus = self._build_tfidf_cache(user_id, tenant_id)
         docs = corpus["docs"]
         idf = corpus["idf"]
 
@@ -639,18 +716,16 @@ class HybridRetriever:
 
     def _semantic_search(
         self,
-        conn: sqlite3.Connection,
         query: str,
         user_id: str,
         tenant_id: str,
         limit: int,
     ) -> dict[str, int]:
         """Backward-compatible entrypoint for semantic search alias."""
-        return self._tfidf_cosine_search(conn, query, user_id, tenant_id, limit)
+        return self._tfidf_cosine_search(query, user_id, tenant_id, limit)
 
     def _graph_search(
         self,
-        conn: sqlite3.Connection,
         query: str,
         user_id: str,
         tenant_id: str,
@@ -665,7 +740,7 @@ class HybridRetriever:
             2. Entity confidence (higher confidence = stronger signal)
             3. Edge decay_factor (fresher relationships weighted more)
             4. Link relevance_score (context-specific importance of the
-               memory-entity association)
+                memory-entity association)
 
         Returns:
             Tuple of (rankings, entity_hits, entity_confidence):
@@ -680,10 +755,7 @@ class HybridRetriever:
         escaped_terms = [_escape_like(t) for t in terms]
 
         like_clauses = " OR ".join(["e.name LIKE ? ESCAPE '!'" for _ in terms])
-        entity_cols = self._schema_cache.get("memory_entities")
-        if entity_cols is None:
-            entity_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entities)").fetchall()}
-            self._schema_cache["memory_entities"] = entity_cols
+        entity_cols = self._detect_columns("memory_entities")
 
         has_confidence = "confidence" in entity_cols
         has_tenant = "tenant_id" in entity_cols
@@ -707,8 +779,7 @@ class HybridRetriever:
             """
             params = [user_id] + [f"%{t}%" for t in escaped_terms]
 
-        cursor = conn.execute(sql, params)
-        entity_rows = cursor.fetchall()
+        entity_rows = self._fetch_rows(sql, params)
 
         if not entity_rows:
             return ({}, {}, {})
@@ -716,20 +787,17 @@ class HybridRetriever:
         entity_ids: list[str] = []
         entity_conf: dict[str, float] = {}
         for row in entity_rows:
-            eid = row[0]
-            conf = float(row[1]) if has_confidence and len(row) > 1 and row[1] is not None else 1.0
+            eid = row["id"]
+            conf = float(row["confidence"]) if has_confidence and row.get("confidence") is not None else 1.0
             entity_ids.append(eid)
             entity_conf[eid] = conf
 
         entity_placeholders = ",".join("?" * len(entity_ids))
-        link_cols = self._schema_cache.get("memory_entity_links")
-        if link_cols is None:
-            link_cols = {row[1] for row in conn.execute("PRAGMA table_info(memory_entity_links)").fetchall()}
-            self._schema_cache["memory_entity_links"] = link_cols
+        link_cols = self._detect_columns("memory_entity_links")
         has_relevance = "relevance_score" in link_cols
 
         relevance_col = ", COALESCE(AVG(mel.relevance_score), 1.0) as avg_relevance" if has_relevance else ""
-        cursor = conn.execute(
+        rows = self._fetch_rows(
             f"""
             SELECT
                 mel.memory_id,
@@ -756,7 +824,6 @@ class HybridRetriever:
             [tenant_id, user_id, user_id, user_id, *entity_ids, user_id, limit],
         )
 
-        rows = cursor.fetchall()
         if not rows:
             return ({}, {}, {})
 
@@ -764,11 +831,11 @@ class HybridRetriever:
         hits_map: dict[str, int] = {}
         conf_map: dict[str, float] = {}
         for row in rows:
-            mid = row[0]
-            entity_hits = row[1] or 1
-            avg_entity_conf = row[2] or 1.0
-            avg_edge_quality = row[3] or 1.0
-            avg_relevance = row[4] if has_relevance else 1.0
+            mid = row["memory_id"]
+            entity_hits = row.get("entity_hits") or 1
+            avg_entity_conf = row.get("avg_entity_conf") or 1.0
+            avg_edge_quality = row.get("avg_edge_quality") or 1.0
+            avg_relevance = row.get("avg_relevance", 1.0) if has_relevance else 1.0
             graph_score = entity_hits * avg_entity_conf * avg_edge_quality * avg_relevance
             scored.append((mid, graph_score))
             hits_map[mid] = entity_hits
@@ -838,7 +905,6 @@ class HybridRetriever:
 
     def _temporal_search(
         self,
-        conn: sqlite3.Connection,
         user_id: str,
         tenant_id: str,
         limit: int,
@@ -855,10 +921,10 @@ class HybridRetriever:
 
         Returns dict of {memory_id: rank} (1-based, lower = better).
         """
-        cursor = conn.execute(
+        rows = self._fetch_rows(
             """
             SELECT id, importance, current_strength, created_at,
-                   activation_count, COALESCE(strength_trend, 'stable'),
+                   activation_count, COALESCE(strength_trend, 'stable') as strength_trend,
                    last_retrieved_at, category
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
@@ -870,7 +936,6 @@ class HybridRetriever:
             (user_id, tenant_id, min_importance, limit),
         )
 
-        rows = cursor.fetchall()
         if not rows:
             return {}
 
@@ -878,7 +943,14 @@ class HybridRetriever:
         scored = []
 
         for row in rows:
-            mid, importance, current_strength, created_at, activation_count, trend, last_retrieved_at, category = row
+            mid = row["id"]
+            importance = row["importance"]
+            current_strength = row["current_strength"]
+            created_at = row["created_at"]
+            activation_count = row["activation_count"]
+            trend = row["strength_trend"]
+            last_retrieved_at = row["last_retrieved_at"]
+            category = row["category"]
 
             try:
                 created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
@@ -951,7 +1023,6 @@ class HybridRetriever:
 
     def _fetch_memories(
         self,
-        conn: sqlite3.Connection,
         memory_ids: list[str],
         user_id: str,
         tenant_id: str,
@@ -961,7 +1032,7 @@ class HybridRetriever:
             return {}
 
         placeholders = ",".join("?" * len(memory_ids))
-        cursor = conn.execute(
+        rows = self._fetch_rows(
             f"""
             SELECT id, content, category, importance,
                    strength_trend, created_at, current_strength
@@ -973,52 +1044,35 @@ class HybridRetriever:
         )
 
         return {
-            row[0]: {
-                "content": row[1],
-                "category": row[2],
-                "importance": row[3] or 0.5,
-                "strength_trend": row[4],
-                "created_at": row[5],
-                "current_strength": row[6],
+            row["id"]: {
+                "content": row["content"],
+                "category": row["category"],
+                "importance": row["importance"] or 0.5,
+                "strength_trend": row["strength_trend"],
+                "created_at": row["created_at"],
+                "current_strength": row["current_strength"],
             }
-            for row in cursor.fetchall()
+            for row in rows
         }
 
     def _run_keyword_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
         """Run keyword search and return ranking dict."""
-        conn = self._get_connection()
-        try:
-            return self._keyword_search(conn, query, user_id, tenant_id, limit * 3)
-        finally:
-            conn.close()
+        return self._keyword_search(query, user_id, tenant_id, limit * 3)
 
     def _run_tfidf_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
         """Run TF-IDF search and return ranking dict."""
-        conn = self._get_connection()
-        try:
-            return self._tfidf_cosine_search(conn, query, user_id, tenant_id, limit * 3)
-        finally:
-            conn.close()
+        return self._tfidf_cosine_search(query, user_id, tenant_id, limit * 3)
 
     def _run_graph_search(self, query: str, user_id: str, tenant_id: str, limit: int) -> dict[str, int]:
         """Run graph search and return ranking dict with entity metadata side-channel."""
-        conn = self._get_connection()
-        try:
-            rankings, hits, conf = self._graph_search(conn, query, user_id, tenant_id, limit * 3)
-            # Store entity metadata on the instance for _build_results to consume
-            self._entity_hits = hits
-            self._entity_confidence = conf
-            return rankings
-        finally:
-            conn.close()
+        rankings, hits, conf = self._graph_search(query, user_id, tenant_id, limit * 3)
+        self._entity_hits = hits
+        self._entity_confidence = conf
+        return rankings
 
     def _run_temporal_search(self, user_id: str, tenant_id: str, limit: int, min_importance: float) -> dict[str, int]:
         """Run temporal search and return ranking dict."""
-        conn = self._get_connection()
-        try:
-            return self._temporal_search(conn, user_id, tenant_id, limit * 3, min_importance)
-        finally:
-            conn.close()
+        return self._temporal_search(user_id, tenant_id, limit * 3, min_importance)
 
     def _build_results(
         self,
@@ -1103,11 +1157,7 @@ class HybridRetriever:
         if not top_ids:
             return {}
 
-        conn = self._get_connection()
-        try:
-            return self._fetch_memories(conn, top_ids, user_id, tenant_id)
-        finally:
-            conn.close()
+        return self._fetch_memories(top_ids, user_id, tenant_id)
 
 
 # Global instance management (thread-safe)
@@ -1118,13 +1168,18 @@ class _HybridRetrieverSingleton:
     _lock = threading.Lock()
 
     @classmethod
-    def get_instance(cls, db_path: str | None = None, weights: dict[str, float] | None = None) -> HybridRetriever:
+    def get_instance(
+        cls,
+        db_path: str | None = None,
+        weights: dict[str, float] | None = None,
+        backend: DatabaseBackend | None = None,
+    ) -> HybridRetriever:
         """Get or create global hybrid retriever instance (thread-safe)."""
         with cls._lock:
             if cls._instance is None:
                 if db_path is None:
                     db_path = DB_PATH
-                cls._instance = HybridRetriever(db_path, weights)
+                cls._instance = HybridRetriever(db_path, weights, backend)
             return cls._instance
 
     @classmethod
@@ -1137,9 +1192,10 @@ class _HybridRetrieverSingleton:
 def get_hybrid_retriever(
     db_path: str | None = None,
     weights: dict[str, float] | None = None,
+    backend: DatabaseBackend | None = None,
 ) -> HybridRetriever:
     """Get or create global hybrid retriever instance (thread-safe)."""
-    return _HybridRetrieverSingleton.get_instance(db_path, weights)
+    return _HybridRetrieverSingleton.get_instance(db_path, weights, backend)
 
 
 def reset_hybrid_retriever() -> None:

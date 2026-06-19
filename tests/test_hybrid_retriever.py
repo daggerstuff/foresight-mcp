@@ -239,7 +239,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "anxiety therapy", "test_user", "default", 10)
+            ranking = retriever._semantic_search("anxiety therapy", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -256,7 +256,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "anxiety management", "test_user", "default", 10)
+            ranking = retriever._semantic_search("anxiety management", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -278,7 +278,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "anxiety", "test_user", "default", 10)
+            ranking = retriever._semantic_search("anxiety", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -288,7 +288,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "   ", "test_user", "default", 10)
+            ranking = retriever._semantic_search("   ", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -298,7 +298,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "quantum physics superposition", "test_user", "default", 10)
+            ranking = retriever._semantic_search("quantum physics superposition", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -309,7 +309,7 @@ class TestSemanticSearch:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "feeling", "test_user", "default", 2)
+            ranking = retriever._semantic_search("feeling", "test_user", "default", 2)
         finally:
             conn.close()
 
@@ -325,7 +325,7 @@ class TestCosineSimilarity:
         conn = retriever._get_connection()
         try:
             # Use the exact text from mem_1 as the query terms
-            ranking = retriever._semantic_search(conn, "anxious presentation tomorrow", "test_user", "default", 10)
+            ranking = retriever._semantic_search("anxious presentation tomorrow", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -340,7 +340,7 @@ class TestCosineSimilarity:
         retriever = HybridRetriever(test_db)
         conn = retriever._get_connection()
         try:
-            ranking = retriever._semantic_search(conn, "anxiety management therapy", "test_user", "default", 10)
+            ranking = retriever._semantic_search("anxiety management therapy", "test_user", "default", 10)
         finally:
             conn.close()
 
@@ -435,7 +435,7 @@ class TestTemporalSearch:
         retriever = HybridRetriever(path)
         conn2 = retriever._get_connection()
         try:
-            rankings = retriever._temporal_search(conn2, uid, "default", 10, 0.0)
+            rankings = retriever._temporal_search(uid, "default", 10, 0.0)
         finally:
             conn2.close()
         os.unlink(path)
@@ -876,7 +876,7 @@ class TestTemporalSignalHardening:
         retriever = HybridRetriever(path)
         conn2 = retriever._get_connection()
         try:
-            rankings = retriever._temporal_search(conn2, "u1", "default", 10, 0.0)
+            rankings = retriever._temporal_search("u1", "default", 10, 0.0)
         finally:
             conn2.close()
         import os
@@ -914,7 +914,7 @@ class TestTemporalSignalHardening:
         retriever = HybridRetriever(path)
         conn2 = retriever._get_connection()
         try:
-            rankings = retriever._temporal_search(conn2, "u1", "default", 10, 0.0)
+            rankings = retriever._temporal_search("u1", "default", 10, 0.0)
         finally:
             conn2.close()
         os.unlink(path)
@@ -1046,9 +1046,7 @@ class TestGraphSignalHardening:
         conn.close()
 
         retriever = HybridRetriever(path)
-        rankings, hits, _ = retriever._graph_search(
-            retriever._get_connection(), "anxiety therapy stress", uid, "default", 10
-        )
+        rankings, hits, _ = retriever._graph_search("anxiety therapy stress", uid, "default", 10)
         os.unlink(path)
 
         assert "m_high" in rankings
@@ -1077,7 +1075,7 @@ class TestGraphSignalHardening:
         conn.close()
 
         retriever = HybridRetriever(path)
-        result = retriever._graph_search(retriever._get_connection(), "nonexistent", "u1", "default", 10)
+        result = retriever._graph_search("nonexistent", "u1", "default", 10)
         os.unlink(path)
 
         rankings, hits, conf = result
@@ -1133,7 +1131,7 @@ class TestGraphSignalHardening:
         conn.close()
 
         retriever = HybridRetriever(path)
-        rankings, _, _ = retriever._graph_search(retriever._get_connection(), "anxiety", uid, "default", 10)
+        rankings, _, _ = retriever._graph_search("anxiety", uid, "default", 10)
         os.unlink(path)
 
         assert "m_high_rel" in rankings
