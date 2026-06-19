@@ -60,6 +60,10 @@ foresight-mcp = "foresight_mcp.__main__:main"
 foresight-cli = "foresight_cli.cli:main"
 foresight = "foresight_cli.cli:main"
 
+# Evaluation harness (PIX-3953)
+eval-run = "foresight_mcp.eval_harness:run_eval"
+eval-baseline = "foresight_mcp.eval_harness:run_eval"
+
 [dependency-groups]
 dev = [
     "pytest>=8.0",

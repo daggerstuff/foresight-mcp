@@ -10,12 +10,9 @@ import json
 import os
 import tempfile
 
-import pytest
-
 from foresight_mcp.eval_harness import (
     EvalHarness,
     EvalReport,
-    EvalScenario,
     FIXTURE_MEMORIES,
     SCENARIOS,
     ScenarioResult,
@@ -141,9 +138,8 @@ class TestHarnessSeeding:
     def test_seed_fixtures_idempotent(self):
         harness = EvalHarness(db_path=":memory:")
         try:
-            seed1 = harness.seed_fixtures()
-            seed2 = harness.seed_fixtures()
-            # Second seed should not create duplicates
+            harness.seed_fixtures()
+            harness.seed_fixtures()
             conn = harness._get_connection()
             row = conn.execute("SELECT COUNT(*) as cnt FROM memories").fetchone()
             assert row["cnt"] == len(FIXTURE_MEMORIES)
@@ -390,7 +386,7 @@ class TestEdgeCases:
             # Current should rank higher (lower index = higher rank)
             idx_current = result.found_memory_ids.index("current_auth_approach")
             idx_stale = result.found_memory_ids.index("stale_auth_approach")
-            assert idx_current < idx_stale, f"current(idx_current) should rank higher than stale(idx_stale)"
+            assert idx_current < idx_stale, "current(idx_current) should rank higher than stale(idx_stale)"
         finally:
             harness.close()
 
@@ -416,7 +412,7 @@ class TestRunEval:
         with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
             report_path = f.name
         try:
-            report = run_eval(
+            run_eval(
                 db_path=":memory:",
                 report_path=report_path,
                 budget_chars=2000,
@@ -430,3 +426,80 @@ class TestRunEval:
         finally:
             if os.path.exists(report_path):
                 os.unlink(report_path)
+
+
+# =============================================================================
+# Report save/load persistence
+# =============================================================================
+
+
+class TestReportPersistence:
+    def test_save_and_load(self):
+        harness = EvalHarness(db_path=":memory:")
+        try:
+            harness.seed_fixtures()
+            report1 = harness.run_all()
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+                path = f.name
+            try:
+                report1.save(path)
+                report2 = EvalReport.load(path)
+                assert report2.harness_version == report1.harness_version
+                assert len(report2.scenarios) == len(report1.scenarios)
+                assert report2.summary["total"] == report1.summary["total"]
+                for s1, s2 in zip(report1.scenarios, report2.scenarios, strict=True):
+                    assert s1.scenario_id == s2.scenario_id
+                    assert s1.passed == s2.passed
+                    assert s1.injection_payload_size == s2.injection_payload_size
+                    assert s1.latency_ms == s2.latency_ms
+            finally:
+                if os.path.exists(path):
+                    os.unlink(path)
+        finally:
+            harness.close()
+
+    def test_compare_via_cli(self):
+        """run_eval with compare_path should not raise."""
+        from foresight_mcp.eval_harness import run_eval
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            baseline_path = f.name
+        try:
+            # Generate baseline
+            run_eval(db_path=":memory:", save_baseline=baseline_path, budget_chars=2000)
+            assert os.path.exists(baseline_path)
+
+            # Run comparison against baseline
+            report = run_eval(
+                db_path=":memory:",
+                compare_path=baseline_path,
+                budget_chars=2000,
+            )
+            assert isinstance(report, EvalReport)
+            assert report.summary["total"] == len(SCENARIOS)
+        finally:
+            if os.path.exists(baseline_path):
+                os.unlink(baseline_path)
+
+    def test_compare_missing_baseline_does_not_crash(self):
+        from foresight_mcp.eval_harness import run_eval
+
+        report = run_eval(
+            db_path=":memory:",
+            compare_path="/nonexistent/baseline.json",
+            budget_chars=2000,
+        )
+        assert isinstance(report, EvalReport)
+
+    def test_invalid_json_baseline_does_not_crash(self):
+        from foresight_mcp.eval_harness import run_eval
+
+        with tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False) as f:
+            f.write("not json")
+            bad_path = f.name
+        try:
+            report = run_eval(db_path=":memory:", compare_path=bad_path, budget_chars=2000)
+            assert isinstance(report, EvalReport)
+        finally:
+            if os.path.exists(bad_path):
+                os.unlink(bad_path)

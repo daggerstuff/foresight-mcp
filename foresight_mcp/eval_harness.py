@@ -29,7 +29,7 @@ import re
 import sqlite3
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -358,6 +358,42 @@ class EvalReport:
                 for s in self.scenarios
             ],
         }
+
+    def save(self, path: str) -> str:
+        """Persist report to JSON file. Returns the path written."""
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
+        logger.info("Report saved to %s", path)
+        return path
+
+    @classmethod
+    def load(cls, path: str) -> EvalReport:
+        """Load a report from a JSON file saved with save()."""
+        with open(path) as f:
+            data = json.load(f)
+        scenarios = [
+            ScenarioResult(
+                scenario_id=s["scenario_id"],
+                query=s["query"],
+                passed=s["passed"],
+                metrics=s.get("metrics", {}),
+                found_memory_ids=s.get("found_memory_ids", []),
+                missing_expected=s.get("missing_expected", []),
+                injection_payload_size=s.get("injection_payload_size", 0),
+                latency_ms=s.get("latency_ms", 0.0),
+                signal_counts=s.get("signal_counts", {}),
+                fast_path=s.get("fast_path"),
+                pii_findings=s.get("pii_findings", []),
+                error=s.get("error"),
+            )
+            for s in data.get("scenarios", [])
+        ]
+        return cls(
+            timestamp=data.get("timestamp", ""),
+            scenarios=scenarios,
+            summary=data.get("summary", {}),
+            harness_version=data.get("harness_version", "1.0.0"),
+        )
 
 
 # =============================================================================
@@ -882,6 +918,8 @@ def run_eval(
     report_path: str | None = None,
     budget_chars: int | None = 2000,
     json_output: bool = False,
+    compare_path: str | None = None,
+    save_baseline: str | None = None,
 ) -> EvalReport:
     """Run the full evaluation harness and optionally persist the report.
 
@@ -890,6 +928,8 @@ def run_eval(
         report_path: If set, path to write the JSON report.
         budget_chars: Character budget for budgeted injection.
         json_output: If True, print JSON report to stdout instead of text.
+        compare_path: Path to a baseline JSON report to diff against.
+        save_baseline: If set, save the report as a baseline JSON at this path.
 
     Returns:
         EvalReport instance.
@@ -901,9 +941,18 @@ def run_eval(
         report = harness.run_all(budget_chars=budget_chars)
 
         if report_path:
-            with open(report_path, "w") as f:
-                json.dump(report.to_dict(), f, indent=2)
-            logger.info("Report written to %s", report_path)
+            report.save(report_path)
+
+        if compare_path:
+            try:
+                baseline = EvalReport.load(compare_path)
+                diff = harness.compare_baseline(baseline, report)
+                _print_diff(diff, json_output)
+            except (FileNotFoundError, json.JSONDecodeError) as exc:
+                print(f"Warning: could not compare with baseline ({exc})")
+
+        if save_baseline:
+            report.save(save_baseline)
 
         if json_output:
             print(json.dumps(report.to_dict(), indent=2))
@@ -913,6 +962,28 @@ def run_eval(
         return report
     finally:
         harness.close()
+
+
+def _print_diff(diff: dict[str, Any], json_output: bool) -> None:
+    """Print a baseline comparison diff."""
+    if json_output:
+        print(json.dumps(diff, indent=2))
+        return
+
+    lines: list[str] = [
+        "--- Baseline Diff ---",
+        f"  Payload change: {diff.get('payload_change_pct', 'N/A')}%",
+        f"  Latency change: {diff.get('latency_change_pct', 'N/A')}%",
+        f"  Pass rate change: {diff.get('pass_rate_change', 0):+.1f}%",
+        f"  PII change: {diff.get('pii_change', 0):+d}",
+    ]
+    for sd in diff.get("scenario_diffs", []):
+        icon = {"new_pass": "✓", "new_fail": "✗", "unchanged": "="}.get(sd.get("status_change", ""), "?")
+        lines.append(
+            f"  [{icon}] {sd['scenario_id']}: payload {sd.get('payload_change', 0):+d} chars, "
+            f"latency {sd.get('latency_change', 0):+.2f}ms"
+        )
+    print("\n".join(lines))
 
 
 def main() -> None:
@@ -941,6 +1012,16 @@ def main() -> None:
         action="store_true",
         help="Output report as JSON",
     )
+    parser.add_argument(
+        "--compare",
+        default=None,
+        help="Path to a baseline JSON report to diff against",
+    )
+    parser.add_argument(
+        "--save-baseline",
+        default=None,
+        help="Save this run as a baseline JSON report at this path",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING)
@@ -949,6 +1030,8 @@ def main() -> None:
         report_path=args.report,
         budget_chars=args.budget,
         json_output=args.json,
+        compare_path=args.compare,
+        save_baseline=getattr(args, "save_baseline", None),
     )
 
 
