@@ -138,7 +138,7 @@ def extract_triggered_memories(
     Each trigger captures the content that follows it, up to either the next
     trigger phrase or the end of the text.  Longer trigger phrases are matched
     before shorter ones when they overlap (e.g. ``"remember this:"`` wins over
-    ``"remember:"``).
+    ""remember:"``).
 
     Parameters
     ----------
@@ -158,6 +158,11 @@ def extract_triggered_memories(
         triggers = DEFAULT_TRIGGERS
 
     if not text or not triggers:
+        return []
+
+    # Filter out empty trigger keys to avoid empty regex patterns
+    triggers = {k: v for k, v in triggers.items() if k}
+    if not triggers:
         return []
 
     # Build a fast lookup from lowercased trigger → (original_key, metadata).
