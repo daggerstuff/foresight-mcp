@@ -7,6 +7,7 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
+import pytest
 
 from foresight_mcp.memory_maintenance import (
     DUPLICATE_OVERLAP_HIGH,
@@ -501,7 +502,7 @@ class TestMaintenanceJobTenantIsolation:
 
             job = MemoryMaintenanceJob(db_path=db_path)
             cfg = MaintenanceConfig(user_id="u1", tenant_id="t1", modes=["archive_stale"])
-            job.run(cfg)
+            stats = job.run(cfg)
 
             # Only t1/u1 memory should be archived
             conn = sqlite3.connect(db_path)

@@ -9,9 +9,12 @@ preservation under pressure.
 import pytest
 
 from foresight_mcp.injection_budget import (
+    DEFAULT_LANE_WEIGHTS,
     InjectionBudget,
     Lane,
+    LaneAllocation,
     LaneItem,
+    TruncationLevel,
     _first_sentence,
     _truncate_to_chars,
     allocate_lane,

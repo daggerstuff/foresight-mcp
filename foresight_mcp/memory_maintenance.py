@@ -76,9 +76,7 @@ MAX_RUNTIME_SECONDS = 300
 class MaintenanceConfig:
     tenant_id: str = "default"
     user_id: str = "default"
-    modes: list[str] = field(
-        default_factory=lambda: ["consolidate", "contradict", "archive_stale", "synthesize"]
-    )
+    modes: list[str] = field(default_factory=lambda: ["consolidate", "contradict", "archive_stale", "synthesize"])
     duplicate_threshold: float = 0.25
     consolidation_overlap_high: float = DUPLICATE_OVERLAP_HIGH
     consolidation_overlap_marginal: float = DUPLICATE_OVERLAP_MARGINAL
@@ -239,9 +237,7 @@ class MemoryMaintenanceJob:
             for r in rows
         ]
 
-    def _run_consolidate(
-        self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats
-    ) -> None:
+    def _run_consolidate(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         memories = self._fetch_memories(conn, config)
         if len(memories) < 2:
             return
@@ -267,9 +263,7 @@ class MemoryMaintenanceJob:
 
             cluster_memories_list = [m for m in memories if m["id"] in member_ids]
             overlap_scores = self._pairwise_overlaps(cluster_memories_list)
-            avg_overlap = (
-                sum(overlap_scores.values()) / len(overlap_scores) if overlap_scores else 0.0
-            )
+            avg_overlap = sum(overlap_scores.values()) / len(overlap_scores) if overlap_scores else 0.0
 
             candidate = DuplicateCandidate(
                 cluster_id=entity["id"],
@@ -325,19 +319,13 @@ class MemoryMaintenanceJob:
         if not other_ids:
             return
 
-        cursor = conn.execute(
-            "SELECT content, synthesized_from FROM memories WHERE id = ?", (primary_id,)
-        )
+        cursor = conn.execute("SELECT content, synthesized_from FROM memories WHERE id = ?", (primary_id,))
         row = cursor.fetchone()
         if not row:
             return
 
         existing_content = row["content"] or ""
-        existing_synth = (
-            set(re.findall(r"\w+", row["synthesized_from"] or ""))
-            if row["synthesized_from"]
-            else set()
-        )
+        existing_synth = set(re.findall(r"\w+", row["synthesized_from"] or "")) if row["synthesized_from"] else set()
 
         additional_content: list[str] = []
         for mid in other_ids:
@@ -349,6 +337,8 @@ class MemoryMaintenanceJob:
         combined = existing_content
         if additional_content:
             combined = existing_content + " " + " ".join(additional_content)
+
+        new_id = hashlib.sha256(f"{primary_id}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
 
         conn.execute(
             "UPDATE memories SET content = ?, is_ghost = 1, gist = ?, synthesized_from = ? WHERE id = ?",
@@ -389,9 +379,9 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(
-                        f"{cand.cluster_id}{datetime.now(timezone.utc).isoformat()}".encode()
-                    ).hexdigest()[:16],
+                    hashlib.sha256(f"{cand.cluster_id}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
+                        :16
+                    ],
                     cand.memory_ids[0][:8],
                     event_type,
                     datetime.now(timezone.utc).isoformat(),
@@ -404,9 +394,7 @@ class MemoryMaintenanceJob:
         except Exception:
             pass
 
-    def _run_contradict(
-        self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats
-    ) -> None:
+    def _run_contradict(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         memories = self._fetch_memories(conn, config)
         if len(memories) < 2:
             return
@@ -441,19 +429,13 @@ class MemoryMaintenanceJob:
                     pair_key = tuple(sorted([mem_a["id"], mem_b["id"]]))
                     if pair_key in seen_pairs:
                         continue
-                    conflict = self._find_sentiment_conflict(
-                        mem_a["content"] or "", mem_b["content"] or ""
-                    )
+                    conflict = self._find_sentiment_conflict(mem_a["content"] or "", mem_b["content"] or "")
                     if conflict is not None:
                         seen_pairs.add(pair_key)
                         pos_word, neg_word = conflict
                         words_a = set(re.findall(r"\b\w+\b", (mem_a["content"] or "").lower()))
                         words_b = set(re.findall(r"\b\w+\b", (mem_b["content"] or "").lower()))
-                        overlap = (
-                            len(words_a & words_b) / len(words_a | words_b)
-                            if words_a and words_b
-                            else 0.0
-                        )
+                        overlap = len(words_a & words_b) / len(words_a | words_b) if words_a and words_b else 0.0
                         flagged.append(
                             ContradictionCandidate(
                                 memory_id_a=mem_a["id"],
@@ -480,9 +462,7 @@ class MemoryMaintenanceJob:
         words_a = set(re.findall(r"\b\w+\b", content_a.lower()))
         words_b = set(re.findall(r"\b\w+\b", content_b.lower()))
         for pos_word, neg_word in SENTIMENT_OPPOSITES:
-            if (pos_word in words_a and neg_word in words_b) or (
-                neg_word in words_a and pos_word in words_b
-            ):
+            if (pos_word in words_a and neg_word in words_b) or (neg_word in words_a and pos_word in words_b):
                 return (pos_word, neg_word)
         return None
 
@@ -516,9 +496,7 @@ class MemoryMaintenanceJob:
         except Exception:
             pass
 
-    def _run_archive_stale(
-        self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats
-    ) -> None:
+    def _run_archive_stale(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         candidates = self._find_stale_candidates(conn, config)
         stats.stale_found = len(candidates)
 
@@ -538,7 +516,7 @@ class MemoryMaintenanceJob:
 
     def _find_stale_candidates(self, conn: Any, config: MaintenanceConfig) -> list[StaleCandidate]:
         cursor = conn.execute(
-            """
+            f"""
             SELECT id, importance,
                    COALESCE(strength_trend, 'stable') as strength_trend,
                    content
@@ -561,10 +539,7 @@ class MemoryMaintenanceJob:
             reason = "low_importance"
             if row["strength_trend"] == "stale":
                 reason = "low_strength"
-            elif (
-                row["importance"] is not None
-                and row["importance"] <= config.stale_importance_threshold
-            ):
+            elif row["importance"] is not None and row["importance"] <= config.stale_importance_threshold:
                 reason = "low_importance"
             candidates.append(
                 StaleCandidate(
@@ -593,9 +568,7 @@ class MemoryMaintenanceJob:
         )
         conn.commit()
 
-    def _run_synthesize(
-        self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats
-    ) -> None:
+    def _run_synthesize(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
         memories = self._fetch_memories(conn, config)
         if len(memories) < 3:
             return
@@ -604,14 +577,7 @@ class MemoryMaintenanceJob:
         for mem in memories:
             words = set(re.findall(r"\b\w+\b", (mem["content"] or "").lower()))
             for word in words:
-                if len(word) > 4 and word not in {
-                    "which",
-                    "where",
-                    "would",
-                    "could",
-                    "should",
-                    "about",
-                }:
+                if len(word) > 4 and word not in {"which", "where", "would", "could", "should", "about"}:
                     if word not in topic_map:
                         topic_map[word] = []
                     topic_map[word].append(mem)
@@ -621,7 +587,10 @@ class MemoryMaintenanceJob:
             if len(cluster) >= 3:
                 contents = [m["content"] for m in cluster if m["content"]]
                 if len(contents) >= 3:
-                    statement = f"Multiple memories share topic '{topic}': {len(cluster)} references across recent memories."
+                    combined = " ".join(contents[:5])
+                    statement = (
+                        f"Multiple memories share topic '{topic}': {len(cluster)} references across recent memories."
+                    )
                     insights.append(
                         SynthesisInsight(
                             topic=topic,
@@ -650,9 +619,9 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(
-                        f"{insight.topic}{datetime.now(timezone.utc).isoformat()}".encode()
-                    ).hexdigest()[:16],
+                    hashlib.sha256(f"{insight.topic}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
+                        :16
+                    ],
                     "maintenance",
                     event_type,
                     datetime.now(timezone.utc).isoformat(),

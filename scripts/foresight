@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Foresight CLI shell wrapper — one-liner access to the full toolchain.
+# Usage: ./scripts/foresight <command> [options]
+#        ./scripts/foresight tui
+#        ./scripts/foresight status --agent
+#
+# Install to PATH: ln -sf "$PWD/scripts/foresight" ~/.local/bin/foresight
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Prefer uv, fall back to python -m
+if command -v uv &>/dev/null && [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+    exec uv run --directory "$PROJECT_DIR" python -m foresight_cli.cli "$@"
+elif command -v python3 &>/dev/null; then
+    exec python3 -m foresight_cli.cli "$@"
+else
+    echo "ERROR: Neither uv nor python3 found. Install Python 3.11+ or uv." >&2
+    exit 1
+fi

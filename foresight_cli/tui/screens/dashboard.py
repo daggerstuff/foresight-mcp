@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 
+from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Container, Horizontal
+from textual.containers import Container, Horizontal, Vertical
 from textual.screen import Screen
-from textual.widgets import Label, Static
+from textual.widgets import Label, LoadingIndicator, Static
 
 from foresight_mcp import get_system_status
 from foresight_mcp.server import init_db

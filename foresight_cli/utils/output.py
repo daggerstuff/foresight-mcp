@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import json as _json
 import sys
-from dataclasses import dataclass
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Literal, TextIO
 
 from rich.console import Console
+from rich.json import JSON
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
