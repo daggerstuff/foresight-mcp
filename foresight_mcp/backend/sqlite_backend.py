@@ -41,8 +41,8 @@ class SqliteBackend(DatabaseBackend):
         logger.debug("Initialising SqliteBackend with db_path=%s", path)
         self._pool = ConnectionPool(
             db_path=path,
-            max_size=max_size,
-            max_idle_seconds=max_idle_seconds,
+            max_size=self._max_size,
+            max_idle_seconds=self._max_idle_seconds,
         )
 
     def close(self) -> None:
@@ -62,8 +62,7 @@ class SqliteBackend(DatabaseBackend):
             raise RuntimeError("SqliteBackend not connected. Call connect() first.")
         conn = self._pool.acquire()
         try:
-            conn.execute(sql, params)
-            conn.commit()
+            yield conn
         finally:
             self._pool.release(conn)
 
