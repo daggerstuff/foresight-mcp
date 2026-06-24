@@ -31,6 +31,7 @@ from typing import Any
 from .clustering import cluster_memories
 from .config import DB_PATH
 from .connection_pool import get_pool
+from .sensitivity import resolve_is_sensitive
 
 logger = logging.getLogger("foresight_maintenance")
 
@@ -84,6 +85,7 @@ class MaintenanceConfig:
     stale_importance_threshold: float = STALE_IMPORTANCE_THRESHOLD
     batch_size: int = MAX_BATCH_SIZE
     max_runtime_seconds: float = MAX_RUNTIME_SECONDS
+    sensitive_only: bool = False
 
 
 @dataclass
@@ -133,6 +135,7 @@ class MaintenanceStats:
     stale_found: int = 0
     stale_archived: int = 0
     insights_generated: int = 0
+    sensitive_excluded: int = 0
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -147,6 +150,7 @@ class MaintenanceStats:
             "stale_found": self.stale_found,
             "stale_archived": self.stale_archived,
             "insights_generated": self.insights_generated,
+            "sensitive_excluded": self.sensitive_excluded,
             "errors": self.errors,
         }
 
@@ -199,14 +203,15 @@ class MemoryMaintenanceJob:
     def _fetch_memories(
         self, conn: Any, config: MaintenanceConfig, extra_where: str = "", extra_params: tuple = ()
     ) -> list[dict[str, Any]]:
-        where = f"user_id = ? AND tenant_id = ?{extra_where}"
+        sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
+        where = f"user_id = ? AND tenant_id = ? AND {sensitivity_filter}{extra_where}"
         params = (config.user_id, config.tenant_id) + extra_params
         cursor = conn.execute(
             f"""
             SELECT id, user_id, tenant_id, scope, retention, content, tags,
                    category, importance, strength_trend, created_at,
                    activation_count, is_ghost, synthesized_from,
-                   emotional_context, metrics
+                   emotional_context, metrics, COALESCE(is_sensitive, 0) AS is_sensitive
             FROM memories
             WHERE {where}
             ORDER BY created_at DESC
@@ -233,11 +238,60 @@ class MemoryMaintenanceJob:
                 "synthesized_from": r["synthesized_from"],
                 "emotional_context": r["emotional_context"],
                 "metrics": r["metrics"],
+                "is_sensitive": int(r["is_sensitive"] or 0),
+            }
+            for r in rows
+        ]
+
+    def _fetch_all_memories_in_scope(self, conn: Any, config: MaintenanceConfig) -> list[dict[str, Any]]:
+        cursor = conn.execute(
+            """
+            SELECT id, user_id, tenant_id, scope, retention, content, tags,
+                   category, importance, strength_trend, created_at,
+                   activation_count, is_ghost, synthesized_from,
+                   emotional_context, metrics, COALESCE(is_sensitive, 0) AS is_sensitive
+            FROM memories
+            WHERE user_id = ? AND tenant_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (config.user_id, config.tenant_id, config.batch_size),
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "id": r["id"],
+                "user_id": r["user_id"],
+                "tenant_id": r["tenant_id"],
+                "scope": r["scope"],
+                "retention": r["retention"],
+                "content": r["content"],
+                "tags": r["tags"],
+                "category": r["category"],
+                "importance": r["importance"] or 0.5,
+                "strength_trend": r["strength_trend"],
+                "created_at": r["created_at"],
+                "activation_count": r["activation_count"] or 0,
+                "is_ghost": r["is_ghost"],
+                "synthesized_from": r["synthesized_from"],
+                "emotional_context": r["emotional_context"],
+                "metrics": r["metrics"],
+                "is_sensitive": int(r["is_sensitive"] or 0),
             }
             for r in rows
         ]
 
     def _run_consolidate(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
+        # Count sensitive rows in scope before the SQL filter so the audit
+        # log captures them even when they short-circuit clustering.
+        if not config.sensitive_only:
+            stats.sensitive_excluded += int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+                    (config.user_id, config.tenant_id),
+                ).fetchone()[0]
+                or 0
+            )
         memories = self._fetch_memories(conn, config)
         if len(memories) < 2:
             return
@@ -272,6 +326,19 @@ class MemoryMaintenanceJob:
                 action="flag_review",
                 representative_id=member_ids[0],
             )
+
+            # No auto_action on sensitive clusters — only flag-for-review, even
+            # when overlap >= consolidation_overlap_high. This is the AC that
+            # sensitive memories never get silently merged/overwritten.
+            cluster_has_sensitive = any(m.get("is_sensitive") for m in cluster_memories_list)
+
+            if cluster_has_sensitive:
+                candidate.action = "flag_review"
+                flagged.append(candidate)
+                stats.duplicates_flagged_review += 1
+                stats.sensitive_excluded += 1
+                stats.duplicates_found += len(member_ids)
+                continue
 
             if avg_overlap >= config.consolidation_overlap_high:
                 candidate.action = "auto_consolidate"
@@ -350,6 +417,12 @@ class MemoryMaintenanceJob:
             ),
         )
 
+        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
+        conn.execute(
+            "UPDATE memories SET is_sensitive = ?, sensitivity_reason = ? WHERE id = ?",
+            (1 if is_sensitive_bit else 0, sensitivity_reason, primary_id),
+        )
+
         for mid in other_ids:
             cursor = conn.execute(
                 "SELECT content, gist, synthesized_from FROM memories WHERE id = ?", (mid,)
@@ -395,12 +468,25 @@ class MemoryMaintenanceJob:
             pass
 
     def _run_contradict(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
-        memories = self._fetch_memories(conn, config)
+        # PIX-3956: contradict must scan sensitive memories too. They are
+        # always reviewed by an admin and never silently dropped. We use a
+        # dedicated un-gated fetch because _fetch_memories is wired to the
+        # SQL sensitivity filter that exists for the destructive paths.
+        stats.sensitive_excluded = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE user_id = ? AND tenant_id = ? AND COALESCE(is_sensitive, 0) = 1",
+                (config.user_id, config.tenant_id),
+            ).fetchone()[0]
+            or 0
+        )
+        memories = self._fetch_all_memories_in_scope(conn, config)
         if len(memories) < 2:
             return
 
+        scan_target = memories
+
         topic_clusters: dict[str, list[dict[str, Any]]] = {}
-        for mem in memories:
+        for mem in scan_target:
             content_lower = (mem["content"] or "").lower()
             words = set(re.findall(r"\b\w+\b", content_lower))
             for topic in words:
@@ -515,6 +601,7 @@ class MemoryMaintenanceJob:
         )
 
     def _find_stale_candidates(self, conn: Any, config: MaintenanceConfig) -> list[StaleCandidate]:
+        sensitivity_filter = "is_sensitive = 1" if config.sensitive_only else "COALESCE(is_sensitive, 0) = 0"
         cursor = conn.execute(
             f"""
             SELECT id, importance,
@@ -523,6 +610,7 @@ class MemoryMaintenanceJob:
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND is_ghost = 0
+            AND {sensitivity_filter}
             AND (importance <= ? OR strength_trend = 'stale')
             ORDER BY importance ASC, created_at ASC
             LIMIT ?

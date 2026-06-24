@@ -96,6 +96,7 @@ from .memory_components import (
     SocraticGate,
 )
 from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
+from .sensitivity import resolve_is_sensitive
 from .memory_relationships import (
     LinkMemoriesOptions,
     MemoryRelationshipError,
@@ -190,6 +191,13 @@ class MemoryOptions(BaseModel):
     )
     related_memory_id: str | None = Field(
         default=None, description="ID of the memory this one relates to (paired with relation_type)"
+    )
+    is_sensitive: bool | None = Field(
+        default=None,
+        description=(
+            "PIX-3956 sensitivity override. None defers to the detector on memory.content;"
+            " True forces the row is_sensitive=1; False forces is_sensitive=0."
+        ),
     )
 
 
@@ -468,6 +476,12 @@ _SCHEMA_MIGRATIONS = {
         "ALTER TABLE memories ADD COLUMN strength_trend TEXT DEFAULT 'stable'",
         "ALTER TABLE memories ADD COLUMN last_retrieved_at TEXT",
         "ALTER TABLE memories ADD COLUMN category TEXT DEFAULT 'general'",
+        # PIX-3956 clinical/safety/privacy gating. ALTER is idempotent on
+        # re-runs because the runner catches "duplicate column" errors and
+        # skips them. sensitivity_reason is nullable so legacy rows can
+        # stay at NULL.
+        "ALTER TABLE memories ADD COLUMN is_sensitive INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE memories ADD COLUMN sensitivity_reason TEXT",
         "CREATE INDEX IF NOT EXISTS idx_memories_user_created ON memories(user_id, created_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_memories_user_accessed ON memories(user_id, accessed_at DESC)",
         "CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(user_id, importance DESC, created_at)",
@@ -1193,11 +1207,15 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
     memory.tags = gate_result.suggested_tags
     if opts.category and opts.category not in memory.tags:
         memory.tags.append(opts.category)
+    # Re-evaluate sensitivity at INSERT-time — content may have been
+    # mutated by a PRE_STORE hook above.
+    is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(opts.is_sensitive, content)
     # Store
     conn.execute(
         "INSERT INTO memories (id, user_id, tenant_id, category, scope, retention, "
         "content, content_hash, emotional_context, metrics, importance, activation_count, "
-        "created_at, updated_at, tags) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "created_at, updated_at, tags, is_sensitive, sensitivity_reason) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             memory_id,
             uid,
@@ -1214,6 +1232,8 @@ def _handle_memory_store(uid: str, tenant_id: str, options: MemoryAction) -> str
             datetime.now(timezone.utc).isoformat(),
             datetime.now(timezone.utc).isoformat(),
             json.dumps(memory.tags),
+            1 if is_sensitive_bit else 0,
+            sensitivity_reason,
         ),
     )
     conn.commit()
@@ -1286,6 +1306,9 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
         )
         updates_list.extend(["content = ?", "version = ?"])
         values.extend([options.updates.content.strip(), (row["version"] or 1) + 1])
+        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, options.updates.content.strip())
+        updates_list.extend(["is_sensitive = ?", "sensitivity_reason = ?"])
+        values.extend([1 if is_sensitive_bit else 0, sensitivity_reason])
     if options.updates.category:
         updates_list.append("category = ?")
         values.append(options.updates.category)

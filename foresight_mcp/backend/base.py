@@ -10,7 +10,12 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
+from datetime import datetime, timezone
 from typing import Any
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class DatabaseBackend(ABC):
@@ -72,3 +77,46 @@ class DatabaseBackend(ABC):
         with self.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Schema helpers — default implementations inspect information_schema
+    # (PostgreSQL) and sqlite_master (SQLite). Subclasses may override for
+    # faster paths. These power the backend-agnostic migration runner in
+    # :mod:`backend_migrations`.
+    # ------------------------------------------------------------------
+
+    def table_exists(self, table_name: str) -> bool:
+        try:
+            rows = self.fetch(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",
+                (table_name,),
+            )
+            if rows:
+                return True
+        except Exception:
+            pass
+        try:
+            rows = self.fetch(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (table_name,),
+            )
+            return bool(rows)
+        except Exception:
+            return False
+
+    def get_version(self, table: str = "schema_migrations") -> int:
+        if not self.table_exists(table):
+            return 0
+        try:
+            row = self.fetch_one(f"SELECT COALESCE(MAX(version), 0) AS v FROM {table}")
+            return int((row or {}).get("v", 0) or 0)
+        except Exception:
+            return 0
+
+    def set_version(self, version: int, table: str = "schema_migrations") -> None:
+        if not self.table_exists(table):
+            self.execute(f"CREATE TABLE {table} (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
+        self.execute(
+            f"INSERT INTO {table} (version, applied_at) VALUES (?, ?)",
+            (version, _now_iso()),
+        )

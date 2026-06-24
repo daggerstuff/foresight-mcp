@@ -786,7 +786,7 @@ class EvalHarness:
             result_str = ic_fn(
                 conversation_text=scenario.query,
                 user_id=self.user_id,
-                max_memories=10,
+                max_memories=20,
                 min_relevance=0.01,
                 include_details=True,
                 max_chars=budget_chars,

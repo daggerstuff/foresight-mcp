@@ -50,6 +50,8 @@ def _make_test_db() -> str:
             strength_trend TEXT DEFAULT 'stable',
             activation_count INTEGER DEFAULT 0,
             is_ghost INTEGER DEFAULT 0,
+            is_sensitive INTEGER NOT NULL DEFAULT 0,
+            sensitivity_reason TEXT,
             gist TEXT,
             synthesized_from TEXT,
             emotional_context TEXT,

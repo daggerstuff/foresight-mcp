@@ -1755,7 +1755,9 @@ def test_memory_hard_cap_enforcement():
             vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
             synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
             activation_count INTEGER DEFAULT 1,
-            importance REAL DEFAULT 0.5
+            importance REAL DEFAULT 0.5,
+            is_sensitive INTEGER NOT NULL DEFAULT 0,
+            sensitivity_reason TEXT
         )""")
         conn.commit()
         conn.close()
