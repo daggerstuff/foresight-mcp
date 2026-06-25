@@ -62,11 +62,13 @@ class SqliteBackend(DatabaseBackend):
         """Acquire a pooled SQLite connection and release it on exit."""
         if self._pool is None:
             raise RuntimeError("SqliteBackend not connected. Call connect() first.")
-        conn = self._pool.acquire()
+        pool = self._pool
+        conn = pool.acquire()
         try:
             yield conn
         finally:
-            self._pool.release(conn)
+            conn.rollback()
+            pool.release(conn)
 
     # ------------------------------------------------------------------
     # Convenience — minor optimisation over base-class defaults
