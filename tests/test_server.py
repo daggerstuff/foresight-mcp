@@ -189,9 +189,7 @@ def test_store_memory_tenant_isolation_on_dedup():
                 id TEXT PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT,
                 tenant_id TEXT NOT NULL DEFAULT 'default',
                 user_id TEXT DEFAULT 'default',
-                activation_count INTEGER DEFAULT 0, is_ghost INTEGER DEFAULT 0, is_sensitive INTEGER NOT NULL DEFAULT 0, sensitivity_reason TEXT,
-
-
+                activation_count INTEGER DEFAULT 0, is_ghost INTEGER DEFAULT 0,
                 created_at TEXT, updated_at TEXT, scope TEXT, retention TEXT,
                 category TEXT, bank_id TEXT, tags TEXT, emotional_context TEXT,
                 metrics TEXT, vector_id TEXT, gist TEXT, synthesized_from TEXT,
@@ -250,11 +248,8 @@ def _make_test_db():
         updated_at TEXT, tags TEXT DEFAULT '[]',
         emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
         vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
-
-
         synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
-        importance REAL, activation_count INTEGER DEFAULT 0,
-        is_sensitive INTEGER DEFAULT 0, sensitivity_reason TEXT
+        importance REAL, activation_count INTEGER DEFAULT 0, is_sensitive INTEGER NOT NULL DEFAULT 0, sensitivity_reason TEXT
     )""")
     conn.commit()
     conn.close()
@@ -420,8 +415,6 @@ def _make_inject_test_db(memories=None):
         updated_at TEXT, tags TEXT DEFAULT '[]',
         emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
         vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
-
-
         synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
         importance REAL DEFAULT 1.0, activation_count INTEGER DEFAULT 0,
         decay_rate REAL DEFAULT 0.01, retrieval_count INTEGER DEFAULT 0,
@@ -893,8 +886,6 @@ def _make_curation_test_db():
             updated_at TEXT, tags TEXT DEFAULT '[]',
             emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
             vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
-
-
             synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
             importance REAL DEFAULT 1.0, activation_count INTEGER DEFAULT 0,
             decay_rate REAL DEFAULT 0.01, retrieval_count INTEGER DEFAULT 0,
@@ -1518,9 +1509,7 @@ def test_handle_memory_archive_respects_tenant_scope():
                 content TEXT NOT NULL,
                 tenant_id TEXT NOT NULL DEFAULT 'default',
                 user_id TEXT DEFAULT 'default',
-                is_ghost INTEGER DEFAULT 0, is_sensitive INTEGER NOT NULL DEFAULT 0, sensitivity_reason TEXT,
-
-
+                is_ghost INTEGER DEFAULT 0,
                 gist TEXT,
                 UNIQUE(id, tenant_id)
             )"""
@@ -1585,9 +1574,7 @@ def test_old_archive_update_would_leak_across_tenants():
                 content TEXT NOT NULL,
                 tenant_id TEXT NOT NULL DEFAULT 'default',
                 user_id TEXT DEFAULT 'default',
-                is_ghost INTEGER DEFAULT 0, is_sensitive INTEGER NOT NULL DEFAULT 0, sensitivity_reason TEXT,
-
-
+                is_ghost INTEGER DEFAULT 0,
                 gist TEXT,
                 UNIQUE(id, tenant_id)
             )"""
@@ -1645,11 +1632,8 @@ def test_handle_version_rollback_respects_tenant_scope():
                 updated_at TEXT, tags TEXT DEFAULT '[]',
                 emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
                 vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
-
-
                 synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
-                importance REAL, activation_count INTEGER DEFAULT 0,
-                is_sensitive INTEGER DEFAULT 0, sensitivity_reason TEXT,
+                importance REAL, activation_count INTEGER DEFAULT 0, is_sensitive INTEGER NOT NULL DEFAULT 0, sensitivity_reason TEXT,
                 UNIQUE(id, tenant_id)
             )"""
         )
@@ -1769,8 +1753,6 @@ def test_memory_hard_cap_enforcement():
             updated_at TEXT, tags TEXT DEFAULT '[]',
             emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
             vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
-
-
             synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
             activation_count INTEGER DEFAULT 1,
             importance REAL DEFAULT 0.5,
