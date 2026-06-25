@@ -1,3 +1,4 @@
+"""Tests for SqliteBackend connection pooling and query execution."""
 import pytest
 from foresight_mcp.backend.sqlite_backend import SqliteBackend
 
@@ -21,6 +22,17 @@ def test_connect_and_close(db_path):
 
     b.close()
     assert b._pool is None
+
+
+def test_close_never_connected(db_path):
+    """Test close() on a never-connected backend is a no-op."""
+    b = SqliteBackend(db_path=db_path)
+    assert b._pool is None
+    # close() without connect() should not raise
+    b.close()
+    # close() again should also be a no-op
+    b.close()
+
 
 def test_unconnected_backend_raises(db_path):
     b = SqliteBackend(db_path=db_path)
@@ -86,6 +98,16 @@ def test_stats(backend):
     assert "idle" in stats
     assert "in_use" in stats
     assert "max_size" in stats
+
+
+def test_execute_many_empty(backend):
+    """Test execute_many with an empty parameter sequence is a no-op."""
+    backend.execute("CREATE TABLE test (id INTEGER PRIMARY KEY, name TEXT)")
+    backend.execute_many("INSERT INTO test (name) VALUES (?)", [])
+
+    rows = backend.fetch("SELECT name FROM test ORDER BY name")
+    assert len(rows) == 0
+
 
 def test_stats_unconnected(db_path):
     b = SqliteBackend(db_path=db_path)
