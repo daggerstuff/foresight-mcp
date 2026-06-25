@@ -1343,7 +1343,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     )
     conn.commit()
     conn.close()
-    was_sensitive = bool(row.get("is_sensitive", 0))
+    was_sensitive = bool(dict(row).get("is_sensitive", 0))
     old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
     new_evt = "[REDACTED - sensitive]" if was_sensitive else (options.updates.content or row["content"] or "")
     get_event_bus_with_stream().publish(
@@ -1732,7 +1732,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     )
     conn.commit()
     conn.close()
-    was_sensitive = bool(row.get("is_sensitive", 0))
+    was_sensitive = bool(dict(row).get("is_sensitive", 0))
     old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
     new_evt = "[REDACTED - sensitive]" if was_sensitive else (version_row["content"] or "")
     get_event_bus_with_stream().publish(
@@ -1946,8 +1946,8 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                 "INSERT OR IGNORE INTO memories "
                 "(id, content, content_hash, scope, retention, category, user_id, bank_id, tenant_id, "
                 "created_at, updated_at, tags, emotional_context, metrics, "
-                "is_ghost, synthesized_from, is_sensitive, sensitivity_reason) "
-                "VALUES (?, ?, ?, 'arc', 'long_term', ?, ?, ?, ?, ?, ?, '[]', '{}', '{}', 0, '[]', ?, ?)",
+                "is_ghost, synthesized_from) "
+                "VALUES (?, ?, ?, \'arc\', \'long_term\', ?, ?, ?, ?, ?, ?, \'[]\', \'{}\', \'{}\', 0, \'[]\')",
                 (
                     mid,
                     content,
@@ -1958,8 +1958,6 @@ def _bridge_context_blocks_to_memories(agent, uid: str) -> int:
                     tenant_id,
                     now,
                     now,
-                    1 if is_sensitive_bit else 0,
-                    sensitivity_reason,
                 ),
             )
             conn.commit()
