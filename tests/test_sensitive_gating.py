@@ -233,16 +233,16 @@ class TestArchiveStaleSensitiveSkipped:
         )
 
         job = MemoryMaintenanceJob(db_path=db_path)
-        stats = job.run(
-            MaintenanceConfig(
-                user_id="u1",
-                tenant_id="t1",
-                modes=["archive_stale"],
-                stale_importance_threshold=0.1,
-                sensitive_only=True,
-                batch_size=50,
-            )
+        config = MaintenanceConfig(
+            user_id="u1",
+            tenant_id="t1",
+            modes=["archive_stale"],
+            stale_importance_threshold=0.1,
+            sensitive_only=True,
+            batch_size=50,
         )
+        config.tool_access = "observe"
+        stats = job.run(config)
 
         assert stats.stale_archived == 1
         assert stats.stale_found == 1

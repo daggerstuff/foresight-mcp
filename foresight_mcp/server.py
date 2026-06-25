@@ -1343,7 +1343,7 @@ def _handle_memory_update(uid: str, tenant_id: str, options: MemoryAction) -> st
     )
     conn.commit()
     conn.close()
-    was_sensitive = bool(row.get("is_sensitive", 0))
+    was_sensitive = bool(row["is_sensitive"]) if "is_sensitive" in row.keys() else False
     old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
     new_evt = "[REDACTED - sensitive]" if was_sensitive else (options.updates.content or row["content"] or "")
     get_event_bus_with_stream().publish(
@@ -1732,7 +1732,7 @@ def _handle_version_rollback(uid: str, tenant_id: str, options: VersionAction) -
     )
     conn.commit()
     conn.close()
-    was_sensitive = bool(row.get("is_sensitive", 0))
+    was_sensitive = bool(row["is_sensitive"]) if "is_sensitive" in row.keys() else False
     old_evt = "[REDACTED - sensitive]" if was_sensitive else (row["content"] or "")
     new_evt = "[REDACTED - sensitive]" if was_sensitive else (version_row["content"] or "")
     get_event_bus_with_stream().publish(
