@@ -23,10 +23,7 @@ class OpenAIClient:
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         if not api_key:
-            raise LLMError(
-                "OpenAI API key is required. Set OPENAI_API_KEY or "
-                "pass api_key=... explicitly."
-            )
+            raise LLMError("OpenAI API key is required. Set OPENAI_API_KEY or pass api_key=... explicitly.")
         if not model:
             raise LLMError("model is required and must be a non-empty string")
         self._api_key = api_key
@@ -66,9 +63,7 @@ class OpenAIClient:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code == 429:
                 raise LLMRateLimitError(f"OpenAI API rate limit (429): {detail}") from exc
-            raise LLMError(
-                f"OpenAI API returned HTTP {exc.code}: {detail}"
-            ) from exc
+            raise LLMError(f"OpenAI API returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(f"OpenAI API request failed: {exc.reason}") from exc
 
@@ -79,9 +74,7 @@ class OpenAIClient:
 
         choices = parsed.get("choices")
         if not isinstance(choices, list) or not choices:
-            raise LLMError(
-                f"OpenAI API returned no choices: {payload[:200]}"
-            )
+            raise LLMError(f"OpenAI API returned no choices: {payload[:200]}")
 
         for choice in choices:
             if isinstance(choice, dict):
@@ -91,9 +84,7 @@ class OpenAIClient:
                     if isinstance(content, str):
                         return content
 
-        raise LLMError(
-            f"OpenAI API returned no message content: {payload[:200]}"
-        )
+        raise LLMError(f"OpenAI API returned no message content: {payload[:200]}")
 
 
 __all__ = ["DEFAULT_MODEL", "OpenAIClient"]

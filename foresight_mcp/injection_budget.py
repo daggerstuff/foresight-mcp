@@ -283,10 +283,10 @@ def _render_item(item: LaneItem, level: TruncationLevel, budget: InjectionBudget
     """Render a lane item at the given truncation level."""
     if level == TruncationLevel.FULL:
         return item.content
-    elif level == TruncationLevel.SUMMARY:
+    if level == TruncationLevel.SUMMARY:
         return _first_sentence(item.content, budget.summary_max_chars)
-    else:  # STUB
-        return budget.stub_format.format(id=item.id, score=f"{item.score:.2f}")
+    # STUB
+    return budget.stub_format.format(id=item.id, score=f"{item.score:.2f}")
 
 
 def allocate_lane(

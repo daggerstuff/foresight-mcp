@@ -118,7 +118,7 @@ def status(
             weights = budget.get("default_lane_weights", {})
             if isinstance(weights, dict):
                 for lane_name, pct in sorted(weights.items()):
-                    budget_items.append(f"{lane_name}: {pct}%")
+                    budget_items.append(f"{lane_name}: {pct * 100:.0f}%")
             out.bullet_list(budget_items, title="Payload Budget")
 
         # Last injection stats
@@ -137,6 +137,33 @@ def status(
             if mc is not None:
                 inj_items.append(f"Budget: {mc} chars")
             out.bullet_list(inj_items, title="Last Injection")
+
+        ih = result.get("injection_health")
+        if isinstance(ih, dict):
+            ih_items = []
+            tr = ih.get("total_runs")
+            if tr is not None:
+                ih_items.append(f"Total Runs: {tr}")
+            r24 = ih.get("runs_24h")
+            if r24 is not None:
+                ih_items.append(f"Runs 24h: {r24}")
+            lat = ih.get("avg_latency_ms")
+            if lat is not None:
+                ih_items.append(f"Avg Latency: {lat}ms")
+            ret = ih.get("avg_memories_returned")
+            if ret is not None:
+                ih_items.append(f"Avg Returned: {ret}")
+            fet = ih.get("avg_memories_fetched")
+            if fet is not None:
+                ih_items.append(f"Avg Fetched: {fet}")
+            fpr = ih.get("fast_path_rate_pct")
+            if fpr is not None:
+                ih_items.append(f"Fast Path Rate: {fpr:.0f}%")
+            lra = ih.get("last_run_at")
+            if lra is not None:
+                ih_items.append(f"Last Run: {str(lra)[:19]}")
+            if ih_items:
+                out.bullet_list(ih_items, title="Injection Health")
 
         # Cache / retrieval debug
         cache = result.get("cache_metrics")
@@ -296,8 +323,8 @@ def stats(
     resolved_uid = cfg.get_user_id(user_id)
 
     try:
-        from foresight_mcp.server import TemporalWindow
         from foresight_mcp import query_memories_temporal
+        from foresight_mcp.server import TemporalWindow
 
         temporal = query_memories_temporal(options=TemporalWindow(window="month", limit=100))
     except Exception:

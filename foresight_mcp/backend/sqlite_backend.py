@@ -8,12 +8,13 @@ at ``FORESIGHT_DB_PATH`` (or the compiled-in default).
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from typing import Any
 
-from .base import DatabaseBackend
-from ..connection_pool import ConnectionPool
 from ..config import DB_PATH
+from ..connection_pool import ConnectionPool
+from .base import DatabaseBackend
 
 logger = logging.getLogger("foresight_sqlite_backend")
 
@@ -44,6 +45,7 @@ class SqliteBackend(DatabaseBackend):
             max_size=self._max_size,
             max_idle_seconds=self._max_idle_seconds,
         )
+        self._backend_type = "sqlite"
 
     def close(self) -> None:
         if self._pool is not None:
@@ -56,7 +58,7 @@ class SqliteBackend(DatabaseBackend):
     # ------------------------------------------------------------------
 
     @contextmanager
-    def connection(self) -> Generator[Any, None, None]:
+    def connection(self) -> Generator[Any]:
         """Acquire a pooled SQLite connection and release it on exit."""
         if self._pool is None:
             raise RuntimeError("SqliteBackend not connected. Call connect() first.")

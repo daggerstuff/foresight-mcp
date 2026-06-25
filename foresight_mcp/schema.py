@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, cast
 
 from pydantic import BaseModel, Field
-from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
 # Schema version

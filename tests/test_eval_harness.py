@@ -11,10 +11,10 @@ import os
 import tempfile
 
 from foresight_mcp.eval_harness import (
-    EvalHarness,
-    EvalReport,
     FIXTURE_MEMORIES,
     SCENARIOS,
+    EvalHarness,
+    EvalReport,
     ScenarioResult,
     scan_for_pii,
 )

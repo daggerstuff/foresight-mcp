@@ -3,7 +3,6 @@ Eval command: run the evaluation harness and generate a report."""
 
 from __future__ import annotations
 
-
 import typer
 
 from ..utils import output as out

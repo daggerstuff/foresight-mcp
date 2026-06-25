@@ -12,8 +12,8 @@ from unittest.mock import patch
 import pytest
 from foresight_mcp import memory_relationships as rel_mod
 from foresight_mcp.memory_relationships import (
-    LinkMemoriesOptions,
     VALID_RELATIONSHIP_TYPES,
+    LinkMemoriesOptions,
     MemoryGraphTraversal,
     MemoryRelationship,
     MemoryRelationshipError,
@@ -342,7 +342,7 @@ def test_singleton_returns_same_instance(monkeypatch):
 
 
 def test_unified_memory_round_trips_relationship_fields():
-    from foresight_mcp.schema import UnifiedMemory, MemoryCreateOptions
+    from foresight_mcp.schema import MemoryCreateOptions, UnifiedMemory
 
     options = MemoryCreateOptions(relation_type="extends", related_memory_id="abc")
     m = UnifiedMemory.create(content="x", user_id="u1", options=options)
@@ -359,7 +359,7 @@ def test_unified_memory_round_trips_relationship_fields():
 
 
 def test_unified_memory_defaults_relationship_fields_to_none():
-    from foresight_mcp.schema import UnifiedMemory, MemoryCreateOptions
+    from foresight_mcp.schema import MemoryCreateOptions, UnifiedMemory
 
     m = UnifiedMemory.create(content="x", user_id="u1", options=MemoryCreateOptions())
     assert m.relation_type is None

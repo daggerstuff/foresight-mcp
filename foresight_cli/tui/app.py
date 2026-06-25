@@ -9,10 +9,9 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, TabbedContent, TabPane
 
 from ..utils.config import CliConfig
-
+from .screens.blocks import BlocksScreen
 from .screens.dashboard import DashboardScreen
 from .screens.memories import MemoriesScreen
-from .screens.blocks import BlocksScreen
 
 
 class ForesightTUI(App):

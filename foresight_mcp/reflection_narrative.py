@@ -54,7 +54,8 @@ import hashlib
 import json
 import logging
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .audit import (
     NARRATIVE_CACHE_HIT,
@@ -410,8 +411,8 @@ def generate_insight_narrative(
 
 
 __all__ = [
-    "LLMCallable",
     "NARRATIVE_PROMPT_TEMPLATE",
+    "LLMCallable",
     "ReflectionNarrativeError",
     "generate_insight_narrative",
 ]

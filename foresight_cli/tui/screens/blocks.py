@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 
+from foresight_mcp import ContextBlockAction, manage_context_blocks
+from foresight_mcp.server import init_db
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
-
-from foresight_mcp import ContextBlockAction, manage_context_blocks
-from foresight_mcp.server import init_db
 
 BLOCK_LABELS = [
     "guidance",

@@ -19,18 +19,6 @@ Includes:
 
 from typing import TYPE_CHECKING, Any
 
-# Core system exports
-from .capture import (
-    CapturePipeline as CapturePipeline,
-    CaptureStats as CaptureStats,
-    CapturedMemory as CapturedMemory,
-    DedupeResult as DedupeResult,
-    DedupeEngine as DedupeEngine,
-    MemoryExtractor as MemoryExtractor,
-    SessionClassifier as SessionClassifier,
-    get_capture_pipeline as get_capture_pipeline,
-    reset_capture_pipeline as reset_capture_pipeline,
-)
 from .block_registry import (
     DEFAULT_BLOCK_SCHEMAS as DEFAULT_BLOCK_SCHEMAS,
     BlockRegistry as BlockRegistry,
@@ -42,6 +30,19 @@ from .block_registry import (
     RetentionPolicy as RetentionPolicy,
     get_registry as get_registry,
     initialize_default_blocks as initialize_default_blocks,
+)
+
+# Core system exports
+from .capture import (
+    CapturedMemory as CapturedMemory,
+    CapturePipeline as CapturePipeline,
+    CaptureStats as CaptureStats,
+    DedupeEngine as DedupeEngine,
+    DedupeResult as DedupeResult,
+    MemoryExtractor as MemoryExtractor,
+    SessionClassifier as SessionClassifier,
+    get_capture_pipeline as get_capture_pipeline,
+    reset_capture_pipeline as reset_capture_pipeline,
 )
 from .context_blocks import (
     ContextBlock as ContextBlock,
@@ -516,6 +517,7 @@ __all__ = [
     "deserialize_vector",
     "extract_triggered_memories",
     "format_budgeted_payload",
+    "get_capture_pipeline",
     "get_context_block",
     "get_context_block_agent",
     "get_context_snapshot",
@@ -534,7 +536,6 @@ __all__ = [
     "get_hybrid_retriever",
     "get_hybrid_retriever",
     "get_memory",
-    "get_capture_pipeline",
     "get_memory_gc",
     "get_memory_relationship_store",
     "get_memory_relationships",
@@ -569,6 +570,7 @@ __all__ = [
     "query_memories_temporal",
     "register_hook",
     "reinforce_memory",
+    "reset_capture_pipeline",
     "reset_context_block",
     "reset_decay_model",
     "reset_document_store",
@@ -576,7 +578,6 @@ __all__ = [
     "reset_entity_extractor",
     "reset_graph_store",
     "reset_hybrid_retriever",
-    "reset_capture_pipeline",
     "run_clustering",
     "run_maintenance_eval",
     "run_memory_gc",

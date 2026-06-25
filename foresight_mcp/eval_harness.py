@@ -532,9 +532,9 @@ class EvalHarness:
         import foresight_mcp.connection_pool as conn_pool_module
         import foresight_mcp.hybrid_retriever as hr_module
         from foresight_mcp.connection_pool import reset_pool
-        from foresight_mcp.server import init_db
         from foresight_mcp.hybrid_retriever import reset_hybrid_retriever
-        from foresight_mcp.tenant_context import set_current_user_id, set_current_account_id
+        from foresight_mcp.server import init_db
+        from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id
 
         # Reset singletons
         reset_pool()
@@ -767,7 +767,7 @@ class EvalHarness:
     ) -> ScenarioResult:
         """Internal: run scenario without exception handling."""
         from foresight_mcp.server import inject_context as ic_fn
-        from foresight_mcp.tenant_context import set_current_user_id, set_current_account_id
+        from foresight_mcp.tenant_context import set_current_account_id, set_current_user_id
 
         # Set tenant context for server functions
         set_current_user_id(self.user_id)
@@ -786,7 +786,7 @@ class EvalHarness:
             result_str = ic_fn(
                 conversation_text=scenario.query,
                 user_id=self.user_id,
-                max_memories=10,
+                max_memories=20,
                 min_relevance=0.01,
                 include_details=True,
                 max_chars=budget_chars,

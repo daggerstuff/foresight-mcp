@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import json
-
+from foresight_mcp import SearchOptions, search_memories, store_memory
+from foresight_mcp.server import init_db
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
-
-from foresight_mcp import SearchOptions, search_memories, store_memory
-from foresight_mcp.server import init_db
 
 MEMORY_CATEGORIES = ["fact", "preference", "insight", "observation", "decision", "goal"]
 

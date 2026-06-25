@@ -1755,7 +1755,9 @@ def test_memory_hard_cap_enforcement():
             vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
             synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
             activation_count INTEGER DEFAULT 1,
-            importance REAL DEFAULT 0.5
+            importance REAL DEFAULT 0.5,
+            is_sensitive INTEGER NOT NULL DEFAULT 0,
+            sensitivity_reason TEXT
         )""")
         conn.commit()
         conn.close()
@@ -1904,7 +1906,7 @@ class TestSystemStatusHealth:
 
     def test_system_status_contains_stale_count(self):
         """get_system_status returns stale_count metric."""
-        from foresight_mcp.server import get_system_status, store_memory
+        from foresight_mcp.server import get_system_status
 
         result = get_system_status()
         data = json.loads(result)

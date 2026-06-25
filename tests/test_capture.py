@@ -4,7 +4,6 @@ import hashlib
 from datetime import datetime, timezone
 
 import pytest
-
 from foresight_mcp.capture import (
     CapturedMemory,
     DedupeEngine,
@@ -15,7 +14,6 @@ from foresight_mcp.capture import (
 )
 from foresight_mcp.document_layer import content_hash as _content_hash
 from foresight_mcp.memory_relationships import reset_memory_relationship_store
-
 
 # ====== Fixtures ======
 

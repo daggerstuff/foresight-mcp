@@ -24,10 +24,7 @@ class AnthropicClient:
 
     def __init__(self, api_key: str, model: str = DEFAULT_MODEL) -> None:
         if not api_key:
-            raise LLMError(
-                "Anthropic API key is required. Set ANTHROPIC_API_KEY or "
-                "pass api_key=... explicitly."
-            )
+            raise LLMError("Anthropic API key is required. Set ANTHROPIC_API_KEY or pass api_key=... explicitly.")
         if not model:
             raise LLMError("model is required and must be a non-empty string")
         self._api_key = api_key
@@ -68,9 +65,7 @@ class AnthropicClient:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code == 429:
                 raise LLMRateLimitError(f"Anthropic API rate limit (429): {detail}") from exc
-            raise LLMError(
-                f"Anthropic API returned HTTP {exc.code}: {detail}"
-            ) from exc
+            raise LLMError(f"Anthropic API returned HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise LLMError(f"Anthropic API request failed: {exc.reason}") from exc
 
@@ -81,9 +76,7 @@ class AnthropicClient:
 
         content = parsed.get("content")
         if not isinstance(content, list) or not content:
-            raise LLMError(
-                f"Anthropic API returned no content blocks: {payload[:200]}"
-            )
+            raise LLMError(f"Anthropic API returned no content blocks: {payload[:200]}")
 
         for block in content:
             if isinstance(block, dict) and block.get("type") == "text":
@@ -91,9 +84,7 @@ class AnthropicClient:
                 if isinstance(text, str):
                     return text
 
-        raise LLMError(
-            f"Anthropic API returned no text block: {payload[:200]}"
-        )
+        raise LLMError(f"Anthropic API returned no text block: {payload[:200]}")
 
 
 __all__ = ["DEFAULT_MODEL", "AnthropicClient"]

@@ -11,7 +11,7 @@ Designed to run frequently alongside heavy maintenance operations.
 """
 
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import DB_PATH

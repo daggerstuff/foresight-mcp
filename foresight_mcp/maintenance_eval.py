@@ -35,8 +35,8 @@ from typing import Any
 from .memory_maintenance import (
     MAX_BATCH_SIZE,
     MAX_RUNTIME_SECONDS,
-    STALE_STRENGTH_THRESHOLD,
     STALE_IMPORTANCE_THRESHOLD,
+    STALE_STRENGTH_THRESHOLD,
     MaintenanceConfig,
     MaintenanceStats,
     MemoryMaintenanceJob,

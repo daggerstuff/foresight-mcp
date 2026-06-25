@@ -4,10 +4,10 @@ Conservative background memory maintenance that improves quality without
 requiring end users to manually curate memory. Operates in four modes:
 
 1. consolidate  - Find near-duplicate memories, auto-merge if high-confidence
-                  or flag for admin review if marginal.
+                   or flag for admin review if marginal.
 2. contradict   - Detect sentiment-conflict pairs, flag for admin review only.
 3. archive_stale - Archive memories with low strength or importance without
-                   hard-deleting (soft archive preserving gist lookup).
+                    hard-deleting (soft archive preserving gist lookup).
 4. synthesize  - Detect cross-memory topic patterns, emit insight records.
 
 All operations are:
@@ -195,7 +195,7 @@ class MemoryMaintenanceJob:
             stats.duplicates_flagged_review,
             stats.contradictions_flagged_review,
             stats.stale_archived,
-            stats.insights_generated,
+            self.insights_generated,
             len(stats.errors),
         )
         return stats
@@ -209,9 +209,9 @@ class MemoryMaintenanceJob:
         cursor = conn.execute(
             f"""
             SELECT id, user_id, tenant_id, scope, retention, content, tags,
-                   category, importance, strength_trend, created_at,
-                   activation_count, is_ghost, synthesized_from,
-                   emotional_context, metrics, COALESCE(is_sensitive, 0) AS is_sensitive
+                    category, importance, strength_trend, created_at,
+                    activation_count, is_ghost, synthesized_from,
+                    emotional_context, metrics, COALESCE(is_sensitive, 0) AS is_sensitive
             FROM memories
             WHERE {where}
             ORDER BY created_at DESC
@@ -243,7 +243,7 @@ class MemoryMaintenanceJob:
             for r in rows
         ]
 
-    def _fetch_memories_batch(self, conn: Any, config: MaintenanceConfig) -> list[dict[str, Any]]:
+    def _fetch_all_memories_in_scope(self, conn: Any, config: MaintenanceConfig) -> list[dict[str, Any]]:
         cursor = conn.execute(
             """
             SELECT id, user_id, tenant_id, scope, retention, content, tags,
@@ -349,7 +349,7 @@ class MemoryMaintenanceJob:
 
         for cand in high_confidence:
             try:
-                self._auto_consolidate(conn, cand, config)
+                self._auto_consolidate(conn, cand)
                 stats.duplicates_auto_consolidated += 1
             except Exception as e:
                 logger.warning("Consolidation failed for cluster %s: %s", cand.cluster_id, e)
@@ -380,17 +380,13 @@ class MemoryMaintenanceJob:
                 scores[key] = score
         return scores
 
-    def _auto_consolidate(self, conn: Any, cand: DuplicateCandidate, config: MaintenanceConfig) -> None:
+    def _auto_consolidate(self, conn: Any, cand: DuplicateCandidate) -> None:
         primary_id = cand.representative_id or cand.memory_ids[0]
         other_ids = [mid for mid in cand.memory_ids if mid != primary_id]
         if not other_ids:
             return
 
-        # Fetch primary memory data
-        cursor = conn.execute(
-            "SELECT content, synthesized_from FROM memories WHERE id = ? AND tenant_id = ? AND user_id = ?",
-            (primary_id, config.tenant_id, config.user_id),
-        )
+        cursor = conn.execute("SELECT content, synthesized_from FROM memories WHERE id = ?", (primary_id,))
         row = cursor.fetchone()
         if not row:
             return
@@ -398,104 +394,58 @@ class MemoryMaintenanceJob:
         existing_content = row["content"] or ""
         existing_synth = set(re.findall(r"\w+", row["synthesized_from"] or "")) if row["synthesized_from"] else set()
 
-        # Fetch all other memories' content in a single query
-        if other_ids:
-            placeholders = ",".join("?" for _ in other_ids)
-            rows = conn.execute(
-                f"SELECT id, content FROM memories WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",
-                (*other_ids, config.tenant_id, config.user_id),
-            ).fetchall()
-
-            additional_content = []
-            for row in rows:
-                if row["content"]:
-                    additional_content.append(row["content"])
-                    existing_synth.add(row["id"])
-        else:
-            additional_content = []
+        additional_content: list[str] = []
+        for mid in other_ids:
+            r = conn.execute("SELECT content FROM memories WHERE id = ?", (mid,)).fetchone()
+            if r and r["content"]:
+                additional_content.append(r["content"])
+                existing_synth.add(mid)
 
         combined = existing_content
         if additional_content:
             combined = existing_content + " " + " ".join(additional_content)
 
-        # Update primary memory with content and sensitivity in a single transaction
-        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
+        new_id = hashlib.sha256(f"{primary_id}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:16]
+
         conn.execute(
-            """UPDATE memories 
-               SET content = ?, 
-                   is_ghost = 1, 
-                   gist = ?, 
-                   synthesized_from = ?,
-                   is_sensitive = ?,
-                   sensitivity_reason = ?
-               WHERE id = ? AND tenant_id = ? AND user_id = ?""",
+            "UPDATE memories SET content = ?, is_ghost = 1, gist = ?, synthesized_from = ? WHERE id = ?",
             (
                 combined[:1000],
                 existing_content[:200],
                 str(list(existing_synth)),
-                1 if is_sensitive_bit else 0,
-                sensitivity_reason,
                 primary_id,
-                config.tenant_id,
-                config.user_id,
             ),
         )
 
-        # Ghost all other memories in a single query
-        if other_ids:
-            placeholders = ",".join("?" for _ in other_ids)
-            gist_values = [(other_ids[0][:200] if other_ids else "")] * len(other_ids)
-            synthesized_from_values = [str(list(existing_synth) + [mid]) for mid in other_ids]
+        is_sensitive_bit, sensitivity_reason = resolve_is_sensitive(None, combined[:1000])
+        conn.execute(
+            "UPDATE memories SET is_sensitive = ?, sensitivity_reason = ? WHERE id = ?",
+            (1 if is_sensitive_bit else 0, sensitivity_reason, primary_id),
+        )
 
-            # Build the SET clause for the UPDATE
-            set_clause = "is_ghost = 1, gist = CASE id "
-            for i, mid in enumerate(other_ids):
-                set_clause += "WHEN ? THEN ? "
-            set_clause += "END, synthesized_from = CASE id "
-            for i, mid in enumerate(other_ids):
-                set_clause += "WHEN ? THEN ? "
-            set_clause += "END"
-
-            # Prepare parameters
-            params = []
-            for i, mid in enumerate(other_ids):
-                params.extend([mid, gist_values[i]])
-            for i, mid in enumerate(other_ids):
-                params.extend([mid, synthesized_from_values[i]])
-            params.extend([config.tenant_id, config.user_id])
-
-            # Add the WHERE clause parameters (the IDs)
-            where_params = list(other_ids)
-            params = where_params + params
-
-            conn.execute(
-                f"UPDATE memories SET {set_clause} WHERE id IN ({placeholders}) AND tenant_id = ? AND user_id = ?",
-                params,
-            )
+        for mid in other_ids:
+            cursor = conn.execute(
+                "SELECT content, gist, synthesized_from FROM memories WHERE id = ?", (mid,)
+            ).fetchone()
+            if cursor:
+                conn.execute(
+                    "UPDATE memories SET is_ghost = 1, gist = ?, synthesized_from = ? WHERE id = ?",
+                    (
+                        (cursor["content"] or "")[:200],
+                        str(list(existing_synth) + [mid]),
+                        mid,
+                    ),
+                )
 
         conn.commit()
 
     def _flag_for_review(self, conn: Any, cand: DuplicateCandidate, reason: str) -> None:
         event_type = f"maintenance_review:{reason}"
-        # Get sample content from first memory for auditing purposes
-        sample_content = ""
-        if cand.memory_ids:
-            cursor = conn.execute(
-                "SELECT content, is_sensitive FROM memories WHERE id = ? LIMIT 1",
-                (cand.memory_ids[0],),
-            )
-            row = cursor.fetchone()
-            if row:
-                content = row["content"] or ""
-                is_sensitive = bool(row["is_sensitive"])
-                sample_content = "[REDACTED - sensitive]" if is_sensitive else content[:100]
-
         payload = {
             "cluster_id": cand.cluster_id,
             "memory_ids": cand.memory_ids,
             "reason": reason,
             "action": cand.action,
-            "sample_content": sample_content,
         }
         try:
             conn.execute(
@@ -532,7 +482,7 @@ class MemoryMaintenanceJob:
             ).fetchone()[0]
             or 0
         )
-        memories = self._fetch_memories_batch(conn, config)
+        memories = self._fetch_all_memories_in_scope(conn, config)
         if len(memories) < 2:
             return
 
@@ -559,21 +509,10 @@ class MemoryMaintenanceJob:
                     topic_clusters[topic].append(mem)
 
         flagged: list[ContradictionCandidate] = []
-        seen_pairs: set[tuple[str, str]] = set()
-        # Pre-compute word sets to avoid O(n²) re-tokenization
-        word_map: dict[str, tuple[frozenset[str], frozenset[str]]] = {}
-        for mem in scan_target:
-            content_lower = (mem["content"] or "").lower()
-            word_map[mem["id"]] = (
-                frozenset(re.findall(r"\b\w+\b", content_lower)),
-                frozenset(re.findall(r"\b\w+\b", content_lower)),
-            )
-
         for topic, cluster in topic_clusters.items():
             if len(cluster) < 2:
                 continue
-            if len(cluster) > 50:
-                continue
+            seen_pairs: set[tuple[str, str]] = set()
             for i, mem_a in enumerate(cluster):
                 for mem_b in cluster[i + 1 :]:
                     pair_key = tuple(sorted([mem_a["id"], mem_b["id"]]))
@@ -583,8 +522,8 @@ class MemoryMaintenanceJob:
                     if conflict is not None:
                         seen_pairs.add(pair_key)
                         pos_word, neg_word = conflict
-                        words_a = word_map[mem_a["id"]][0]
-                        words_b = word_map[mem_b["id"]][1]
+                        words_a = set(re.findall(r"\b\w+\b", (mem_a["content"] or "").lower()))
+                        words_b = set(re.findall(r"\b\w+\b", (mem_b["content"] or "").lower()))
                         overlap = len(words_a & words_b) / len(words_a | words_b) if words_a and words_b else 0.0
                         flagged.append(
                             ContradictionCandidate(
@@ -596,8 +535,8 @@ class MemoryMaintenanceJob:
                                 confidence=min(overlap * 1.5, 1.0),
                             )
                         )
+            stats.contradictions_found += len(flagged)
 
-        stats.contradictions_found += len(flagged)
         for cand in flagged:
             self._flag_contradiction_for_review(conn, cand)
             stats.contradictions_flagged_review += 1
@@ -618,30 +557,6 @@ class MemoryMaintenanceJob:
 
     def _flag_contradiction_for_review(self, conn: Any, cand: ContradictionCandidate) -> None:
         event_type = "maintenance_review:contradict"
-        # Get content for both memories for auditing purposes, redacting if sensitive
-        content_a = ""
-        content_b = ""
-        if cand.memory_id_a and cand.memory_id_b:
-            cursor = conn.execute(
-                "SELECT id, content, is_sensitive FROM memories WHERE id IN (?, ?)",
-                (cand.memory_id_a, cand.memory_id_b),
-            )
-            rows = {row["id"]: row for row in cursor.fetchall()}
-
-            # Get content for first memory
-            if cand.memory_id_a in rows:
-                row = rows[cand.memory_id_a]
-                content = row["content"] or ""
-                is_sensitive = bool(row["is_sensitive"])
-                content_a = "[REDACTED - sensitive]" if is_sensitive else content[:100]
-
-            # Get content for second memory
-            if cand.memory_id_b in rows:
-                row = rows[cand.memory_id_b]
-                content = row["content"] or ""
-                is_sensitive = bool(row["is_sensitive"])
-                content_b = "[REDACTED - sensitive]" if is_sensitive else content[:100]
-
         payload = {
             "memory_id_a": cand.memory_id_a,
             "memory_id_b": cand.memory_id_b,
@@ -649,8 +564,6 @@ class MemoryMaintenanceJob:
             "neg_word": cand.neg_word,
             "topic": cand.topic,
             "confidence": round(cand.confidence, 3),
-            "content_a": content_a,
-            "content_b": content_b,
         }
         try:
             conn.execute(
@@ -673,10 +586,6 @@ class MemoryMaintenanceJob:
             pass
 
     def _run_archive_stale(self, conn: Any, config: MaintenanceConfig, stats: MaintenanceStats) -> None:
-        # Guard against accidental PHI ghosting when sensitive_only is True
-        if config.sensitive_only and getattr(config, "tool_access", None) != "observe":
-            raise ValueError("sensitive_only archive_stale requires tool_access=observe to prevent PHI loss")
-
         candidates = self._find_stale_candidates(conn, config)
         stats.stale_found = len(candidates)
 
@@ -699,8 +608,8 @@ class MemoryMaintenanceJob:
         cursor = conn.execute(
             f"""
             SELECT id, importance,
-                   COALESCE(strength_trend, 'stable') as strength_trend,
-                   content
+                    COALESCE(strength_trend, 'stable') as strength_trend,
+                    content
             FROM memories
             WHERE user_id = ? AND tenant_id = ?
             AND is_ghost = 0
@@ -801,7 +710,7 @@ class MemoryMaintenanceJob:
                 "INSERT INTO events (id, tenant_id, event_type, timestamp, actor, entity_id, payload) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    hashlib.sha256(f"{insight.topic}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[
+                    hashlib.sha256(f"{insight.topic}{datetime.now(timezone.utc).isoformat()}").hexdigest()[
                         :16
                     ],
                     "maintenance",

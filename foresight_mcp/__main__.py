@@ -7,15 +7,25 @@ import contextlib
 import sys
 from importlib.metadata import PackageNotFoundError, version as pkg_version
 
-from .server import main as run_server
+from .server import get_system_status, init_db, main as run_server
 
 
 def main() -> None:
     """Support lightweight CLI flags before starting the MCP server."""
     if "-h" in sys.argv or "--help" in sys.argv:
+        print("Usage: foresight-mcp [--health] [--version] [--help]")
         return
 
     if "--health" in sys.argv:
+        import json as _json
+
+        init_db()
+        result = get_system_status()
+        if "--json" in sys.argv:
+            parsed = _json.loads(result) if isinstance(result, str) else result
+            print(_json.dumps(parsed, indent=2))
+        else:
+            print(result)
         return
 
     if "--version" in sys.argv:

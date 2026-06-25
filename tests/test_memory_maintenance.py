@@ -7,21 +7,18 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 
-import pytest
-
 from foresight_mcp.memory_maintenance import (
     DUPLICATE_OVERLAP_HIGH,
     DUPLICATE_OVERLAP_MARGINAL,
     MAX_BATCH_SIZE,
     MAX_RUNTIME_SECONDS,
+    SENTIMENT_OPPOSITES,
     STALE_IMPORTANCE_THRESHOLD,
     STALE_STRENGTH_THRESHOLD,
     MaintenanceConfig,
     MaintenanceStats,
     MemoryMaintenanceJob,
-    SENTIMENT_OPPOSITES,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -50,6 +47,8 @@ def _make_test_db() -> str:
             strength_trend TEXT DEFAULT 'stable',
             activation_count INTEGER DEFAULT 0,
             is_ghost INTEGER DEFAULT 0,
+            is_sensitive INTEGER NOT NULL DEFAULT 0,
+            sensitivity_reason TEXT,
             gist TEXT,
             synthesized_from TEXT,
             emotional_context TEXT,
@@ -502,7 +501,7 @@ class TestMaintenanceJobTenantIsolation:
 
             job = MemoryMaintenanceJob(db_path=db_path)
             cfg = MaintenanceConfig(user_id="u1", tenant_id="t1", modes=["archive_stale"])
-            stats = job.run(cfg)
+            _ = job.run(cfg)
 
             # Only t1/u1 memory should be archived
             conn = sqlite3.connect(db_path)

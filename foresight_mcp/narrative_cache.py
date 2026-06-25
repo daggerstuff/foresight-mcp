@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_MAX_ENTRIES = 10_000
 DEFAULT_TTL_SECONDS = 604_800
 

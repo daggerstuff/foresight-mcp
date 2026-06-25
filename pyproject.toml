@@ -4,7 +4,7 @@ version = "1.2.0"
 description = "Persistent memory for AI agents — CLI, TUI, MCP server, and Python SDK"
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 authors = [
     { name = "Foresight Team", email = "team@vectorize.io" },
 ]
