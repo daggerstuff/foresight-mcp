@@ -16,7 +16,7 @@ def test_memory_create_options_defaults():
     assert options.retention == RetentionPolicy.SHORT_TERM
     assert options.category == "general"
     assert options.tags is None
-    assert options.importance == 0.5
+    assert options.importance == 0.5  # NOSONAR
     assert options.source_service == SourceService.FORESIGHT
     assert options.emotional_context is None
     assert options.empathy_metrics is None
@@ -53,9 +53,9 @@ def test_memory_create_options_custom_values():
     assert options.retention == RetentionPolicy.PERMANENT
     assert options.category == "custom_category"
     assert options.tags == ["tag1", "tag2"]
-    assert options.importance == 0.9
+    assert options.importance == 0.9  # NOSONAR
     assert options.source_service == SourceService.AI_SERVICES
     assert options.emotional_context.primary_emotion == "joy"
-    assert options.empathy_metrics.reciprocity == 0.8
+    assert options.empathy_metrics.reciprocity == 0.8  # NOSONAR
     assert options.relation_type == "supports"
     assert options.related_memory_id == "12345"
