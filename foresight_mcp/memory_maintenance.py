@@ -86,6 +86,7 @@ class MaintenanceConfig:
     batch_size: int = MAX_BATCH_SIZE
     max_runtime_seconds: float = MAX_RUNTIME_SECONDS
     sensitive_only: bool = False
+    tool_access: str = "auto"
 
 
 @dataclass

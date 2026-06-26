@@ -241,6 +241,7 @@ class TestArchiveStaleSensitiveSkipped:
                 stale_importance_threshold=0.1,
                 sensitive_only=True,
                 batch_size=50,
+                tool_access="observe"
             )
         )
 

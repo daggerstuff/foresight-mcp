@@ -249,7 +249,8 @@ def _make_test_db():
         emotional_context TEXT DEFAULT '{}', metrics TEXT DEFAULT '{}',
         vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
         synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
-        importance REAL, activation_count INTEGER DEFAULT 0
+        importance REAL, activation_count INTEGER DEFAULT 0,
+        is_sensitive INTEGER DEFAULT 0, sensitivity_reason TEXT
     )""")
     conn.commit()
     conn.close()
@@ -1634,6 +1635,7 @@ def test_handle_version_rollback_respects_tenant_scope():
                 vector_id TEXT, gist TEXT, is_ghost INTEGER DEFAULT 0,
                 synthesized_from TEXT DEFAULT '[]', version INTEGER DEFAULT 1,
                 importance REAL, activation_count INTEGER DEFAULT 0,
+                is_sensitive INTEGER DEFAULT 0, sensitivity_reason TEXT,
                 UNIQUE(id, tenant_id)
             )"""
         )
