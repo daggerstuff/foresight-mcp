@@ -240,6 +240,7 @@ class TestArchiveStaleSensitiveSkipped:
                 modes=["archive_stale"],
                 stale_importance_threshold=0.1,
                 sensitive_only=True,
+                tool_access="observe",
                 batch_size=50,
                 tool_access="observe"
             )

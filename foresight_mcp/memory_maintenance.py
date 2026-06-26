@@ -84,6 +84,8 @@ class MaintenanceConfig:
     stale_strength_threshold: float = STALE_STRENGTH_THRESHOLD
     stale_importance_threshold: float = STALE_IMPORTANCE_THRESHOLD
     batch_size: int = MAX_BATCH_SIZE
+    sensitive_only: bool = False
+    tool_access: str = "observe"
     max_runtime_seconds: float = MAX_RUNTIME_SECONDS
     sensitive_only: bool = False
     tool_access: str = "auto"
