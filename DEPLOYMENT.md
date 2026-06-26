@@ -35,17 +35,17 @@ If `FORESIGHT_DB_URL` is unset, the factory falls back to `SqliteBackend()` — 
 
 ## 2. Required Environment Variables
 
-| Variable              | Required?   | Purpose                                                                                                                           | Default                         |
-| --------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `FORESIGHT_DB_URL`    | No          | Postgres DSN. If unset → SQLite fallback (per §6).                                                                                | _(empty → SQLite)_              |
-| `FORESIGHT_DB_PATH`   | No          | Override SQLite file path.                                                                                                        | `~/.foresight/memory.db`        |
-| `FORESIGHT_IDENTITY`  | **Yes**     | Logical agent identity propagated to MCP.                                                                                         | _(none — must set)_             |
-| `FORESIGHT_BANK_ID`   | Recommended | Tenant/bank namespace for cross-tenant isolation.                                                                                 | _(empty → single-tenant)_       |
-| `FORESIGHT_USER_ID`   | Recommended | Stable internal user identifier.                                                                                                  | _(empty → process pid)_         |
-| `FORESIGHT_API_URL`   | Recommended | Upstream MCP API base.                                                                                                            | `http://127.0.0.1:54321`        |
-| `FORESIGHT_REDIS_URL` | _Optional_  | Redis companion cache URL loaded by `RedisCache` (see §7). Set this directly OR mirror `REDIS_URL` / `REDIS_URL_REMOTE` upstream. | _empty → in-process dict cache_ |
-| `REDIS_URL`           | _Optional_  | Local Docker Redis URL (`redis://[:pw]@127.0.0.1:6379`). Smoke source for `FORESIGHT_REDIS_URL`.                                  | _none_                          |
-| `REDIS_URL_REMOTE`    | _Optional_  | Upstash Redis URL (`rediss://default:[pw]@host:6379`). Cross-process smoke source for `FORESIGHT_REDIS_URL`.                      | _none_                          |
+| Variable             | Required?   | Purpose                                                                                                                                            | Default                         |
+| -------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `FORESIGHT_DB_URL`   | No          | Postgres DSN. If unset → SQLite fallback (per §6).                                                                                                 | _(empty → SQLite)_              |
+| `FORESIGHT_DB_PATH`  | No          | Override SQLite file path.                                                                                                                         | `~/.foresight/memory.db`        |
+| `FORESIGHT_IDENTITY` | **Yes**     | Logical agent identity propagated to MCP.                                                                                                          | _(none — must set)_             |
+| `FORESIGHT_BANK_ID`  | Recommended | Tenant/bank namespace for cross-tenant isolation.                                                                                                  | _(empty → single-tenant)_       |
+| `FORESIGHT_USER_ID`  | Recommended | Stable internal user identifier.                                                                                                                   | _(empty → process pid)_         |
+| `FORESIGHT_API_URL`  | Recommended | Upstream MCP API base.                                                                                                                             | `http://127.0.0.1:54321`        |
+| `REDIS_URL`          | _Optional_  | **Canonical** Redis companion cache URL loaded by `RedisCache` (see §7). `redis://[:pw]@host:port[/db]` (or `rediss://` for TLS).                  | _empty → in-process dict cache_ |
+| `REDIS_URL_LOCAL`    | _Optional_  | Local Docker convention (`redis://[:pw]@127.0.0.1:6379`). **Diagnostic-only**; not consumed by Foresight at runtime — useful for local-dev smokes. | _none_                          |
+| `REDIS_URL_REMOTE`   | _Optional_  | Upstash / hosted broker URL (`rediss://default:[pw]@host:6379`). **Diagnostic-only**; cross-process smoke target.                                  | _none_                          |
 
 > **Security**: keep `FORESIGHT_DB_URL` and any Upstash credentials out of git. They belong in `~/.env` for shared team deployment of Foresight→Neon, with optional per-developer override in `~/.env.local` (last-source-wins via `foresight-mcp-server.sh`), or in the deployment platform's secret manager. Both files are gitignored via the `~/.gitignore` rule `/.env*`.
 
@@ -177,11 +177,13 @@ Cross-process value matches. CROSS_PROCESS_UPSTASH_VERIFIED.
 
 Plus local Docker smoke: `c.put(...)` → `c.get(...)` produces a HIT with TTL=604800 intact.
 
-**Configuration** — see §2 (`FORESIGHT_REDIS_URL`). If `FORESIGHT_REDIS_URL` is empty, callers that explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's default cache is still the in-process dict in `reflection_narrative.py`. If you want Foresight to construct the cache automatically, see `foresight_mcp/reflection_narrative._get_default_cache()`.
+**Configuration** — see §2 (`REDIS_URL`). If `REDIS_URL` is empty, callers that explicitly construct `RedisCache(url, ...)` consume it on demand; Foresight's default cache is still the in-process dict in `reflection_narrative.py`. If you want Foresight to construct the cache automatically, see `foresight_mcp/reflection_narrative._get_default_cache()`.
 
 ---
 
-## 8. The `--active` Flag Trap
+## 8. The `--active` Flag Trap — Historical (retired) Context
+
+> **Status: historical.** The launcher `scripts/memory/foresight-mcp-server.sh` was hardened against ambient `VIRTUAL_ENV` in commit `e970f760c fix: harden foresight-mcp launcher against ambient VIRTUAL_ENV` (landed on `origin/staging`, June 2026). Production launches flow through the hardened launcher (`set -a; source .env; source .env.local; set +a; exec uv run ...`) and are no longer subject to the trap described below. The pattern documented here is preserved as the developer-machine / smoke-test idiom.
 
 `uv run` defaults to the closest `.venv`. The host repo (`pixelated/`) ships an outer `.venv` that **lacks** `psycopg`, `psycopg-pool`, and `redis`. If you accidentally run with `--active` from anywhere outside `foresight-mcp/`, you'll end up using the outer venv and getting `ModuleNotFoundError`.
 
@@ -229,7 +231,7 @@ All edits scoped to `chad/sentry-fixes-round5 @ b445754` (foresight-mcp submodul
 | `foresight_mcp/redis_cache.py`              | **NEW**  | `RedisCache` class, ~225 lines. Mirrors `NarrativeCache` API. Pyright-clean.                                                                      |
 | `foresight_mcp/backend/sqlite_backend.py`   | Modified | 2-line `self._` prefix fix at L44-45 (G substep) + `connection()` contextmanager body rewrite at L58-68 (Fix 2 / K substep, per m0274 directive). |
 | `foresight_mcp/reflection_narrative.py`     | Modified | 4 surgical edits: import + typing + isinstance guard + dict-first dispatch reorder (L67, L271, L323, L329-340, L398-409).                         |
-| `foresight_mcp/config.py`                   | Modified | `FORESIGHT_REDIS_URL` env var added (3 lines).                                                                                                    |
+| `foresight_mcp/config.py`                   | Modified | `REDIS_URL` canonical env var documented (collapsed to upstream `config.REDIS_URL`).                                                              |
 
 ---
 
