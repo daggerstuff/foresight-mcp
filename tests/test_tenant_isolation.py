@@ -15,25 +15,15 @@ from foresight_mcp.tenant_context import (
 
 def _make_temp_db(db_path: str) -> None:
     """Create a fresh temporary database and run full migrations."""
-    # Create an empty file; init_db will create full schema.
-    conn = sqlite3.connect(db_path)
-    conn.close()
-    # Patch environment to point to this DB and run init_db.
-    import foresight_mcp.config as config_mod
-    import foresight_mcp.connection_pool as pool_mod
-    from foresight_mcp.connection_pool import reset_pool
+    from foresight_mcp.backend import SqliteBackend
     from foresight_mcp.server import init_db
 
-    # Temporarily set DB_PATH for init_db
-    original_db_path = config_mod.DB_PATH
-    original_pool_path = pool_mod.DB_PATH
-    config_mod.DB_PATH = db_path
-    pool_mod.DB_PATH = db_path
-    reset_pool()
-    init_db()
-    # Restore paths (tests will patch get_db_connection anyway)
-    config_mod.DB_PATH = original_db_path
-    pool_mod.DB_PATH = original_pool_path
+    backend = SqliteBackend(db_path=db_path)
+    backend.connect()
+    try:
+        init_db(backend=backend)
+    finally:
+        backend.close()
 
 
 def test_tenant_isolation():

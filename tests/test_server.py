@@ -44,6 +44,7 @@ def setup_test_db(tmp_path, monkeypatch):
 
     import foresight_mcp.config as config_module
     import foresight_mcp.connection_pool as conn_pool_module
+    from foresight_mcp.backend import SqliteBackend
     from foresight_mcp.connection_pool import reset_pool
     from foresight_mcp.server import init_db
 
@@ -60,7 +61,8 @@ def setup_test_db(tmp_path, monkeypatch):
     set_current_user_id("_test_user_")
     set_current_account_id("_test_")
 
-    init_db()
+    backend = SqliteBackend(db_path=str(db_file))
+    init_db(backend=backend)
     yield
     reset_pool()
 
