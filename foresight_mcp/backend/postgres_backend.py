@@ -182,6 +182,13 @@ class PostgresBackend(DatabaseBackend):
         )
         return result is not None
 
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        result = self.fetch_one(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s LIMIT 1",
+            (table_name, column_name),
+        )
+        return result is not None
+
     def get_version(self) -> int:
         if not self.table_exists("schema_migrations"):
             return 0

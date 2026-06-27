@@ -72,3 +72,23 @@ class DatabaseBackend(ABC):
         with self.connection() as conn:
             row = conn.execute(sql, params).fetchone()
             return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Schema introspection — subclasses MUST implement
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def table_exists(self, table_name: str) -> bool:
+        """Return True if the named table exists in the database."""
+
+    @abstractmethod
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        """Return True if the named column exists in the given table."""
+
+    @abstractmethod
+    def get_version(self) -> int:
+        """Return the highest applied migration version, or 0 if none."""
+
+    @abstractmethod
+    def set_version(self, version: int, applied_at: str) -> None:
+        """Record that *version* was applied at *applied_at* (ISO-8601)."""
