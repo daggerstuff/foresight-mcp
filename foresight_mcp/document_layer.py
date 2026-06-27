@@ -45,6 +45,18 @@ class DocumentCreateOptions:
     memory_id_for_chunk: Any = None
 
 
+@dataclass
+class DocumentContext:
+    """Context for document creation operations."""
+
+    doc_id: str
+    content: str
+    user_id: str
+    tenant_id: str
+    now: str
+    options: DocumentCreateOptions
+
+
 logger = logging.getLogger("foresight_document_layer")
 
 DEFAULT_CHUNK_CHAR_BUDGET = 800
@@ -57,7 +69,9 @@ MAX_TENANT_ID_LENGTH = 64
 MAX_MEMORY_ID_LENGTH = 128
 MAX_DOCUMENT_ID_LENGTH = 128
 
-VALID_DOCUMENT_SOURCES: frozenset[str] = frozenset({"transcript", "article", "journal", "note", "email", "other"})
+VALID_DOCUMENT_SOURCES: frozenset[str] = frozenset(
+    {"transcript", "article", "journal", "note", "email", "other"}
+)
 
 
 class DocumentLayerError(ValueError):
@@ -78,12 +92,16 @@ def _validate_memory_id(memory_id: str) -> None:
 
 def _validate_source(source: str) -> None:
     if source not in VALID_DOCUMENT_SOURCES:
-        raise DocumentLayerError(f"source must be one of {sorted(VALID_DOCUMENT_SOURCES)}, got {source!r}")
+        raise DocumentLayerError(
+            f"source must be one of {sorted(VALID_DOCUMENT_SOURCES)}, got {source!r}"
+        )
 
 
 def _validate_budget(budget: int) -> None:
     if budget < MIN_CHUNK_CHAR_BUDGET or budget > MAX_CHUNK_CHAR_BUDGET:
-        raise DocumentLayerError(f"chunk_char_budget must be in [{MIN_CHUNK_CHAR_BUDGET}, {MAX_CHUNK_CHAR_BUDGET}]")
+        raise DocumentLayerError(
+            f"chunk_char_budget must be in [{MIN_CHUNK_CHAR_BUDGET}, {MAX_CHUNK_CHAR_BUDGET}]"
+        )
 
 
 def content_hash(text: str) -> str:
@@ -146,7 +164,9 @@ class Document:
         }
 
 
-def chunk_text(text: str, char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET) -> list[tuple[int, int, str]]:
+def chunk_text(
+    text: str, char_budget: int = DEFAULT_CHUNK_CHAR_BUDGET
+) -> list[tuple[int, int, str]]:
     """Paragraph-based chunking with a soft character budget.
 
     Splits on blank lines, then greedily packs paragraphs into chunks
@@ -296,18 +316,24 @@ class DocumentStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(tenant_id, user_id, created_at DESC)"
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(tenant_id, user_id, content_hash)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(tenant_id, user_id, content_hash)"
+            )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_document_chunks_doc ON document_chunks(document_id, chunk_index)"
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_document_chunks_memory ON document_chunks(memory_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_document_chunks_memory ON document_chunks(memory_id)"
+            )
             conn.commit()
         finally:
             pool = get_pool(self.db_path)
             pool.release(conn)
             conn.close()
 
-    def _validate_create_params(self, title: str, content: str, options: DocumentCreateOptions) -> None:
+    def _validate_create_params(
+        self, title: str, content: str, options: DocumentCreateOptions
+    ) -> None:
         """Validate parameters for document creation."""
         if not title or len(title) > MAX_TITLE_LENGTH:
             raise DocumentLayerError(f"title must be 1-{MAX_TITLE_LENGTH} chars")
@@ -318,24 +344,22 @@ class DocumentStore:
         _validate_source(options.source)
         _validate_budget(options.char_budget)
 
-    def _create_chunks(
-        self, doc_id: str, content: str, user_id: str, tenant_id: str, now: str, options: DocumentCreateOptions
-    ) -> list[DocumentChunk]:
+    def _create_chunks(self, ctx: DocumentContext) -> list[DocumentChunk]:
         """Create document chunks from content."""
-        raw_chunks = chunk_text(content, char_budget=options.char_budget)
+        raw_chunks = chunk_text(ctx.content, char_budget=ctx.options.char_budget)
         chunks: list[DocumentChunk] = []
         for i, (start, end, text) in enumerate(raw_chunks):
-            if callable(options.memory_id_for_chunk):
-                mid = options.memory_id_for_chunk(i, text)
+            if callable(ctx.options.memory_id_for_chunk):
+                mid = ctx.options.memory_id_for_chunk(i, text)
                 if mid is not None:
                     _validate_memory_id(str(mid))
-            elif isinstance(options.memory_id_for_chunk, str):
-                mid = options.memory_id_for_chunk
+            elif isinstance(ctx.options.memory_id_for_chunk, str):
+                mid = ctx.options.memory_id_for_chunk
             else:
                 mid = None
             chunks.append(
                 DocumentChunk(
-                    document_id=doc_id,
+                    document_id=ctx.doc_id,
                     memory_id=str(mid) if mid is not None else "",
                     start_offset=start,
                     end_offset=end,
@@ -383,7 +407,15 @@ class DocumentStore:
         now = datetime.now(timezone.utc).isoformat()
         h = content_hash(content)
 
-        chunks = self._create_chunks(doc_id, content, user_id, tid, now, options)
+        ctx = DocumentContext(
+            doc_id=doc_id,
+            content=content,
+            user_id=user_id,
+            tenant_id=tid,
+            now=now,
+            options=options,
+        )
+        chunks = self._create_chunks(ctx)
 
         conn = self._connect()
         try:
@@ -396,7 +428,9 @@ class DocumentStore:
                     (tid, user_id, h),
                 ).fetchone()
                 if existing is not None:
-                    raise DocumentLayerError(f"document with identical content already exists: {existing['id']}")
+                    raise DocumentLayerError(
+                        f"document with identical content already exists: {existing['id']}"
+                    )
 
                 conn.execute(
                     """
@@ -476,7 +510,9 @@ class DocumentStore:
         tid = tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
         if not document_id or len(document_id) > MAX_DOCUMENT_ID_LENGTH:
-            raise DocumentLayerError(f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars")
+            raise DocumentLayerError(
+                f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars"
+            )
         conn = self._connect()
         try:
             row = conn.execute(
@@ -526,7 +562,9 @@ class DocumentStore:
         tid = tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
         if not document_id or len(document_id) > MAX_DOCUMENT_ID_LENGTH:
-            raise DocumentLayerError(f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars")
+            raise DocumentLayerError(
+                f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars"
+            )
         conn = self._connect()
         try:
             rows = conn.execute(
@@ -628,7 +666,9 @@ class DocumentStore:
         tid = tenant_id or get_current_tenant_id()
         _validate_user_tenant(user_id, tid)
         if not document_id or len(document_id) > MAX_DOCUMENT_ID_LENGTH:
-            raise DocumentLayerError(f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars")
+            raise DocumentLayerError(
+                f"document_id must be 1-{MAX_DOCUMENT_ID_LENGTH} chars"
+            )
         conn = self._connect()
         try:
             with self._lock:

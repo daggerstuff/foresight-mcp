@@ -1,0 +1,8 @@
+[bandit]
+exclude_dirs = tests
+skips = B101
+
+[radarlint]
+exclude_dirs = ["tests"]
+skip_rules = ["python:S1244"]
+

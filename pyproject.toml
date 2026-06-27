@@ -95,3 +95,14 @@ include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+
+
+
+[tool.radarlint]
+exclude_dirs = ["tests"]
+skip_rules = ["python:S1244"]
+
