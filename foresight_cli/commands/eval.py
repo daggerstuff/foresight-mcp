@@ -1,5 +1,4 @@
-"""
-Eval command: run the evaluation harness and generate a report."""
+"""Eval command: run the evaluation harness and generate a report."""
 
 from __future__ import annotations
 
@@ -18,6 +17,8 @@ def run(
     compare: str | None = typer.Option(None, "--compare", "-c", help="Path to a baseline JSON report to diff against"),
     save_baseline: str | None = typer.Option(None, "--save-baseline", help="Save the report as a baseline JSON at this path"),
     json_output: bool = typer.Option(False, "--json", "-j", help="Output report as JSON"),
+    compare: str | None = typer.Option(None, "--compare", help="Path to a baseline JSON report to diff against"),
+    save_baseline: str | None = typer.Option(None, "--save-baseline", help="Write this run as a baseline JSON report"),
 ):
     """Run the full evaluation harness and print a summary report.
 
@@ -35,6 +36,8 @@ def run(
         compare_path=compare,
         save_baseline=save_baseline,
         json_output=json_output or out.get_settings().mode == "json",
+        compare_path=compare,
+        save_baseline=save_baseline,
     )
 
     passed = report_obj.summary["passed"]
@@ -57,11 +60,14 @@ def run(
         for sr in report_obj.scenarios:
             status = "✓" if sr.passed else "✗"
             icon = "green" if sr.passed else "red"
+            payload = f"payload={sr.injection_payload_size} chars"
+            latency = f"latency={sr.latency_ms:.1f}ms"
+            findings = f"pii={len(sr.pii_findings)}"
             out.stderr(
-                f"  [{icon}]{status}[/] {sr.scenario_id}: "
-                f"found={len(sr.found_memory_ids)}, missing={len(sr.missing_expected)}, "
-                f"{'latency=' + f'{sr.latency_ms:.1f}ms' if sr.latency_ms else 'N/A'}",
+                f"  [{icon}]{status}[/] {sr.scenario_id}: {payload}, {latency}, {findings}",
                 style=icon,
             )
         if report:
             out.info(f"Maintenance eval report written to {report}")
+        if save_baseline:
+            out.info(f"Baseline report written to {save_baseline}")

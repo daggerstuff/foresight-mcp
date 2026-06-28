@@ -143,9 +143,15 @@ def test_migration_adds_tenant_id_to_existing_db():
         conn.close()
 
         # Run migration
+        from foresight_mcp.backend import SqliteBackend
         from foresight_mcp.migrations import run_migrations
 
-        run_migrations(db_path)
+        backend = SqliteBackend(db_path=db_path)
+        backend.connect()
+        try:
+            run_migrations(backend)
+        finally:
+            backend.close()
 
         # Verify column exists
         conn = sqlite3.connect(db_path)

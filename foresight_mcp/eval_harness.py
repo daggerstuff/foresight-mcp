@@ -550,8 +550,16 @@ class EvalHarness:
         set_current_user_id(self.user_id)
         set_current_account_id(self.tenant_id)
 
-        # Ensure schema exists
-        init_db()
+        # Ensure schema exists — always use SqliteBackend so the harness
+        # database is self-contained regardless of FORESIGHT_DB_URL.
+        from foresight_mcp.backend import SqliteBackend
+
+        backend = SqliteBackend(db_path=self.db_path)
+        backend.connect()
+        try:
+            init_db(backend=backend)
+        finally:
+            backend.close()
 
     def _restore_patches(self) -> None:
         """Restore all monkeypatched values."""

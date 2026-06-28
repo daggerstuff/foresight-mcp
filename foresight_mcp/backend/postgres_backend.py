@@ -1,8 +1,8 @@
 """PostgreSQL backend — wraps psycopg v3 sync behind DatabaseBackend.
 
 Designed for Neon (serverless Postgres) and any standard PostgreSQL cluster.
-Uses ``psycopg.pool.ConnectionPool`` for thread-safe connection management and
-``psycopg.rows.DictRow`` for dict-like row access that mirrors the SQLite backend.
+Uses ``psycopg_pool.ConnectionPool`` for thread-safe connection management and
+``psycopg.rows.dict_row`` for dict-like row access that mirrors the SQLite backend.
 
 Key dialect differences handled internally:
 - Parameter placeholders: ``?`` → ``%s``
@@ -91,22 +91,22 @@ class PostgresBackend(DatabaseBackend):
         self._dsn = self._ensure_sslmode(dsn)
         self._min_pool_size = min_pool_size
         self._max_pool_size = max_pool_size
-        self._pool: Any = None  # psycopg.pool.ConnectionPool | None
+        self._pool: Any = None  # psycopg_pool.ConnectionPool | None
 
     # ------------------------------------------------------------------
     # DatabaseBackend lifecycle
     # ------------------------------------------------------------------
 
     def connect(self) -> None:
-        from psycopg.pool import ConnectionPool
-        from psycopg.rows import DictRow
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
 
         logger.debug("Initialising PostgresBackend with dsn=%s", self._redact_dsn())
         self._pool = ConnectionPool(
             self._dsn,
             min_size=self._min_pool_size,
             max_size=self._max_pool_size,
-            kwargs={"row_factory": DictRow},
+            kwargs={"row_factory": dict_row},
             open=True,
         )
         self._backend_type = "postgresql"
@@ -115,7 +115,7 @@ class PostgresBackend(DatabaseBackend):
     def close(self) -> None:
         if self._pool is not None:
             logger.debug("Closing PostgresBackend pool")
-            self._pool.close()
+            self._pool.close(timeout=10.0)
             self._pool = None
 
     # ------------------------------------------------------------------
@@ -181,6 +181,13 @@ class PostgresBackend(DatabaseBackend):
         result = self.fetch_one(
             "SELECT 1 FROM information_schema.tables WHERE table_name = %s LIMIT 1",
             (table_name,),
+        )
+        return result is not None
+
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        result = self.fetch_one(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = %s AND column_name = %s LIMIT 1",
+            (table_name, column_name),
         )
         return result is not None
 

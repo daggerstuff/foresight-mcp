@@ -7,28 +7,39 @@ and memory_entity_links tables for multi-tenant isolation.
 from __future__ import annotations
 
 import logging
-import sqlite3
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..backend.base import DatabaseBackend
 
 logger = logging.getLogger(__name__)
 
 MIGRATION_VERSION = 1
 
 
-def migrate(conn: sqlite3.Connection) -> None:
-    """Add tenant_id column to graph tables."""
-    # Get existing table names
-    existing = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
+ALLOWED_TABLES = {
+    "entities", "relationships", "memories", "memory_embeddings",
+    "memory_links", "clusters", "memory_decay", "memory_versions"
+}
+
+def _safe_table(name: str) -> str:
+    if name not in ALLOWED_TABLES:
+        raise ValueError(f"Table {name!r} not in allowed list")
+    return name
+
+
+def migrate(backend: DatabaseBackend) -> None:
+    """Add tenant_id column to graph tables."""
     for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
-        if table not in existing:
+        if not backend.table_exists(table):
             continue
-        cursor = conn.execute(f"PRAGMA table_info({table})")
-        columns = [row[1] for row in cursor.fetchall()]
-        if "tenant_id" not in columns:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
+        if not backend.column_exists(table, "tenant_id"):
+            backend.execute(f"ALTER TABLE {_safe_table(table)} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'")
             logger.info(f"Added tenant_id column to {table}")
 
     for table in ("memory_entities", "entity_relationships", "memory_entity_links"):
-        if table not in existing:
+        if not backend.table_exists(table):
             continue
-        conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_tenant ON {table}(tenant_id)")
+        backend.execute(f"CREATE INDEX IF NOT EXISTS idx_{_safe_table(table)}_tenant ON {_safe_table(table)}(tenant_id)")
+

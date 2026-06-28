@@ -234,6 +234,7 @@ def server_env(temp_db, monkeypatch):
     import foresight_mcp.config as config_module
     import foresight_mcp.connection_pool as conn_pool_module
     from foresight_mcp.connection_pool import reset_pool
+    from foresight_mcp.backend import SqliteBackend
     from foresight_mcp.server import init_db
 
     monkeypatch.setattr(config_module, "DB_PATH", temp_db)
@@ -248,7 +249,12 @@ def server_env(temp_db, monkeypatch):
 
     reset_graph_store()
     reset_pool()
-    init_db()
+    backend = SqliteBackend(db_path=temp_db)
+    backend.connect()
+    try:
+        init_db(backend=backend)
+    finally:
+        backend.close()
     # Reset USER_ID in server module too
     import foresight_mcp.server as server_module
 

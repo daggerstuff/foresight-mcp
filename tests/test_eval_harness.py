@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 
 from foresight_mcp.eval_harness import (
     FIXTURE_MEMORIES,
@@ -426,6 +427,58 @@ class TestRunEval:
         finally:
             if os.path.exists(report_path):
                 os.unlink(report_path)
+
+    def test_cli_eval_command_uses_scenario_result_fields(self, monkeypatch):
+        from foresight_cli.commands import eval as eval_cmd
+        import foresight_mcp.eval_harness as eval_harness_module
+
+        scenario = ScenarioResult(
+            scenario_id="S1_preference",
+            query="What coding style does the user prefer for TypeScript?",
+            passed=True,
+            metrics={},
+            found_memory_ids=["pref_concise_typescript"],
+            missing_expected=[],
+            injection_payload_size=321,
+            latency_ms=9.5,
+            signal_counts={"keyword": 1},
+            fast_path=None,
+            pii_findings=[],
+        )
+        report = EvalReport(
+            timestamp="2026-01-01T00:00:00Z",
+            scenarios=[scenario],
+            summary={"passed": 1, "total": 1, "pass_rate_pct": 100.0},
+        )
+
+        done_calls: list[str] = []
+        stderr_calls: list[str] = []
+        info_calls: list[str] = []
+
+        monkeypatch.setattr(eval_harness_module, "run_eval", lambda **_: report)
+        monkeypatch.setattr(eval_cmd.out, "get_settings", lambda: SimpleNamespace(mode="human"))
+        monkeypatch.setattr(eval_cmd.out, "done", lambda message: done_calls.append(message))
+        monkeypatch.setattr(eval_cmd.out, "stderr", lambda message, style=None: stderr_calls.append(message))
+        monkeypatch.setattr(eval_cmd.out, "info", lambda message: info_calls.append(message))
+
+        eval_cmd.run(
+            db_path=None,
+            report="/tmp/eval.json",
+            budget=1500,
+            json_output=False,
+            compare=None,
+            save_baseline="/tmp/baseline.json",
+        )
+
+        assert done_calls == ["1/1 scenarios passed (100.0%)"]
+        assert len(stderr_calls) == 1
+        assert "payload=321 chars" in stderr_calls[0]
+        assert "latency=9.5ms" in stderr_calls[0]
+        assert "pii=0" in stderr_calls[0]
+        assert info_calls == [
+            "Maintenance eval report written to /tmp/eval.json",
+            "Baseline report written to /tmp/baseline.json",
+        ]
 
 
 # =============================================================================

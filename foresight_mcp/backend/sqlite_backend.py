@@ -62,13 +62,8 @@ class SqliteBackend(DatabaseBackend):
         """Acquire a pooled SQLite connection and release it on exit."""
         if self._pool is None:
             raise RuntimeError("SqliteBackend not connected. Call connect() first.")
-        pool = self._pool
-        conn = pool.acquire()
-        try:
+        with self._pool.acquire() as conn:
             yield conn
-        finally:
-            conn.rollback()
-            pool.release(conn)
 
     # ------------------------------------------------------------------
     # Convenience — minor optimisation over base-class defaults
@@ -104,6 +99,31 @@ class SqliteBackend(DatabaseBackend):
     # ------------------------------------------------------------------
     # Pool introspection
     # ------------------------------------------------------------------
+
+    def table_exists(self, table_name: str) -> bool:
+        result = self.fetch_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (table_name,),
+        )
+        return result is not None
+
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        if not self.table_exists(table_name):
+            return False
+        rows = self.fetch(f"PRAGMA table_info({table_name})")
+        return any(row.get("name") == column_name for row in rows)
+
+    def get_version(self) -> int:
+        if not self.table_exists("schema_migrations"):
+            return 0
+        row = self.fetch_one("SELECT MAX(version) AS version FROM schema_migrations")
+        return int(row["version"]) if row and row["version"] is not None else 0
+
+    def set_version(self, version: int, applied_at: str) -> None:
+        self.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+            (version, applied_at),
+        )
 
     @property
     def stats(self) -> dict:

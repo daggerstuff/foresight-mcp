@@ -65,6 +65,7 @@ from .audit import (
     AuditLog,
 )
 from .narrative_cache import NarrativeCache
+from .redis_cache import RedisCache
 from .reflection_engine import ReflectionReport
 
 logger = logging.getLogger("foresight_reflection_narrative")
@@ -268,7 +269,7 @@ def generate_insight_narrative(
     user_id: str,
     llm_call: LLMCallable,
     model_version: str = "caller-default",
-    cache: dict[str, str] | NarrativeCache | None = None,
+    cache: dict[str, str] | NarrativeCache | RedisCache | None = None,
     audit_log: AuditLog | None = None,
 ) -> str:
     """Generate a natural-language narrative summary of a reflection report.
@@ -320,14 +321,20 @@ def generate_insight_narrative(
         raise ValueError("user_id is required and must be a non-empty string")
     if not callable(llm_call):
         raise TypeError("llm_call must be callable")
-    if cache is not None and not isinstance(cache, (dict, NarrativeCache)):
-        raise TypeError(f"cache must be a dict or NarrativeCache, got {type(cache).__name__}")
+    if cache is not None and not isinstance(cache, (dict, NarrativeCache, RedisCache)):
+        raise TypeError(f"cache must be a dict, NarrativeCache, or RedisCache, got {type(cache).__name__}")
 
     if cache is None:
         cache = _default_cache
 
     insights_hash = _compute_insights_hash(reflection_report)
-    if isinstance(cache, NarrativeCache):
+    if isinstance(cache, dict):
+        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
+        cached = cache.get(cache_key)
+    else:
+        # cache is NarrativeCache | RedisCache here; both expose a .get() and
+        # .put() with the (report_id, tenant_id, user_id, model_version,
+        # insights_hash) signature.
         cached = cache.get(
             reflection_report.report_id,
             tenant_id=tenant_id,
@@ -335,9 +342,6 @@ def generate_insight_narrative(
             model_version=model_version,
             insights_hash=insights_hash,
         )
-    else:
-        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
-        cached = cache.get(cache_key)
 
     if cached is not None:
         logger.debug("reflection_narrative_cache_hit", extra={"cache_key": insights_hash})
@@ -395,7 +399,11 @@ def generate_insight_narrative(
         audit_log=audit_log,
     )
 
-    if isinstance(cache, NarrativeCache):
+    if isinstance(cache, dict):
+        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
+        cache[cache_key] = response
+    else:
+        # cache is NarrativeCache | RedisCache here.
         cache.put(
             reflection_report.report_id,
             response,
@@ -404,9 +412,6 @@ def generate_insight_narrative(
             model_version=model_version,
             insights_hash=insights_hash,
         )
-    else:
-        cache_key = _compute_cache_key(reflection_report, model_version, tenant_id, user_id)
-        cache[cache_key] = response
     return response
 
 

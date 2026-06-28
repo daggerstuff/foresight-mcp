@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import importlib
 import logging
-import sqlite3
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..backend.base import DatabaseBackend
 
 logger = logging.getLogger(__name__)
 
@@ -18,28 +22,20 @@ MIGRATIONS = [
 ]
 
 
-def run_migrations(db_path: str) -> None:
-    """Run all pending migrations."""
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL
-            )
-        """)
+def run_migrations(backend: DatabaseBackend) -> None:
+    """Run all pending migrations against the given backend."""
+    backend.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        )
+    """)
 
-        applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations").fetchall()}
+    applied = {row["version"] for row in backend.fetch("SELECT version FROM schema_migrations")}
 
-        for version, module_path in MIGRATIONS:
-            if version not in applied:
-                mod = importlib.import_module(module_path)
-                mod.migrate(conn)
-                conn.execute(
-                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?, datetime('now'))",
-                    (version,),
-                )
-                conn.commit()
-                logger.info(f"Applied migration {version}")
-    finally:
-        conn.close()
+    for version, module_path in MIGRATIONS:
+        if version not in applied:
+            mod = importlib.import_module(module_path)
+            mod.migrate(backend)
+            backend.set_version(version, datetime.now(timezone.utc).isoformat())
+            logger.info(f"Applied migration {version}")

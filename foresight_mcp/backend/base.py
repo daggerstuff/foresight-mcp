@@ -86,57 +86,21 @@ class DatabaseBackend(ABC):
             return dict(row) if row else None
 
     # ------------------------------------------------------------------
-    # Schema helpers — default implementations inspect information_schema
-    # (PostgreSQL) and sqlite_master (SQLite). Subclasses may override for
-    # faster paths. These power the backend-agnostic migration runner in
-    # :mod:`backend_migrations`.
+    # Schema introspection — subclasses MUST implement
     # ------------------------------------------------------------------
 
+    @abstractmethod
     def table_exists(self, table_name: str) -> bool:
-        if self._backend_type == "postgresql":
-            rows = self.fetch(
-                "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",
-                (table_name,),
-            )
-            return bool(rows)
-        if self._backend_type == "sqlite":
-            rows = self.fetch(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (table_name,),
-            )
-            return bool(rows)
-        # Fallback to original behavior if backend type not detected yet
-        try:
-            rows = self.fetch(
-                "SELECT 1 FROM information_schema.tables WHERE table_name = ? LIMIT 1",
-                (table_name,),
-            )
-            if rows:
-                return True
-        except Exception:
-            pass
-        try:
-            rows = self.fetch(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
-                (table_name,),
-            )
-            return bool(rows)
-        except Exception:
-            return False
+        """Return True if the named table exists in the database."""
 
-    def get_version(self, table: str = "schema_migrations") -> int:
-        if not self.table_exists(table):
-            return 0
-        try:
-            row = self.fetch_one(f"SELECT COALESCE(MAX(version), 0) AS v FROM {table}")
-            return int((row or {}).get("v", 0) or 0)
-        except Exception:
-            return 0
+    @abstractmethod
+    def column_exists(self, table_name: str, column_name: str) -> bool:
+        """Return True if the named column exists in the given table."""
 
-    def set_version(self, version: int, table: str = "schema_migrations") -> None:
-        if not self.table_exists(table):
-            self.execute(f"CREATE TABLE {table} (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)")
-        self.execute(
-            f"INSERT INTO {table} (version, applied_at) VALUES (?, ?)",
-            (version, _now_iso()),
-        )
+    @abstractmethod
+    def get_version(self) -> int:
+        """Return the highest applied migration version, or 0 if none."""
+
+    @abstractmethod
+    def set_version(self, version: int, applied_at: str) -> None:
+        """Record that *version* was applied at *applied_at* (ISO-8601)."""
