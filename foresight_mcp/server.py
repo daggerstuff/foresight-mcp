@@ -7,22 +7,37 @@ Restored from src/lib/ai/memory/ architecture.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import concurrent.futures
+import hashlib
 import json
+import logging
 import os
+import re
+import sqlite3
 import threading
 import time
-import types
 import uuid
+import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, cast
 
+from fastmcp import FastMCP
+from fastmcp.server.middleware import Middleware as _Middleware
+from fastmcp.tools.base import ToolResult
+from mcp.types import TextContent
 from pydantic import BaseModel, Field
 
+from .auth import AuthMiddleware
 from .backend import RedisCompanion, create_backend
+from .block_registry import InjectionPoint, initialize_default_blocks
+from .capture import get_capture_pipeline
+from .clustering import ClusterResult, cluster_memories
 from .config import (
+    BANK_ID,
     DB_PATH,
     DEFAULT_BURST_LIMIT,
     DEFAULT_RATE_LIMIT,
@@ -31,33 +46,96 @@ from .config import (
     USER_ID,
 )
 from .connection_pool import get_pool
-from .document_layer import (
-    content_hash as _content_hash,
+from .context_blocks import (
+    PENDING_ITEMS,
+    SESSION_PATTERNS,
+    USER_PREFERENCES,
+    get_context_block_agent,
 )
+from .crisis_detection import get_crisis_service
+from .decay_model import DecayConfigOptions, get_decay_model
+from .document_layer import (
+    DEFAULT_CHUNK_CHAR_BUDGET as _DOC_CHUNK_BUDGET,
+    DocumentCreateOptions,
+    DocumentLayerError,
+    content_hash as _content_hash,
+    get_document_store,
+)
+from .enhanced_synthesizer import get_enhanced_synthesizer
+from .entity_extractor import Entity, get_entity_extractor
 from .event_bus import (
+    curation_status_changed,
+    get_event_bus,
     memory_deleted,
     memory_retrieved,
+    memory_stored,
     memory_updated,
 )
+from .graph_store import get_graph_store
 from .hooks import (
+    HookResult,
     MemoryHookContext,
     MemoryHookType,
     get_memory_hook_registry,
 )
-from .hybrid_retriever import HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
+from .hybrid_retriever import HybridResult, HybridSearchOptions, HybridSearchResult, get_hybrid_retriever
+from .injection_budget import (
+    BudgetResult,
+    DEFAULT_LANE_WEIGHTS,
+    InjectionBudget,
+    Lane,
+    LaneItem,
+    MIN_LANE_CHARS,
+    format_budgeted_payload,
+)
+from .memory_components import (
+    MemoryCrisisTagger,
+    MemoryLinker,
+    MemorySynthesizer,
+    SocraticGate,
+)
+from .memory_maintenance import MaintenanceConfig, MemoryMaintenanceJob
+
 from .memory_relationships import (
+    LinkMemoriesOptions,
     MemoryRelationshipError,
     get_memory_relationship_store,
 )
 from .memory_types import (
+    EmotionalMetadata,
+    EmpathyMetrics,
     MemoryObject,
+    MemoryScope,
+    RetentionPolicy,
 )
 from .narrative_cache import NarrativeCache
+from .phrase_triggers import DEFAULT_TRIGGERS, extract_triggered_memories
+from .profile_synthesizer import ProfileConfig, profile_to_prompt, synthesize_profile as _synthesize_profile
 from .rate_limiter import RateLimitExceededError, get_rate_limiter
+from .reflection_engine import get_reflection_engine
+from .reflection_narrative import _default_cache as _reflection_narrative_cache
+from .semantic_search import (
+    DEFAULT_PROVIDER as _SEMANTIC_DEFAULT_PROVIDER,
+    SemanticSearchError as _SemanticSearchError,
+    SemanticSearchOptions,
+    get_semantic_search,
+)
 from .sensitivity import resolve_is_sensitive
-from .tenant_context import get_current_tenant_id
+from .stream_producer import (
+    KafkaProducer,
+    KinesisProducer,
+    StreamPublisher,
+    create_stream_producer,
+)
+from .sync import Operation, OperationQueue, OperationType
+from .temporal_queries import get_temporal_query_builder
+from .temporal_service import get_temporal_service
+from .tenant_context import get_current_tenant_id, get_current_user_id, set_current_tenant_id
+from .tenant_middleware import TenantMiddleware
 
 # WebSocket imports
+from .websocket.server import WebSocketServer
+from .websocket.subscriptions import SubscriptionManager
 
 DEFAULT_MAX_MEMORY_PER_TENANT = 100_000
 DEFAULT_MAX_CACHE_ENTRIES_PER_TENANT = 50_000
@@ -3484,6 +3562,22 @@ def _resume_pending_curation_runs() -> None:
         _start_curation_worker(row["id"], payload)
 
 
+def _audit_hook(ctx: MemoryHookContext) -> HookResult | None:
+    """Audit hook that logs memory operations."""
+    logger.debug("Memory %s: action=%s user=%s", ctx.memory_id, ctx.action, ctx.user_id)
+    return None
+
+
+def _cache_invalidation_hook(ctx: MemoryHookContext) -> HookResult | None:
+    """Invalidate caches after memory deletion."""
+    if ctx.memory_id:
+        try:
+            get_hybrid_retriever().invalidate_tfidf_cache(ctx.user_id or "", ctx.tenant_id or "default")
+        except Exception:
+            logger.exception("Cache invalidation failed for memory %s", ctx.memory_id)
+    return None
+
+
 def main():
     init_db()
 
@@ -3570,7 +3664,7 @@ def set_tenant_context(tenant_id: str) -> None:
     Deprecated: Use set_current_tenant_id() from tenant_module instead.
     The TenantMiddleware handles per-request tenant isolation automatically.
     """
-    _warnings.warn(
+    warnings.warn(
         "set_tenant_context() is deprecated; use set_current_tenant_id() instead",
         DeprecationWarning,
         stacklevel=2,
