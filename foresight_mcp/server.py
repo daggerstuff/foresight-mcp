@@ -3577,7 +3577,6 @@ def _cache_invalidation_hook(ctx: MemoryHookContext) -> HookResult | None:
             logger.exception("Cache invalidation failed for memory %s", ctx.memory_id)
     return None
 
-
 def main():
     init_db()
 
